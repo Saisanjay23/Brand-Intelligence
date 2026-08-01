@@ -61,7 +61,22 @@ async def send_code(api_id: int, api_hash: str, phone: str) -> dict:
 
     await _teardown()
     settings.session_blob_path.mkdir(parents=True, exist_ok=True)
-    session_file = str(settings.session_blob_path / "telegram")
+    session_path = settings.session_blob_path / "telegram"
+
+    # Every login attempt starts from a clean MTProto handshake. Telethon's
+    # session file caches the DC + auth-key from `client.connect()` alone --
+    # that succeeds regardless of whether api_id/api_hash are valid, so a
+    # rejected attempt (or an abandoned retry) still leaves stale auth state
+    # behind. Reusing that file for the next attempt is what Telegram
+    # responds to with AuthRestartError on send_code_request. Deleting it
+    # here is safe: this only runs when the user explicitly starts a new
+    # login, the same moment any other platform's "log in again" would
+    # replace its old session too.
+    for stale in (session_path.with_suffix(".session"), session_path.with_suffix(".session-journal")):
+        if stale.exists():
+            stale.unlink()
+
+    session_file = str(session_path)
     client = TelegramClient(session_file, api_id, api_hash)
     await client.connect()
     try:
