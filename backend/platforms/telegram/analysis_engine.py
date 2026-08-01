@@ -21,7 +21,8 @@ import sys
 from urllib.parse import urlparse
 
 from backend.shared.models.row import Row
-from backend.shared.text import fmt_created, name_score
+from backend.shared.text import (fmt_created, name_score, normalized_host,
+                                   parse_normalized_url)
 from backend.platforms.telegram.discovery_engine import (FloodWait,
                                                           NotAuthorised,
                                                           Telegram,
@@ -31,15 +32,13 @@ BAD_SEGMENTS = {"s", "c", "joinchat", "addstickers", "share", "proxy", "i"}
 
 
 def normalize_url(url: str) -> str:
-    url = (url or "").strip().strip("\"'")
-    if not url:
+    stripped = (url or "").strip().strip("\"'")
+    if stripped.startswith("@"):
+        return f"https://t.me/{stripped[1:]}"
+    p = parse_normalized_url(stripped, extra_schemes=("tg://",))
+    if p is None:
         return ""
-    if url.startswith("@"):
-        return f"https://t.me/{url[1:]}"
-    if not url.startswith(("http://", "https://", "tg://")):
-        url = "https://" + url
-    p = urlparse(url)
-    host = p.netloc.lower().split(":")[0]
+    host = normalized_host(p)
     if host in ("telegram.me", "telegram.dog", "t.me"):
         host = "t.me"
     return f"https://{host}{p.path.rstrip('/')}"

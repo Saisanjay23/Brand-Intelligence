@@ -6,8 +6,6 @@ still this engine's job to keep its own platform credentials alive.
 
 from __future__ import annotations
 
-from typing import Optional
-
 from backend.dto.session_dto import ApiKeyIn, CookiesIn, LoginIn, ProxyIn
 from backend.sessions import manager as sessions_engine
 

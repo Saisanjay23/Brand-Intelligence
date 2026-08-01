@@ -13,13 +13,14 @@ Two jobs run on this APScheduler instance:
 from __future__ import annotations
 
 import asyncio
-import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-log = logging.getLogger("bi.scheduler")
+from backend.shared.logging import get_logger
+
+log = get_logger("scheduler")
 
 CATCHUP_INTERVAL_MIN = 20
 

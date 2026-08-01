@@ -58,7 +58,8 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from backend.shared.models.row import Row
-from backend.shared.text import fmt_created, name_score, parse_count
+from backend.shared.text import (fmt_created, name_score, normalized_host,
+                                   parse_count, parse_normalized_url)
 from backend.platforms.instagram.discovery_engine import (DEFAULT_PIC_HINTS,
                                                            PROFILE_ENDPOINTS,
                                                            RE_CHECKPOINT,
@@ -72,13 +73,10 @@ BAD_SEGMENTS = {"p", "reel", "reels", "explore", "stories", "accounts", "direct"
 
 
 def normalize_url(url: str) -> str:
-    url = (url or "").strip().strip("\"'")
-    if not url:
+    p = parse_normalized_url(url)
+    if p is None:
         return ""
-    if not url.startswith(("http://", "https://")):
-        url = "https://" + url
-    p = urlparse(url)
-    host = p.netloc.lower().split(":")[0]
+    host = normalized_host(p)
     if "instagram" in host:
         host = "www.instagram.com"
     path = p.path.rstrip("/")

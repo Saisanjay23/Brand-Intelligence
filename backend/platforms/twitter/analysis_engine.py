@@ -23,7 +23,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from backend.shared.models.row import Row
-from backend.shared.text import fmt_created, name_score
+from backend.shared.text import fmt_created, name_score, normalized_host, parse_normalized_url
 from backend.platforms.twitter.discovery_engine import (RE_CHECKPOINT,
                                                          RE_GONE, RE_LOGIN,
                                                          TWEETS_QUERY,
@@ -48,13 +48,10 @@ BAD_SEGMENTS = {
 
 
 def normalize_url(url: str) -> str:
-    url = (url or "").strip().strip("\"'")
-    if not url:
+    p = parse_normalized_url(url)
+    if p is None:
         return ""
-    if not url.startswith(("http://", "https://")):
-        url = "https://" + url
-    p = urlparse(url)
-    host = p.netloc.lower().split(":")[0]
+    host = normalized_host(p)
     if "twitter.com" in host or "x.com" in host:
         host = "x.com"
     return f"https://{host}{p.path.rstrip('/')}"

@@ -265,7 +265,7 @@ class Discovery:
 
         try:
             # We paginate up to 10 times to prevent infinite loops and respect limits
-            for p in range(10):
+            for _ in range(10):
                 url = MOBILE_SEARCH_API.format(q=quote(keyword), count=100)
                 if page_token:
                     url += f"&page_token={page_token}"

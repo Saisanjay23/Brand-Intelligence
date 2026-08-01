@@ -6,7 +6,6 @@ Deliberately public (no auth) -- these carry no client data.
 from __future__ import annotations
 
 from backend.services import health_service as health_engine
-from backend.sessions import manager as sessions_engine
 from backend.platforms import registry
 from backend.shared.metrics import render_latest
 from backend.database.connection import ping
@@ -22,7 +21,6 @@ async def ready() -> tuple[dict, bool]:
 
 
 async def platforms() -> dict:
-    live_health = await sessions_engine.cached_health()
     out = []
     for platform_id, plat in registry.PLATFORMS.items():
         out.append({

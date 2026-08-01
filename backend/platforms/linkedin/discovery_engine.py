@@ -29,6 +29,7 @@ from urllib.parse import quote, unquote, urlparse
 
 from backend.stealth.browser import Session
 from backend.platforms.facebook.discovery_engine import Hit
+from backend.shared.text import normalized_host, parse_normalized_url
 
 # ───────────────────────────── URL / identity ──────────────────────────────
 #
@@ -42,13 +43,10 @@ COMPANY = re.compile(r"^/company/([^/]+)/?$")
 
 
 def normalize_url(url: str) -> str:
-    url = (url or "").strip().strip("\"'")
-    if not url:
+    p = parse_normalized_url(url)
+    if p is None:
         return ""
-    if not url.startswith(("http://", "https://")):
-        url = "https://" + url
-    p = urlparse(url)
-    host = p.netloc.lower().split(":")[0]
+    host = normalized_host(p)
     if "linkedin.com" in host:
         host = "www.linkedin.com"
     path = unquote(p.path).rstrip("/")

@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterator, Optional
 from urllib.parse import parse_qs, quote, urlparse
 
-from backend.shared.text import iter_dicts
+from backend.shared.text import iter_dicts, normalized_host, parse_normalized_url
 from backend.stealth.browser import Session
 
 # ─────────────────────────── session / login state ─────────────────────────
@@ -80,13 +80,10 @@ class FacebookSession(Session):
 
 
 def normalize_url(url: str) -> str:
-    url = url.strip().strip("\"'")
-    if not url:
+    p = parse_normalized_url(url)
+    if p is None:
         return ""
-    if not url.startswith(("http://", "https://")):
-        url = "https://" + url
-    p = urlparse(url)
-    host = p.netloc.lower().split(":")[0]
+    host = normalized_host(p)
     if "facebook" in host or host in {"fb.com", "fb.me"}:
         host = "www.facebook.com"
     q = f"?{p.query}" if p.query else ""

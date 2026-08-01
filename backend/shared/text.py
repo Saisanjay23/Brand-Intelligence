@@ -13,6 +13,7 @@ import time
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from typing import Any, Iterator, Optional
+from urllib.parse import ParseResult, urlparse
 
 try:
     from rapidfuzz.fuzz import token_set_ratio as _tsr
@@ -113,6 +114,23 @@ def fmt_created(iso: str) -> str:
         return dt.strftime("%d-%m-%Y")
     except ValueError:
         return iso
+
+
+def parse_normalized_url(url: str, extra_schemes: tuple[str, ...] = ()) -> Optional[ParseResult]:
+    """Strip whitespace/quotes and default to an https:// scheme -- the
+    common preamble every platform's own `normalize_url()` builds on before
+    applying its own host canonicalization and path formatting. Returns
+    None for an empty input, so callers can early-return ""."""
+    url = (url or "").strip().strip("\"'")
+    if not url:
+        return None
+    if not url.startswith(("http://", "https://", *extra_schemes)):
+        url = "https://" + url
+    return urlparse(url)
+
+
+def normalized_host(parsed: ParseResult) -> str:
+    return parsed.netloc.lower().split(":")[0]
 
 
 def is_place(v: str) -> bool:
