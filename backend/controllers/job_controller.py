@@ -7,7 +7,7 @@ event sequence numbers only ever increase.
 from __future__ import annotations
 
 from backend.services.job_service import job_manager
-from backend.exceptions.errors import NotFoundError
+from backend.shared.errors import NotFoundError
 
 
 def _get(job_id: str):

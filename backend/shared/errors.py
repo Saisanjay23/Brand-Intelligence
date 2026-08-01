@@ -1,4 +1,4 @@
-"""The exception hierarchy engine/db code raises against.
+"""The exception hierarchy every layer raises against.
 
 Engine and db code never imports FastAPI -- it raises one of these plain
 exceptions, and the one handler registered in main.py turns it into

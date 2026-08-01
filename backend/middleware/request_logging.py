@@ -10,8 +10,8 @@ import time
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
-from backend.utils.logging import get_logger, log_extra
-from backend.utils.metrics import (http_request_duration_seconds,
+from backend.shared.logging import get_logger, log_extra
+from backend.shared.metrics import (http_request_duration_seconds,
                                     http_requests_total)
 
 log = get_logger("api.request")

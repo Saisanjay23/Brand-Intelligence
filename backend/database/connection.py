@@ -5,9 +5,9 @@ One database (`settings.mongo_db_name`), collections `clients`, `profiles`,
 docs/adr/0004 for why this isn't split one-database-per-platform.
 
 Naive (non-tz-aware) datetimes are used deliberately: PyMongo without
-tz_aware hands back naive-but-UTC-VALUED datetimes, and `repositories/profile_repository.py`
+tz_aware hands back naive-but-UTC-VALUED datetimes, and `database/repositories/profile_repository.py`
 compares Mongo-sourced datetimes against other naive-but-UTC ones
-internally. Marking a value tz-aware for API output is `repositories/*.py`'s own job
+internally. Marking a value tz-aware for API output is `database/repositories/*.py`'s own job
 when it serializes a document out, not this client's.
 """
 
@@ -18,7 +18,7 @@ from typing import Optional
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 
 from backend.config.settings import settings
-from backend.utils.logging import get_logger
+from backend.shared.logging import get_logger
 
 log = get_logger("database")
 

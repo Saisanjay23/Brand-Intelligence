@@ -87,8 +87,8 @@ conversion. No Mongo or browser needed.
 Two one-off, read-only-against-the-source, idempotent scripts:
 
 ```bash
-python -m backend.scripts.migrate_org_id_backfill --dry-run   # then without --dry-run
-python -m backend.scripts.migrate_sessions_to_mongo --dry-run  # then without --dry-run
+python -m backend.database.migrations.migrate_org_id_backfill --dry-run   # then without --dry-run
+python -m backend.database.migrations.migrate_sessions_to_mongo --dry-run  # then without --dry-run
 ```
 
 The first backfills an earlier per-org, per-platform-database schema into

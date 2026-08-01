@@ -27,17 +27,17 @@ from backend.api.incident_routes import router as incidents_router
 from backend.api.job_routes import router as jobs_router
 from backend.api.profile_routes import router as profiles_router
 from backend.api.session_routes import router as sessions_router
-from backend.repositories import client_repository as clients_db
-from backend.repositories import incident_repository as incidents_db
-from backend.repositories import profile_repository as profiles_db
-from backend.repositories import session_repository as sessions_db
+from backend.database.repositories import client_repository as clients_db
+from backend.database.repositories import incident_repository as incidents_db
+from backend.database.repositories import profile_repository as profiles_db
+from backend.database.repositories import session_repository as sessions_db
 from backend.services import scheduler_service as scheduler
-from backend.services import session_service as sessions_engine
+from backend.sessions import manager as sessions_engine
 from backend.services.job_service import job_manager
-from backend.exceptions.errors import DomainError
-from backend.utils.logging import configure_logging, get_logger
-from backend.config.database import close as mongo_close
-from backend.config.database import ping as mongo_ping
+from backend.shared.errors import DomainError
+from backend.shared.logging import configure_logging, get_logger
+from backend.database.connection import close as mongo_close
+from backend.database.connection import ping as mongo_ping
 
 configure_logging()
 log = get_logger("main")

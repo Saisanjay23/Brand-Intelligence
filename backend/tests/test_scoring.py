@@ -11,9 +11,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from backend.repositories.profile_repository import compute_priority, compute_risk_score
-from backend.models.row import Row
-from backend.models.scoring import BASE, MAX_SCORE, MIN_SCORE
+from backend.database.repositories.profile_repository import compute_priority, compute_risk_score
+from backend.shared.models.row import Row
+from backend.shared.models.scoring import BASE, MAX_SCORE, MIN_SCORE
 
 
 def test_floor_score_with_nothing_matched():

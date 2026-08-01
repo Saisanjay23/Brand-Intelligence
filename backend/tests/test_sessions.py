@@ -1,11 +1,11 @@
 """Unit tests for the session pool rotation/quarantine policy -- pure, no
 Mongo. This is the algorithm that keeps a 100-session pool from being
-hammered through session #1 until it's banned; see services/session_service.py.
+hammered through session #1 until it's banned; see sessions/manager.py.
 """
 
 from __future__ import annotations
 
-from backend.services.session_service import (_is_available,
+from backend.sessions.manager import (_is_available,
                                          _pick_least_recently_used,
                                          pool_summary_of)
 

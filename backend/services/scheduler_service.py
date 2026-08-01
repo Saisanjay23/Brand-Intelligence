@@ -28,8 +28,8 @@ _running = False
 
 
 async def catch_up_analysis() -> None:
-    from backend.repositories import client_repository as clients_db
-    from backend.repositories import profile_repository as profiles_db
+    from backend.database.repositories import client_repository as clients_db
+    from backend.database.repositories import profile_repository as profiles_db
     from backend.services.job_service import ANALYSIS, job_manager
     from backend.platforms import registry
 
@@ -59,7 +59,7 @@ async def trigger_discovery(client_id: str, keywords: list[str]) -> None:
 
 
 async def _sync_jobs() -> None:
-    from backend.repositories import client_repository as clients_db
+    from backend.database.repositories import client_repository as clients_db
     from backend.services.alerting_service import send_daily_digest
 
     clients = await clients_db.list_all()

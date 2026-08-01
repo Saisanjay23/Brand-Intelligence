@@ -37,8 +37,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from backend.utils.logging import get_logger
-from backend.utils.metrics import jobs_finished_total, jobs_started_total
+from backend.shared.logging import get_logger
+from backend.shared.metrics import jobs_finished_total, jobs_started_total
 
 log = get_logger("services.jobs")
 

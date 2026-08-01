@@ -15,7 +15,7 @@ import asyncio
 import aiohttp
 
 from backend.config.settings import settings
-from backend.utils.logging import get_logger
+from backend.shared.logging import get_logger
 
 log = get_logger("services.webhook")
 

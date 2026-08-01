@@ -36,7 +36,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from backend.utils.logging import get_logger
+from backend.shared.logging import get_logger
 from backend.platforms.facebook.discovery_engine import Hit
 
 log = get_logger("youtube.api")

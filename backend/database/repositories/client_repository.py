@@ -8,8 +8,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from backend.exceptions.errors import NotFoundError
-from backend.config.database import db
+from backend.shared.errors import NotFoundError
+from backend.database.connection import db
 
 CLIENTS = "clients"
 
@@ -28,7 +28,7 @@ async def upsert(client_id: str, name: str, keywords: list[str], cron: Optional[
     """`cron` is optional -- a client with keywords but no cron only ever
     gets swept when `POST /discovery` is called for it explicitly; setting
     cron additionally schedules an automatic recurring sweep (see
-    services/scheduler_service.py)."""
+    sessions/manager.py / services/scheduler_service.py)."""
     now = datetime.now(timezone.utc)
     await db()[CLIENTS].update_one(
         {"_id": client_id},

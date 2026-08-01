@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from backend.repositories import client_repository as clients_db
+from backend.database.repositories import client_repository as clients_db
 
 
 async def upsert(client_id: str, name: str, keywords: list[str], cron: Optional[str] = None) -> dict:

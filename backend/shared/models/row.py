@@ -1,6 +1,6 @@
 """The scan record: one suspect profile, its raw scraped fields, and its
-derived score -- what a platform's analysis adapter builds up field-by-field
-over the course of visiting one profile. Every `platforms/*/analysis/*.py`
+derived score -- what a platform's analysis engine builds up field-by-field
+over the course of visiting one profile. Every `platforms/*/analysis_engine.py`
 adapter constructs and mutates one of these directly (`row.mark(...)`,
 `row.note(...)`, `row.has_custom_pic = True`, ...); this exact shape is
 part of that contract and must not change without updating every adapter.
@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from backend.models.scoring import (ACTIVE_WINDOW_DAYS, BASE, NAME_THRESHOLD,
+from backend.shared.models.scoring import (ACTIVE_WINDOW_DAYS, BASE, NAME_THRESHOLD,
                                         REACH_AT, W_ACTIVE, W_LOGO, W_NAME, W_REACH)
 
 

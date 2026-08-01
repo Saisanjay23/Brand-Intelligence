@@ -15,12 +15,12 @@ from __future__ import annotations
 import asyncio
 import inspect
 
-from backend.repositories import profile_repository as profiles_db
-from backend.services import session_service as sessions_engine
+from backend.database.repositories import profile_repository as profiles_db
+from backend.sessions import manager as sessions_engine
 from backend.services.job_service import Job
 from backend.platforms.scan_options import DiscoveryOptions
 from backend.config.settings import settings
-from backend.utils.logging import get_logger
+from backend.shared.logging import get_logger
 
 log = get_logger("services.discovery")
 

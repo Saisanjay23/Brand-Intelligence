@@ -6,10 +6,10 @@ Deliberately public (no auth) -- these carry no client data.
 from __future__ import annotations
 
 from backend.services import health_service as health_engine
-from backend.services import session_service as sessions_engine
+from backend.sessions import manager as sessions_engine
 from backend.platforms import registry
-from backend.utils.metrics import render_latest
-from backend.config.database import ping
+from backend.shared.metrics import render_latest
+from backend.database.connection import ping
 
 
 async def live() -> dict:

@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from backend.models.row import Row
+from backend.shared.models.row import Row
 from backend.platforms.linkedin.discovery_engine import (LinkedInSession,
                                                           entity_type,
                                                           normalize_url,

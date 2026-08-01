@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 
 from backend.config.settings import settings
-from backend.utils.logging import get_logger
+from backend.shared.logging import get_logger
 
 log = get_logger("services.alerting")
 
@@ -79,7 +79,7 @@ async def notify_incident(incident: dict) -> None:
 
 
 async def send_daily_digest() -> None:
-    from backend.repositories import incident_repository as incidents_db
+    from backend.database.repositories import incident_repository as incidents_db
 
     if not settings.alert_emails:
         log.info("skipping daily digest (no ALERT_EMAILS configured)")

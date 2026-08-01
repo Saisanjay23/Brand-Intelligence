@@ -2,9 +2,8 @@
 extraction code (payload parsing, name-match scoring, date formatting).
 Ported unchanged from `backend/core/text.py`.
 
-Lives in `utils/` rather than inside any one platform module because every
-platform's `analysis`/`discovery` code depends on it, and none of them owns
-it.
+Lives in `shared/` because every platform's discovery/analysis code depends
+on it, and none of them owns it.
 """
 
 from __future__ import annotations

@@ -16,8 +16,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 from backend.config.settings import settings, write_env
-from backend.exceptions.errors import ConflictError, UpstreamPlatformError, ValidationError
-from backend.utils.logging import get_logger
+from backend.shared.errors import ConflictError, UpstreamPlatformError, ValidationError
+from backend.shared.logging import get_logger
 
 log = get_logger("services.telegram_login")
 

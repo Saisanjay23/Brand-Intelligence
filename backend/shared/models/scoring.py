@@ -1,5 +1,5 @@
 """Risk rubric. Edit these and every platform scraper, `Row.risk`, and
-`repositories.profile_repository.compute_risk_score` all follow.
+`database.repositories.profile_repository.compute_risk_score` all follow.
 
 WHY A FLOOR OF 2
     A row only reaches scoring because a sweep already matched it to the

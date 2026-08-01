@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Optional
 
 from backend.dto.session_dto import ApiKeyIn, CookiesIn, LoginIn, ProxyIn
-from backend.services import session_service as sessions_engine
+from backend.sessions import manager as sessions_engine
 
 
 async def get_session_status(platform_id: str) -> dict:

@@ -17,8 +17,8 @@ from __future__ import annotations
 import sys
 from urllib.parse import unquote, urlparse
 
-from backend.models.row import Row
-from backend.utils.text import fmt_created, name_score
+from backend.shared.models.row import Row
+from backend.shared.text import fmt_created, name_score
 from backend.platforms.youtube.discovery_engine import (CHANNEL_URL,
                                                          RE_DEFAULT_PIC,
                                                          QuotaExceeded,

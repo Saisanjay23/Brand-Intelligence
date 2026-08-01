@@ -15,8 +15,8 @@ migrates live credentials; treat its output review the same way you would
 a credentials file.
 
 Usage:
-    python -m backend.scripts.migrate_sessions_to_mongo --dry-run
-    python -m backend.scripts.migrate_sessions_to_mongo
+    python -m backend.database.migrations.migrate_sessions_to_mongo --dry-run
+    python -m backend.database.migrations.migrate_sessions_to_mongo
 """
 
 from __future__ import annotations
@@ -26,8 +26,8 @@ import asyncio
 import json
 import sys
 
-from backend.repositories import session_repository as sessions_db
-from backend.utils.cookies import normalize_cookies
+from backend.database.repositories import session_repository as sessions_db
+from backend.sessions.cookies import normalize_cookies
 from backend.platforms.registry import PLATFORMS
 from backend.config.settings import settings
 

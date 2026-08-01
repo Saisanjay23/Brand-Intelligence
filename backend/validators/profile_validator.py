@@ -7,7 +7,7 @@ status-whitelist check inline.
 
 from __future__ import annotations
 
-from backend.exceptions.errors import ValidationError
+from backend.shared.errors import ValidationError
 
 STATUSES = {"pending", "approved", "rejected"}
 

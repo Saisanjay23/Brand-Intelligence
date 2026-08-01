@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
-from backend.repositories import incident_repository as incidents_db
+from backend.database.repositories import incident_repository as incidents_db
 
 
 @dataclass

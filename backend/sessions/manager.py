@@ -18,12 +18,12 @@ from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlparse
 
-from backend.repositories import session_repository as sessions_db
-from backend.utils.cookies import load_cookies
-from backend.exceptions.errors import ConflictError, NotFoundError, ValidationError
-from backend.utils.logging import get_logger
+from backend.database.repositories import session_repository as sessions_db
+from backend.sessions.cookies import load_cookies
+from backend.shared.errors import ConflictError, NotFoundError, ValidationError
+from backend.shared.logging import get_logger
 
-log = get_logger("services.sessions")
+log = get_logger("sessions.manager")
 
 DEAD_STATES = {"expired", "checkpointed", "unreadable"}
 

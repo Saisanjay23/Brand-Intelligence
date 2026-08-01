@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from backend.config.database import db
+from backend.database.connection import db
 
 SESSIONS = "sessions"
 SESSION_HEALTH = "session_health"

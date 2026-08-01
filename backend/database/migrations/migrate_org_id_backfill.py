@@ -19,8 +19,8 @@ Idempotent: every write is an upsert keyed on the original document's own
 just no-ops the second time.
 
 Usage:
-    python -m backend.scripts.migrate_org_id_backfill --dry-run
-    python -m backend.scripts.migrate_org_id_backfill
+    python -m backend.database.migrations.migrate_org_id_backfill --dry-run
+    python -m backend.database.migrations.migrate_org_id_backfill
 
 `--dry-run` only reads and reports counts; nothing is written.
 """

@@ -18,8 +18,8 @@ import time
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from backend.models.row import Row
-from backend.utils.text import (epoch_to_dt, find_ints, fmt_created, is_place,
+from backend.shared.models.row import Row
+from backend.shared.text import (epoch_to_dt, find_ints, fmt_created, is_place,
                                iter_dicts, iter_kv, name_score, parse_count,
                                parse_joined)
 from backend.platforms.facebook.discovery_engine import (RE_CHECKPOINT,

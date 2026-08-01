@@ -17,15 +17,15 @@ from __future__ import annotations
 import time
 import traceback
 
-from backend.repositories import profile_repository as profiles_db
+from backend.database.repositories import profile_repository as profiles_db
 from backend.services import health_service as health_engine
 from backend.services import incident_service as incidents_engine
-from backend.services import session_service as sessions_engine
+from backend.sessions import manager as sessions_engine
 from backend.services.job_service import Job
-from backend.models.row import Row
+from backend.shared.models.row import Row
 from backend.platforms.scan_options import ScanOptions
 from backend.config.settings import settings
-from backend.utils.logging import get_logger
+from backend.shared.logging import get_logger
 
 log = get_logger("services.analysis")
 

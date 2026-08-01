@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterator, Optional
 from urllib.parse import quote
 
-from backend.utils.text import iter_dicts
+from backend.shared.text import iter_dicts
 from backend.stealth.browser import Session
 from backend.platforms.facebook.discovery_engine import Hit
 

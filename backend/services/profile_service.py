@@ -18,10 +18,10 @@ from __future__ import annotations
 
 from typing import Optional
 
-from backend.repositories import client_repository as clients_db
-from backend.repositories import profile_repository as profiles_db
+from backend.database.repositories import client_repository as clients_db
+from backend.database.repositories import profile_repository as profiles_db
 from backend.services.job_service import ANALYSIS, job_manager
-from backend.exceptions.errors import NotFoundError
+from backend.shared.errors import NotFoundError
 from backend.validators.profile_validator import validate_patch_fields
 
 

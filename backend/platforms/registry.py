@@ -151,6 +151,6 @@ async def session_state(p: Platform) -> str:
         return "ready" if os.environ.get(p.api_key_env) else "missing"
     if p.env_keys and any(not os.environ.get(k) for k in p.env_keys):
         return "incomplete"
-    from backend.services import session_service as sessions_engine
+    from backend.sessions import manager as sessions_engine
 
     return await sessions_engine.state_for(p.id)

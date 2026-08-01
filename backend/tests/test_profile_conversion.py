@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 from backend.services.analysis_service import _row_to_fields
 from backend.services.discovery_service import _hit_to_fields
-from backend.models.row import Row
+from backend.shared.models.row import Row
 
 
 def test_row_to_fields_carries_the_scored_fields():

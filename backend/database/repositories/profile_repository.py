@@ -22,9 +22,9 @@ from bson import ObjectId
 from bson.errors import InvalidId
 from pymongo.errors import DuplicateKeyError
 
-from backend.exceptions.errors import NotFoundError, ValidationError
-from backend.utils.logging import get_logger
-from backend.config.database import db
+from backend.shared.errors import NotFoundError, ValidationError
+from backend.shared.logging import get_logger
+from backend.database.connection import db
 
 log = get_logger("repositories.profile_repository")
 
@@ -230,11 +230,11 @@ async def get_by_id(doc_id: str) -> Optional[dict]:
 
 
 def compute_risk_score(has_logo: bool, has_name_match: bool, is_active: bool, followers) -> int:
-    """The same rubric used during a live scrape (`models/scoring.py`'s
+    """The same rubric used during a live scrape (`shared/models/scoring.py`'s
     `Row.risk`), applied to a document's already-derived boolean fields --
     so a hand correction and a fresh scrape can never silently disagree
     about how the same facts turn into a score."""
-    from backend.models.scoring import BASE, REACH_AT, W_ACTIVE, W_LOGO, W_NAME, W_REACH
+    from backend.shared.models.scoring import BASE, REACH_AT, W_ACTIVE, W_LOGO, W_NAME, W_REACH
 
     score = BASE
     if has_logo:
