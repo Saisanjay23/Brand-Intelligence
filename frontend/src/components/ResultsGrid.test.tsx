@@ -66,8 +66,10 @@ function baseProps(overrides: Partial<ComponentProps<typeof ResultsGrid>> = {}) 
     platforms: PLATFORMS,
     discoveryRunning: false,
     discoveryLog: [],
+    discoveryProgress: {},
     analysisRunning: false,
     analysisLog: [],
+    analysisProgress: {},
     onError: vi.fn(),
     ...overrides,
   };

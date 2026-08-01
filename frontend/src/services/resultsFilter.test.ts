@@ -287,6 +287,7 @@ function makeJob(overrides: Partial<Job> = {}): Job {
     started: new Date().toISOString(),
     finished: "",
     last_seq: 0,
+    platforms: {},
     ...overrides,
   };
 }

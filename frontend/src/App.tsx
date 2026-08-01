@@ -117,8 +117,10 @@ export default function App() {
               platforms={platforms}
               discoveryRunning={discoveryJobs.running}
               discoveryLog={discoveryJobs.log}
+              discoveryProgress={discoveryJobs.platformProgress}
               analysisRunning={analysisJobs.running}
               analysisLog={analysisJobs.log}
+              analysisProgress={analysisJobs.platformProgress}
               onError={setError}
             />
           </div>

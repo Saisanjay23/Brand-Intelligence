@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import multiprocessing
 import queue as _queue_module
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -90,14 +91,32 @@ class Job:
     task: Optional[Any] = None  # asyncio.Task
     process: Optional["multiprocessing.Process"] = None
     callback_url: str = ""
+    # per-platform breakdown -- {platform_id: {status, processed, total,
+    # started (epoch seconds), updated (epoch seconds)}}. status is
+    # pending|running|done|failed, mirroring the job's own status values.
+    # Populated via emit()'s platform=... kwargs; see discovery_service.py /
+    # analysis_service.py for where each platform's entries get updated.
+    platform_progress: dict[str, dict] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
+        now = time.time()
+        platforms_out: dict[str, dict] = {}
+        for pid, p in self.platform_progress.items():
+            eta_seconds = None
+            if (
+                p["status"] == "running" and p["started"] and p["processed"] > 0
+                and p["total"] > p["processed"]
+            ):
+                rate = (now - p["started"]) / p["processed"]
+                eta_seconds = round(rate * (p["total"] - p["processed"]))
+            platforms_out[pid] = {**p, "eta_seconds": eta_seconds}
         return {
             "id": self.id, "kind": self.kind, "client_id": self.client_id, "platform": self.platform,
             "params": self.params, "status": self.status, "message": self.message,
             "found": self.found, "total": self.total, "new_profiles": self.new_profiles,
             "error": self.error, "started": self.started, "finished": self.finished,
             "last_seq": self.events[-1].seq if self.events else 0,
+            "platforms": platforms_out,
         }
 
 
@@ -158,10 +177,19 @@ class JobManager:
             return ("all-platforms", job.kind)
         return (job.platform, job.kind) if registry.get(job.platform).uses_api_key else job.platform
 
-    async def emit(self, job: Job, type_: str, message: str = "", found: Optional[int] = None, total: Optional[int] = None) -> None:
+    async def emit(
+        self, job: Job, type_: str, message: str = "",
+        found: Optional[int] = None, total: Optional[int] = None,
+        *, platform: Optional[str] = None, platform_status: Optional[str] = None,
+        platform_processed: Optional[int] = None, platform_total: Optional[int] = None,
+    ) -> None:
         if _ipc_queue is not None:
             try:
-                _ipc_queue.put_nowait({"type": type_, "message": message, "found": found, "total": total})
+                _ipc_queue.put_nowait({
+                    "type": type_, "message": message, "found": found, "total": total,
+                    "platform": platform, "platform_status": platform_status,
+                    "platform_processed": platform_processed, "platform_total": platform_total,
+                })
             except Exception:
                 pass
             return
@@ -172,6 +200,19 @@ class JobManager:
             job.total = total
         if message:
             job.message = message
+        if platform is not None:
+            entry = job.platform_progress.setdefault(
+                platform, {"status": "pending", "processed": 0, "total": 0, "started": None, "updated": None},
+            )
+            if platform_status is not None:
+                entry["status"] = platform_status
+                if platform_status == "running" and entry["started"] is None:
+                    entry["started"] = time.time()
+            if platform_processed is not None:
+                entry["processed"] = platform_processed
+            if platform_total is not None:
+                entry["total"] = platform_total
+            entry["updated"] = time.time()
         job.events.append(Event(seq=self._seq, job_id=job.id, type=type_, message=job.message,
                                  found=job.found, total=job.total, ts=_now_iso()))
 
@@ -244,7 +285,11 @@ class JobManager:
                             item.get("error_type", "Error"), job.error,
                         )
                         break
-                    await self.emit(job, t, item.get("message") or "", item.get("found"), item.get("total"))
+                    await self.emit(
+                        job, t, item.get("message") or "", item.get("found"), item.get("total"),
+                        platform=item.get("platform"), platform_status=item.get("platform_status"),
+                        platform_processed=item.get("platform_processed"), platform_total=item.get("platform_total"),
+                    )
             except asyncio.CancelledError:
                 _kill_process_tree(proc)
                 job.status = CANCELLED

@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { jobsApi } from "../api/jobsApi";
-import type { Job, JobEvent } from "../api/types";
+import type { Job, JobEvent, PlatformProgress } from "../api/types";
 
 const TERMINAL = new Set(["done", "failed", "cancelled"]);
 const POLL_MS = 2000;
@@ -80,6 +80,26 @@ export function useJobPolling(onFinish?: () => void, onItem?: () => void) {
     .map((j) => `${j.platform ?? "all"}: ${j.message || "processing..."}`)
     .join(" | ");
 
+  // Merged per-platform progress across every currently-watched job of this
+  // kind (in practice there's usually exactly one at a time -- discovery/
+  // analysis both always run as a single job covering every ready
+  // platform -- but merging keeps this correct if that ever changes).
+  // A platform whose job later fails without an explicit "failed" progress
+  // update (see analysis_service.py -- a raised exception skips straight to
+  // the job's own FAILED status) is treated as failed here too, rather than
+  // shown stuck at "running" forever.
+  const platformProgress = useMemo(() => {
+    const merged: Record<string, PlatformProgress> = {};
+    for (const job of Object.values(jobs)) {
+      for (const [platform, progress] of Object.entries(job.platforms || {})) {
+        const jobFailed = job.status === "failed" || job.status === "cancelled";
+        merged[platform] =
+          jobFailed && progress.status === "running" ? { ...progress, status: "failed" } : progress;
+      }
+    }
+    return merged;
+  }, [jobs]);
+
   const cancelAll = () => {
     activeJobs.forEach((j) => jobsApi.cancelJob(j.id).catch(() => {}));
   };
@@ -91,6 +111,7 @@ export function useJobPolling(onFinish?: () => void, onItem?: () => void) {
     watch,
     running,
     message,
+    platformProgress,
     cancelAll,
   };
 }

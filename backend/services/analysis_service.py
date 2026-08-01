@@ -76,11 +76,18 @@ async def run_analysis(job: Job) -> None:
 
     await mgr.emit(job, "progress", f"{total_urls} url(s) across {len(targets)} platform(s)", total=total_urls)
 
+    # Every targeted platform is queued up front, so the UI can show all of
+    # them (pending -> running -> done) even though they run one at a time
+    # below, not concurrently.
+    for platform_id, urls in targets:
+        await mgr.emit(job, "progress", platform=platform_id, platform_status="pending", platform_total=len(urls))
+
     grand_saved = grand_new = 0
     for platform_id, urls in targets:
         saved, new = await _analyse_platform(job, mgr, platform_id, urls, p)
         grand_saved += saved
         grand_new += new
+        await mgr.emit(job, "progress", platform=platform_id, platform_status="done", platform_processed=len(urls))
 
     job.new_profiles = grand_new
     job.message = job.message or f"{grand_saved} analysed, {grand_new} new"
@@ -97,6 +104,8 @@ async def _analyse_platform(job: Job, mgr, platform_id: str, urls: list[str], pa
     remaining = urls.copy()
     rows: list[Row] = []
     consecutive_timeouts = 0
+
+    await mgr.emit(job, "progress", platform=platform_id, platform_status="running", platform_total=len(urls))
 
     while remaining:
         plat, session_item = await sessions_engine.session_for_job(platform_id)
@@ -160,7 +169,10 @@ async def _analyse_platform(job: Job, mgr, platform_id: str, urls: list[str], pa
                 except Exception:
                     pass
                 try:
-                    await mgr.emit(job, "item", f"[{platform_id}] {i}/{len(urls)} {row.profile_name or url} [{row.priority}]", found=i)
+                    await mgr.emit(
+                        job, "item", f"[{platform_id}] {i}/{len(urls)} {row.profile_name or url} [{row.priority}]",
+                        found=i, platform=platform_id, platform_status="running", platform_processed=i,
+                    )
                 except Exception:
                     pass
 

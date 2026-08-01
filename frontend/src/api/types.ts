@@ -21,6 +21,17 @@ export interface Client {
   created_at?: string;
 }
 
+export type PlatformJobStatus = "pending" | "running" | "done" | "failed";
+
+export interface PlatformProgress {
+  status: PlatformJobStatus;
+  processed: number;
+  total: number;
+  started: number | null; // epoch seconds
+  updated: number | null; // epoch seconds
+  eta_seconds: number | null; // server-computed, only set while running
+}
+
 export interface Job {
   id: string;
   kind: JobKind;
@@ -36,6 +47,7 @@ export interface Job {
   started: string;
   finished: string;
   last_seq: number;
+  platforms: Record<string, PlatformProgress>;
 }
 
 export interface JobEvent {

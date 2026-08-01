@@ -73,6 +73,13 @@ async def run_discovery(job: Job) -> None:
 
     await mgr.emit(job, "progress", f"sweeping {len(ready)} platform(s) for {len(keywords)} keyword(s)", total=len(ready))
 
+    # Every ready platform is queued up front, so the UI can show all of
+    # them (pending -> running -> done/failed) even though they run one at
+    # a time below, not concurrently.
+    sweep_units = max(1, len(keywords) * len(tabs))
+    for platform_id in ready:
+        await mgr.emit(job, "progress", platform=platform_id, platform_status="pending", platform_total=sweep_units)
+
     total_saved = total_new = 0
     notes: list[str] = []
 
@@ -84,9 +91,11 @@ async def run_discovery(job: Job) -> None:
             total_new += new
             if note:
                 notes.append(f"{platform_id}: {note}")
+            await mgr.emit(job, "progress", platform=platform_id, platform_status="done", platform_processed=sweep_units)
         except Exception as e:
             log.error(f"job {job.id}: {platform_id} sweep failed: {type(e).__name__}: {e}")
             notes.append(f"{platform_id}: FAILED ({type(e).__name__}: {e})")
+            await mgr.emit(job, "progress", platform=platform_id, platform_status="failed")
         await mgr.emit(job, "progress", f"{platform_id} done", found=total_saved)
 
     job.message = f"{total_saved} stored, {total_new} new" + (f" -- {'; '.join(notes)}" if notes else "")
@@ -101,8 +110,12 @@ async def _sweep_platform(job: Job, mgr, plat, keywords: list[str], tabs: list[s
     )
 
     saved = new = 0
+    completed_units = 0
+    sweep_units = max(1, len(keywords) * len(tabs))
     already_saved: set[str] = set()
     all_sweeps: list = []
+
+    await mgr.emit(job, "progress", platform=plat.id, platform_status="running", platform_total=sweep_units)
 
     async def _save_hits(hits: list, label: str) -> None:
         nonlocal saved, new
@@ -120,10 +133,13 @@ async def _sweep_platform(job: Job, mgr, plat, keywords: list[str], tabs: list[s
         await _save_hits(new_hits, f"{tab} {keyword!r} (page {page_num})")
 
     async def _on_sweep_done(sweep) -> None:
+        nonlocal completed_units
         all_sweeps.append(sweep)
         hits = sweep.hits or []
         if hits:
             await _save_hits(hits, f"{sweep.keyword!r} done")
+        completed_units += 1
+        await mgr.emit(job, "progress", platform=plat.id, platform_status="running", platform_processed=completed_units)
 
     plat_obj, session_item = await sessions_engine.session_for_job(plat.id)
     if not plat_obj.session_path:

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { profilesApi } from "../api/profilesApi";
-import type { JobEvent, PlatformHealth, Profile, Status } from "../api/types";
+import type { JobEvent, PlatformHealth, PlatformProgress, Profile, Status } from "../api/types";
 import { PlatformIcon } from "./PlatformIcon";
 import {
   emptyLabel,
@@ -16,13 +16,79 @@ interface Props {
   platforms: PlatformHealth[];
   discoveryRunning: boolean;
   discoveryLog: JobEvent[];
+  discoveryProgress: Record<string, PlatformProgress>;
   analysisRunning: boolean;
   analysisLog: JobEvent[];
+  analysisProgress: Record<string, PlatformProgress>;
   onError?: (msg: string) => void;
 }
 
 const PAGE_SIZE = 25;
 const EXPORT_LIMIT = 5000;
+
+// "5s" / "2m 30s" / "1h 5m" -- never both units at zero, never blank.
+function formatEta(seconds: number | null): string {
+  if (seconds === null || seconds < 0) return "";
+  if (seconds < 5) return "almost done";
+  if (seconds < 60) return `~${Math.round(seconds)}s left`;
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.round(seconds % 60);
+  if (mins < 60) return `~${mins}m${secs ? ` ${secs}s` : ""} left`;
+  const hrs = Math.floor(mins / 60);
+  return `~${hrs}h ${mins % 60}m left`;
+}
+
+const PLATFORM_STATUS_LOOK: Record<PlatformProgress["status"], { icon: string; color: string }> = {
+  pending: { icon: "⏳", color: "var(--text-dim)" },
+  running: { icon: "⚙️", color: "var(--cyan)" },
+  done: { icon: "✅", color: "var(--success)" },
+  failed: { icon: "⚠️", color: "var(--danger)" },
+};
+
+function PlatformProgressRow({ label, progress }: { label: string; progress: PlatformProgress }) {
+  const look = PLATFORM_STATUS_LOOK[progress.status];
+  const pct = progress.total > 0 ? Math.min(100, Math.round((progress.processed / progress.total) * 100)) : 0;
+  return (
+    <div style={{ marginTop: "4px" }}>
+      <div
+        style={{
+          display: "flex", alignItems: "center", gap: "5px",
+          fontSize: "10px", fontFamily: "var(--font-mono)", color: look.color,
+        }}
+      >
+        <span>{look.icon}</span>
+        <span>{label}</span>
+        <span style={{ flex: 1 }} />
+        <span>
+          {progress.processed}/{progress.total || "?"}
+        </span>
+      </div>
+      {progress.status === "running" && (
+        <>
+          <div
+            style={{
+              height: "3px", background: "var(--bg-inner)", borderRadius: "999px",
+              overflow: "hidden", marginTop: "3px",
+            }}
+          >
+            <div
+              style={{
+                height: "100%", width: `${pct || 4}%`,
+                background: "linear-gradient(90deg, var(--cyan), var(--purple))",
+                transition: "width 0.4s ease",
+              }}
+            />
+          </div>
+          {progress.eta_seconds !== null && (
+            <div style={{ fontSize: "9px", color: "var(--text-dim)", marginTop: "2px" }}>
+              {formatEta(progress.eta_seconds)}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
 function LiveFeed({ title, log }: { title: string; log: JobEvent[] }) {
   return (
@@ -176,8 +242,10 @@ export function ResultsGrid({
   platforms,
   discoveryRunning,
   discoveryLog,
+  discoveryProgress,
   analysisRunning,
   analysisLog,
+  analysisProgress,
   onError,
 }: Props) {
   const [platform, setPlatform] = useState("");
@@ -416,6 +484,12 @@ export function ResultsGrid({
                     {p.session_state}
                   </span>
                 </div>
+                {discoveryRunning && discoveryProgress[p.platform] && (
+                  <PlatformProgressRow label="🔍 Discovery" progress={discoveryProgress[p.platform]} />
+                )}
+                {analysisRunning && analysisProgress[p.platform] && (
+                  <PlatformProgressRow label="📊 Analysis" progress={analysisProgress[p.platform]} />
+                )}
               </div>
             ))}
           </div>
