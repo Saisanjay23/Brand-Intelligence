@@ -1,4 +1,10 @@
-"""YouTube analysis: channel URL -> scored Row, via the official API.
+"""YouTube analysis engine: validation -- channel URL -> scored Row, via the
+official API.
+
+The API client (`YouTubeAPI`) and the default-picture check live in
+discovery_engine.py (imported below) since discovery produces/needs them
+first; this file owns URL normalization for the analysis entry point and the
+drive loop (Scraper).
 
 Two cheap calls per channel (detail + newest upload) and every field arrives
 typed: subscriber counts as integers, a real creation date, and an upload date
@@ -8,17 +14,15 @@ no-ops kept only to satisfy the same interface as the browser platforms.
 
 from __future__ import annotations
 
-import re
 import sys
 from urllib.parse import unquote, urlparse
 
 from backend.models.row import Row
 from backend.utils.text import fmt_created, name_score
-from backend.platforms.youtube.api import QuotaExceeded, YouTubeAPI
-
-CHANNEL_URL = "https://www.youtube.com/channel/{cid}"
-# YouTube's stock avatars come from this host; a real upload does not
-RE_DEFAULT_PIC = re.compile(r"/(default|no_avatar|blank)", re.I)
+from backend.platforms.youtube.discovery_engine import (CHANNEL_URL,
+                                                         RE_DEFAULT_PIC,
+                                                         QuotaExceeded,
+                                                         YouTubeAPI)
 
 
 def normalize_url(url: str) -> str:

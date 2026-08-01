@@ -1,4 +1,8 @@
-"""LinkedIn analysis: profile URL -> scored Row.
+"""LinkedIn analysis engine: validation -- profile URL -> scored Row.
+
+Session/login-checking and URL/identity normalization live in
+discovery_engine.py (imported below) since discovery produces them first;
+this file owns the browser-drive loop (Scraper).
 
 STATUS: PLUMBING ONLY -- NOT PRODUCTION READY.
 
@@ -9,13 +13,13 @@ and fails safely.
 
 What is deliberately NOT here: field-reading. Every other platform's fill()
 was written after first intercepting a real logged-in session's network
-traffic (see the module docstrings in twitter/parse.py, facebook/analysis/
-readers.py) -- this project's own rule, enforced all the way through, is
-"network interception first, verify empirically before writing code". No
-LinkedIn session is available in this environment to do that, and guessing
-at LinkedIn's Voyager API shape (or its DOM structure) and shipping it
-unverified is exactly the kind of thing that gets an account flagged on the
-platform that is by far the most aggressive of the five about detecting
+traffic (see the module docstrings in twitter/discovery_engine.py,
+facebook/analysis_engine.py) -- this project's own rule, enforced all the way
+through, is "network interception first, verify empirically before writing
+code". No LinkedIn session is available in this environment to do that, and
+guessing at LinkedIn's Voyager API shape (or its DOM structure) and shipping
+it unverified is exactly the kind of thing that gets an account flagged on
+the platform that is by far the most aggressive of the five about detecting
 scraping.
 
 So `one()` below visits the real profile, confirms the session is still
@@ -33,8 +37,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from backend.models.row import Row
-from backend.platforms.linkedin.session import LinkedInSession
-from backend.platforms.linkedin.urls import entity_type, normalize_url, profile_id
+from backend.platforms.linkedin.discovery_engine import (LinkedInSession,
+                                                          entity_type,
+                                                          normalize_url,
+                                                          profile_id)
 
 
 class Scraper:
@@ -107,8 +113,8 @@ class Scraper:
             row.status = "PARTIAL"
             row.note(
                 "LinkedIn field extraction not yet implemented -- needs "
-                "verification against a live session (see analysis.py "
-                "module docstring) before this platform's data can be trusted"
+                "verification against a live session (see this module's "
+                "docstring) before this platform's data can be trusted"
             )
             return row
         finally:

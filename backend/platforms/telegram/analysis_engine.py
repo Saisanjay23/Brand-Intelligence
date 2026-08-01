@@ -1,4 +1,10 @@
-"""Telegram analysis: t.me URL -> scored Row, over MTProto.
+"""Telegram analysis engine: validation -- t.me URL -> scored Row, over
+MTProto.
+
+The MTProto connection (`Telegram`) and its entity/error types live in
+discovery_engine.py (imported below) since discovery produces/needs them
+first; this file owns URL normalization for the analysis entry point and the
+drive loop (Scraper).
 
 Resolving a username gives the entity, one full-detail call gives the
 description and member count, and the newest message gives the activity date.
@@ -16,8 +22,10 @@ from urllib.parse import urlparse
 
 from backend.models.row import Row
 from backend.utils.text import fmt_created, name_score
-from backend.platforms.telegram.client import (FloodWait, NotAuthorised,
-                                               Telegram, TelegramEntity)
+from backend.platforms.telegram.discovery_engine import (FloodWait,
+                                                          NotAuthorised,
+                                                          Telegram,
+                                                          TelegramEntity)
 
 BAD_SEGMENTS = {"s", "c", "joinchat", "addstickers", "share", "proxy", "i"}
 

@@ -1,4 +1,11 @@
-"""X/Twitter analysis: profile URL -> scored Row.
+"""X/Twitter analysis engine: validation and impersonation signal extraction
+-- profile URL -> scored Row.
+
+Session/login-checking and payload parsing (TwitterUser + friends) live in
+discovery_engine.py (imported below) since discovery produces/needs them
+first; this file owns everything specific to a validated profile visit: URL
+normalization for the analysis entry point, and the browser-drive loop
+(Scraper).
 
 One request does it: visiting a profile fires UserByScreenName, whose `legacy`
 object holds every field the report wants as typed values -- an integer
@@ -17,11 +24,15 @@ from urllib.parse import urlparse
 
 from backend.models.row import Row
 from backend.utils.text import fmt_created, name_score
-from backend.platforms.twitter.parse import (TWEETS_QUERY, USER_QUERIES,
-                                             TwitterUser, iter_users,
-                                             latest_post, parse_lines)
-from backend.platforms.twitter.session import (RE_CHECKPOINT, RE_GONE,
-                                               RE_LOGIN, TwitterSession)
+from backend.platforms.twitter.discovery_engine import (RE_CHECKPOINT,
+                                                         RE_GONE, RE_LOGIN,
+                                                         TWEETS_QUERY,
+                                                         USER_QUERIES,
+                                                         TwitterSession,
+                                                         TwitterUser,
+                                                         iter_users,
+                                                         latest_post,
+                                                         parse_lines)
 
 BAD_SEGMENTS = {
     "home",

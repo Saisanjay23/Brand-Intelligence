@@ -46,10 +46,16 @@ def _to_full(doc: dict, client_name: str) -> dict:
         "keyword": ", ".join(doc.get("keywords", [])),
         "platform": doc.get("platform", ""), "url": doc.get("url", ""),
         "username": doc.get("username") or doc.get("display_name") or "",
+        "profile_name": doc.get("display_name") or doc.get("username") or "",
+        "profile_image_url": doc.get("profile_image_url", ""),
         "followers": doc.get("followers"), "location": doc.get("location", ""),
         "last_post_date": doc.get("last_post_date"),
         "has_logo": bool(doc.get("has_logo", False)),
         "status": doc.get("status", "pending"),
+        "phase": doc.get("phase", "analysis"),
+        "risk_score": doc.get("risk_score"),
+        "priority": doc.get("priority"),
+        "comments": doc.get("comments"),
     }
 
 

@@ -1,4 +1,10 @@
-"""Instagram analysis: profile URL -> scored Row.
+"""Instagram analysis engine: validation and impersonation signal extraction
+-- profile URL -> scored Row.
+
+Session/login-checking and payload parsing (InstagramUser + friends) live in
+discovery_engine.py (imported below) since discovery produces/needs them
+first; this file owns everything specific to a validated profile visit: URL
+normalization, the DOM-header fallback, and the browser-drive loop (Scraper).
 
 Visiting a profile *was designed* to fire `users/web_profile_info` and read its
 counts, avatar and newest posts from the payload directly. Verified against two
@@ -53,12 +59,14 @@ from urllib.parse import urlparse
 
 from backend.models.row import Row
 from backend.utils.text import fmt_created, name_score, parse_count
-from backend.platforms.instagram.parse import (DEFAULT_PIC_HINTS,
-                                               PROFILE_ENDPOINTS,
-                                               InstagramUser, parse_lines,
-                                               profile_from)
-from backend.platforms.instagram.session import (RE_CHECKPOINT, RE_GONE,
-                                                 RE_LOGIN, InstagramSession)
+from backend.platforms.instagram.discovery_engine import (DEFAULT_PIC_HINTS,
+                                                           PROFILE_ENDPOINTS,
+                                                           RE_CHECKPOINT,
+                                                           RE_GONE, RE_LOGIN,
+                                                           InstagramSession,
+                                                           InstagramUser,
+                                                           parse_lines,
+                                                           profile_from)
 
 BAD_SEGMENTS = {"p", "reel", "reels", "explore", "stories", "accounts", "direct", "tv"}
 

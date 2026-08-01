@@ -30,7 +30,7 @@ def _hit_to_fields(hit, platform: str) -> dict:
     username = ""
     url = hit.url or ""
     if platform == "facebook":
-        from backend.platforms.facebook.urls import profile_id
+        from backend.platforms.facebook.discovery_engine import profile_id
         username = profile_id(url)
     else:
         parts = [s for s in url.rstrip("/").split("/") if s]
