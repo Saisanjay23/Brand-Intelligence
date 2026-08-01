@@ -231,6 +231,11 @@ def parse_lines(text: str) -> Iterator[Any]:
 # ───────────────────────────── crawling / pagination ───────────────────────
 
 MOBILE_SEARCH_API = "https://i.instagram.com/api/v1/users/search/?q={q}&count={count}"
+# Same private mobile API, one profile by exact username -- analysis_engine.py
+# uses this directly instead of waiting for the browser's own JS to fire it,
+# which it no longer does for a logged-in view of someone else's profile
+# (verified live; see analysis_engine.py's module docstring).
+PROFILE_INFO_API = "https://i.instagram.com/api/v1/users/web_profile_info/?username={u}"
 MOBILE_UA = "Instagram 219.0.0.12.117 Android (29/10; 480dpi; 1080x2151; OnePlus; GM1913; OnePlus7Pro; qcom; en_US; 314660328)"
 
 

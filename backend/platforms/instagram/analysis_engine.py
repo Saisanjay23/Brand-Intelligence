@@ -9,27 +9,38 @@ normalization, the DOM-header fallback, and the browser-drive loop (Scraper).
 Visiting a profile *was designed* to fire `users/web_profile_info` and read its
 counts, avatar and newest posts from the payload directly. Verified against two
 real, very-active accounts, that assumption is wrong: the current web client
-never issues that call for a logged-in view of someone else's profile. The
-only two GraphQL queries that fire are post-timeline and feed queries, neither
-of which carries the profile header (followers/following/name). Network
-interception is kept below because it may still fire for other account or
-view types, but it has not been observed to.
+never issues that call passively for a logged-in view of someone else's
+profile. So this now asks for it directly instead of waiting: `fetch_via_api()`
+below calls the exact same private mobile endpoint discovery_engine.py's
+search sweep already uses successfully (`PROFILE_INFO_API`, a sibling of
+`MOBILE_SEARCH_API`), the same way, with the same headers -- a plain
+authenticated HTTP request via `ctx.request`, not a page navigation. That
+sidesteps the passive-interception dead end entirely, and since it's a raw
+JSON response rather than a rendered page, it does not depend on whether
+images are allowed to load in the browser -- fixing the logo/avatar field
+being blank by default (see below). Passive network interception is kept as
+a second-chance source in case the direct call is ever rate-limited or the
+endpoint returns nothing for a particular account, and DOM reading remains
+the last resort.
 
-What actually IS reliable, confirmed on both accounts: the header numbers
-render straight into the page ("685M followers", "8,534 posts") in a fixed,
-stable order -- username, full name, posts, followers, following. That DOM
-read is the primary source now; network interception is the fallback that
-almost never answers.
+What's reliable when both the API call and interception come up empty: the
+header numbers render straight into the page ("685M followers", "8,534
+posts") in a fixed, stable order -- username, full name, posts, followers,
+following. That DOM read is the final fallback.
 
-The avatar carries a conventional `alt="<username>'s profile picture"`, but
-Instagram unmounts that <img> entirely when its fetch is blocked -- so the
-logo/avatar fields only populate when images are allowed to load, i.e. with
---evidence set (the same posture Facebook already uses). Without --evidence
-they stay blank rather than guessed: a page-wide search for *any* avatar-like
-image or string was tried and rejected, because Instagram embeds the
-session's OWN viewer avatar on every page ("PolarisViewer"), and an unscoped
-match silently attributed the analyst's own photo to whichever profile was
-being scored.
+The avatar carries a conventional `alt="<username>'s profile picture"` in the
+DOM fallback path, but Instagram unmounts that <img> entirely when its fetch
+is blocked -- so before this change, the logo/avatar field only populated via
+DOM when images were allowed to load, i.e. with --evidence set (the same
+posture Facebook already uses). The direct API call above does not have this
+problem (it's JSON, not a rendered image), so the logo/avatar field now
+populates from a normal analysis run too, not only an --evidence one. The DOM
+fallback still requires --evidence, and its avatar match stays intentionally
+scoped by an exact alt="<username>'s profile picture", not a loose selector:
+a page-wide search for *any* avatar-like image or string was tried and
+rejected, because Instagram embeds the session's OWN viewer avatar on every
+page ("PolarisViewer"), and an unscoped match silently attributed the
+analyst's own photo to whichever profile was being scored.
 
 LAST-POST DATE: the header gives a post COUNT, not a date, and re-verified
 live (2026-07-27, against a real active account) that network interception
@@ -55,13 +66,15 @@ import sys
 import time
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from backend.shared.models.row import Row
 from backend.shared.text import (fmt_created, name_score, normalized_host,
                                    parse_count, parse_normalized_url)
 from backend.platforms.instagram.discovery_engine import (DEFAULT_PIC_HINTS,
+                                                           MOBILE_UA,
                                                            PROFILE_ENDPOINTS,
+                                                           PROFILE_INFO_API,
                                                            RE_CHECKPOINT,
                                                            RE_GONE, RE_LOGIN,
                                                            InstagramSession,
@@ -130,6 +143,38 @@ class Scraper:
 
     async def check_session(self) -> bool:
         return await self.session.check_session()
+
+    # ─────────────────────────── direct API call ───────────────────────── #
+
+    async def fetch_via_api(self, username: str) -> Optional[InstagramUser]:
+        """Ask Instagram's own profile-info endpoint directly, the same
+        request discovery_engine.py's search sweep already makes
+        successfully (PROFILE_INFO_API, a sibling of MOBILE_SEARCH_API) --
+        rather than waiting for the browser's own JS to fire it passively,
+        which it no longer does for a logged-in view of someone else's
+        profile (see module docstring). A plain authenticated HTTP call, so
+        unlike the DOM fallback it does not depend on whether images are
+        allowed to load in the browser. Returns None on anything short of a
+        clean parse -- callers fall through to interception/DOM."""
+        try:
+            res = await self.ctx.request.get(
+                PROFILE_INFO_API.format(u=quote(username)),
+                headers={
+                    "User-Agent": MOBILE_UA,
+                    "x-ig-app-id": "936619743392459",
+                    "accept": "application/json",
+                },
+                timeout=self.a.timeout * 1000,
+            )
+            if res.status != 200:
+                return None
+            text = await res.text()
+        except Exception:
+            return None
+        for blob in parse_lines(text):
+            if user := profile_from(blob, username):
+                return user
+        return None
 
     # ─────────────────────────── DOM fallback ─────────────────────────── #
 
@@ -233,6 +278,11 @@ class Scraper:
         row = Row(url=url, target=target, original_feed=feed)
         row.profile_id = username_of(url)
 
+        # Try the direct API call first (see fetch_via_api's docstring) --
+        # independent of the page visit below, so it costs nothing extra
+        # even when it comes up empty and we fall through to interception/DOM.
+        api_user = await self.fetch_via_api(row.profile_id) if row.profile_id else None
+
         page = await self.ctx.new_page()
         found: list[InstagramUser] = []
         got = asyncio.Event()
@@ -261,10 +311,13 @@ class Scraper:
                 row.note("navigation failed")
                 return row
 
-            try:
-                await asyncio.wait_for(got.wait(), timeout=self.a.settle)
-            except asyncio.TimeoutError:
-                pass
+            # No need to wait for passive interception if the direct API
+            # call already got us a usable result.
+            if api_user is None:
+                try:
+                    await asyncio.wait_for(got.wait(), timeout=self.a.settle)
+                except asyncio.TimeoutError:
+                    pass
 
             body = ""
             try:
@@ -273,11 +326,14 @@ class Scraper:
                 pass
 
             private = False
-            if found:
-                # prefer the richest payload seen: later ones can be partial
+            candidates = ([api_user] if api_user else []) + found
+            if candidates:
+                # prefer the richest payload seen: the direct API call is
+                # usually best (see fetch_via_api), but a later interception
+                # catch can still be more complete for a given account.
                 best = max(
-                    found,
-                    key=lambda u: (u.followers is not None, bool(u.last_post_iso)),
+                    candidates,
+                    key=lambda u: (u.followers is not None, bool(u.avatar), bool(u.last_post_iso)),
                 )
                 self.fill(row, best)
                 private = best.private
