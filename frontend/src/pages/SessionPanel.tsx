@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import { sessionsApi } from "../api/sessionsApi";
 import type { SessionInfo } from "../api/types";
 
@@ -6,6 +6,45 @@ interface Props {
   sessions: SessionInfo[];
   onChanged: () => void;
 }
+
+// Shared field/button looks for the credential-entry drawers (cookie paste,
+// YouTube API key, Telegram login wizard) so each one isn't hand-rolling
+// the same style object.
+const inputStyle: CSSProperties = {
+  width: "100%",
+  background: "var(--bg-inner)",
+  border: "1px solid var(--border-color)",
+  borderRadius: "9px",
+  color: "var(--text-main)",
+  fontSize: "12px",
+  padding: "9px 10px",
+  outline: "none",
+};
+
+const primaryButtonStyle: CSSProperties = {
+  width: "100%",
+  marginTop: "8px",
+  padding: "9px",
+  borderRadius: "9px",
+  fontSize: "12px",
+  fontWeight: 700,
+  cursor: "pointer",
+  background: "linear-gradient(135deg, var(--cyan), var(--cyan-bright))",
+  color: "#000",
+  border: "none",
+};
+
+const cancelButtonStyle: CSSProperties = {
+  width: "100%",
+  padding: "8px",
+  borderRadius: "9px",
+  fontSize: "11px",
+  fontWeight: 600,
+  cursor: "pointer",
+  background: "rgba(233, 80, 83,0.08)",
+  color: "var(--danger)",
+  border: "1px solid rgba(233, 80, 83,0.18)",
+};
 
 export function SessionPanel({ sessions, onChanged }: Props) {
   const [openCookiePlatform, setOpenCookiePlatform] = useState<string>("");
@@ -15,6 +54,25 @@ export function SessionPanel({ sessions, onChanged }: Props) {
   const [errorNote, setErrorNote] = useState<string>("");
   const [openYtKey, setOpenYtKey] = useState<boolean>(false);
   const [ytApiKey, setYtApiKey] = useState<string>("");
+  // Telegram's MTProto login is a 3-step wizard (send code -> verify code ->
+  // optionally verify a 2FA password), unlike every other platform's
+  // single-shot cookie/API-key/browser-login flow -- see
+  // backend/services/telegram_login_service.py.
+  const [tgStep, setTgStep] = useState<"" | "start" | "code" | "password">("");
+  const [tgApiId, setTgApiId] = useState<string>("");
+  const [tgApiHash, setTgApiHash] = useState<string>("");
+  const [tgPhone, setTgPhone] = useState<string>("");
+  const [tgCode, setTgCode] = useState<string>("");
+  const [tgPassword, setTgPassword] = useState<string>("");
+  const [tgMessage, setTgMessage] = useState<string>("");
+  const [tgBusy, setTgBusy] = useState<boolean>(false);
+
+  const closeTelegramWizard = () => {
+    setTgStep("");
+    setTgCode("");
+    setTgPassword("");
+    setTgMessage("");
+  };
   // Per-session proxy input, keyed by session id -- a 100-session pool can't
   // reasonably get one text field each rendered permanently, so this is only
   // populated for whichever session's proxy row is currently being edited.
@@ -404,21 +462,22 @@ export function SessionPanel({ sessions, onChanged }: Props) {
                 )}
 
                 {s.platform === "telegram" && (
-                  <div
+                  <button
+                    onClick={() => (tgStep ? closeTelegramWizard() : setTgStep("start"))}
                     style={{
-                      fontSize: "11px",
-                      color: "var(--text-dim)",
-                      padding: "8px 10px",
-                      background: "var(--bg-inner)",
+                      width: "100%",
+                      padding: "9px",
                       borderRadius: "9px",
+                      fontSize: "12px",
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      background: "var(--bg-inner)",
+                      color: "var(--text-main)",
                       border: "1px solid var(--border-color)",
                     }}
                   >
-                    📱 Telegram has no in-app login flow on this backend --
-                    set TELEGRAM_API_ID, TELEGRAM_API_HASH and TELEGRAM_PHONE
-                    in <code>.env</code> and generate the session file with
-                    the CLI, then restart the backend.
-                  </div>
+                    📱 {tgStep ? "Close Telegram Login" : "Log in to Telegram"}
+                  </button>
                 )}
 
                 {s.state !== "missing" && (
@@ -570,6 +629,151 @@ export function SessionPanel({ sessions, onChanged }: Props) {
                   >
                     💾 Save YouTube API Key
                   </button>
+                </div>
+              )}
+
+              {/* Telegram MTProto login wizard */}
+              {s.platform === "telegram" && tgStep && (
+                <div
+                  style={{
+                    marginTop: "12px",
+                    paddingTop: "12px",
+                    borderTop: "1px solid var(--border-subtle)",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "8px",
+                  }}
+                >
+                  {tgMessage && (
+                    <div style={{ fontSize: "11px", color: "var(--text-dim)" }}>
+                      {tgMessage}
+                    </div>
+                  )}
+
+                  {tgStep === "start" && (
+                    <>
+                      <input
+                        value={tgApiId}
+                        onChange={(e) => setTgApiId(e.target.value)}
+                        placeholder="API ID (from my.telegram.org)"
+                        inputMode="numeric"
+                        style={inputStyle}
+                      />
+                      <input
+                        value={tgApiHash}
+                        onChange={(e) => setTgApiHash(e.target.value)}
+                        placeholder="API Hash"
+                        style={inputStyle}
+                      />
+                      <input
+                        value={tgPhone}
+                        onChange={(e) => setTgPhone(e.target.value)}
+                        placeholder="Phone number, e.g. +15551234567"
+                        style={inputStyle}
+                      />
+                      <button
+                        disabled={!tgApiId.trim() || !tgApiHash.trim() || !tgPhone.trim() || tgBusy}
+                        onClick={async () => {
+                          setTgBusy(true);
+                          setErrorNote("");
+                          try {
+                            const res = await sessionsApi.telegramLoginStart(
+                              Number(tgApiId.trim()), tgApiHash.trim(), tgPhone.trim(),
+                            );
+                            setTgMessage(`Code sent to ${res.phone} -- enter it below.`);
+                            setTgStep("code");
+                          } catch (e) {
+                            setErrorNote((e as Error).message);
+                          } finally {
+                            setTgBusy(false);
+                          }
+                        }}
+                        style={primaryButtonStyle}
+                      >
+                        {tgBusy ? "Sending Code…" : "📨 Send Login Code"}
+                      </button>
+                    </>
+                  )}
+
+                  {tgStep === "code" && (
+                    <>
+                      <input
+                        value={tgCode}
+                        onChange={(e) => setTgCode(e.target.value)}
+                        placeholder="Login code from Telegram"
+                        inputMode="numeric"
+                        style={inputStyle}
+                      />
+                      <button
+                        disabled={!tgCode.trim() || tgBusy}
+                        onClick={async () => {
+                          setTgBusy(true);
+                          setErrorNote("");
+                          try {
+                            const res = await sessionsApi.telegramLoginCode(tgCode.trim());
+                            if (res.status === "need_password") {
+                              setTgMessage("This account has two-factor auth enabled -- enter the password.");
+                              setTgStep("password");
+                              setTgCode("");
+                            } else {
+                              closeTelegramWizard();
+                              onChanged();
+                            }
+                          } catch (e) {
+                            setErrorNote((e as Error).message);
+                          } finally {
+                            setTgBusy(false);
+                          }
+                        }}
+                        style={primaryButtonStyle}
+                      >
+                        {tgBusy ? "Verifying…" : "✅ Verify Code"}
+                      </button>
+                      <button onClick={async () => {
+                        await sessionsApi.telegramLoginCancel().catch(() => {});
+                        closeTelegramWizard();
+                      }} style={cancelButtonStyle}>
+                        ✕ Cancel
+                      </button>
+                    </>
+                  )}
+
+                  {tgStep === "password" && (
+                    <>
+                      <input
+                        type="password"
+                        value={tgPassword}
+                        onChange={(e) => setTgPassword(e.target.value)}
+                        placeholder="Two-factor password"
+                        style={inputStyle}
+                      />
+                      <button
+                        disabled={!tgPassword.trim() || tgBusy}
+                        onClick={async () => {
+                          setTgBusy(true);
+                          setErrorNote("");
+                          try {
+                            await sessionsApi.telegramLoginPassword(tgPassword.trim());
+                            closeTelegramWizard();
+                            onChanged();
+                          } catch (e) {
+                            setErrorNote((e as Error).message);
+                          } finally {
+                            setTgBusy(false);
+                          }
+                        }}
+                        style={primaryButtonStyle}
+                      >
+                        {tgBusy ? "Verifying…" : "✅ Verify Password"}
+                      </button>
+                      <button onClick={async () => {
+                        await sessionsApi.telegramLoginCancel().catch(() => {});
+                        closeTelegramWizard();
+                      }} style={cancelButtonStyle}>
+                        ✕ Cancel
+                      </button>
+                    </>
+                  )}
                 </div>
               )}
 

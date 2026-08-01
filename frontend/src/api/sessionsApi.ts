@@ -42,4 +42,22 @@ export const sessionsApi = {
     fetch(url(`/sessions/${platform}/${sessionId}`), { method: "DELETE" }).then(json<SessionInfo>),
   deleteSessionPool: (platform: string) =>
     fetch(url(`/sessions/${platform}`), { method: "DELETE" }).then(json<SessionInfo>),
+
+  // Telegram's MTProto login is multi-step (code, then optionally a 2FA
+  // password) so it can't reuse launchLogin's single-shot headful-browser
+  // shape -- see backend/services/telegram_login_service.py.
+  telegramLoginStart: (apiId: number, apiHash: string, phone: string) =>
+    post("/sessions/telegram/login/start", { api_id: apiId, api_hash: apiHash, phone }).then(
+      json<{ status: string; phone: string }>,
+    ),
+  telegramLoginCode: (code: string) =>
+    post("/sessions/telegram/login/code", { code }).then(
+      json<{ status: "need_password" | "saved"; message?: string }>,
+    ),
+  telegramLoginPassword: (password: string) =>
+    post("/sessions/telegram/login/password", { password }).then(
+      json<{ status: "saved"; message: string }>,
+    ),
+  telegramLoginCancel: () =>
+    post("/sessions/telegram/login/cancel", {}).then(json<{ status: string }>),
 };
