@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""
+Brand Intelligence -- the only file you need to run.
+
+    python run.py                start everything (sets up on first run)
+    python run.py --setup        install dependencies, browsers and the UI
+    python run.py --check        verify prerequisites, print status, exit
+    python run.py --dev          also run Vite with hot reload on :5173
+    python run.py --build        force a UI rebuild first
+    python run.py --port 9000    serve somewhere else
+
+First run does the whole install by itself. After that `python run.py` just
+starts the server.
+
+ONE WORKER, ON PURPOSE
+    Live job state is in memory and the scanners drive real logged-in
+    sessions, so a second worker would both lose progress and double the
+    footprint on the platforms. The durable record is MongoDB plus the
+    workbooks under runs/.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+FRONTEND = ROOT / "frontend"
+DIST = FRONTEND / "dist"
+
+# packages whose import name differs from the pip name
+IMPORT_NAMES = {
+    "playwright": "playwright",
+    "fastapi": "fastapi",
+    "uvicorn": "uvicorn",
+    "pydantic": "pydantic",
+    "motor": "motor",
+    "pymongo": "pymongo",
+    "telethon": "telethon",
+    "openpyxl": "openpyxl",
+    "apscheduler": "apscheduler",
+}
+
+OK, BAD, WARN = "ok ", "FAIL", "-- "
+
+
+def say(mark: str, label: str, detail: str = "") -> None:
+    print(f"  [{mark}] {label}{' -- ' + detail if detail else ''}")
+
+
+def npm() -> str:
+    """npm is a .cmd shim on Windows, which subprocess will not find unaided."""
+    return shutil.which("npm") or shutil.which("npm.cmd") or "npm"
+
+
+def have(module: str) -> bool:
+    try:
+        __import__(module)
+        return True
+    except ImportError:
+        return False
+
+
+def missing_packages() -> list[str]:
+    return [pip for pip, mod in IMPORT_NAMES.items() if not have(mod)]
+
+
+def mongo_ok() -> tuple[bool, str]:
+    try:
+        from pymongo import MongoClient
+
+        from backend.shared.config import settings
+
+        MongoClient(settings.mongo_uri, serverSelectionTimeoutMS=1500).server_info()
+        return True, settings.mongo_uri
+    except Exception as e:
+        return False, f"{type(e).__name__} -- is mongod running?"
+
+
+# ─────────────────────────────────── setup ────────────────────────────────── #
+
+
+def run(cmd: list[str], cwd: Path | None = None, why: str = "") -> bool:
+    if why:
+        print(f"\n> {why}")
+    try:
+        subprocess.run(cmd, cwd=cwd, check=True)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        print(f"  failed: {e}")
+        return False
+
+
+def setup(force: bool = False) -> bool:
+    """Install everything needed, skipping whatever is already in place."""
+    ok = True
+
+    if force or missing_packages():
+        ok &= run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "-r",
+                str(ROOT / "requirements.txt"),
+            ],
+            why="installing Python packages",
+        )
+    else:
+        say(OK, "python packages already installed")
+
+    # Chromium for Playwright: cheap to re-run, it no-ops when present
+    if have("playwright"):
+        run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            why="installing the Chromium build for Playwright",
+        )
+
+    if shutil.which(npm()) or shutil.which("npm.cmd"):
+        if force or not (FRONTEND / "node_modules").is_dir():
+            ok &= run(
+                [npm(), "install", "--no-audit", "--no-fund"],
+                cwd=FRONTEND,
+                why="installing UI dependencies",
+            )
+        if force or not DIST.is_dir():
+            ok &= run([npm(), "run", "build"], cwd=FRONTEND, why="building the UI")
+    else:
+        say(WARN, "npm not found", "the API will run; the UI will not be served")
+
+    for d in ("session", "runs", "logs"):
+        (ROOT / d).mkdir(exist_ok=True)
+    return ok
+
+
+# ─────────────────────────────────── check ────────────────────────────────── #
+
+
+def check() -> bool:
+    ok = True
+    print("prerequisites:")
+    say(OK, "python", sys.version.split()[0])
+
+    if gone := missing_packages():
+        say(BAD, "python packages", f"missing {', '.join(gone)} -- run --setup")
+        ok = False
+    else:
+        say(OK, "python packages")
+
+    good, detail = mongo_ok()
+    say(OK if good else BAD, "mongodb", detail)
+    ok &= good
+
+    say(
+        OK if DIST.is_dir() else WARN,
+        "frontend build",
+        "" if DIST.is_dir() else "run --setup",
+    )
+
+    try:
+        from backend.platforms import registry
+
+        async def check_platforms():
+            for p in registry.PLATFORMS.values():
+                state = await registry.session_state(p)
+                say(OK if state == "ready" else WARN, f"{p.name:<14}", state)
+
+        print("\nplatforms:")
+        asyncio.run(check_platforms())
+        print(
+            "\n  sessions are managed in the UI: pick a platform, then "
+            "'Log in' or 'Paste'"
+        )
+    except Exception as e:
+        say(BAD, "platform registry", str(e))
+        ok = False
+    return ok
+
+
+# ──────────────────────────────────── run ─────────────────────────────────── #
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--setup",
+        action="store_true",
+        help="install dependencies, browsers and the UI, then exit",
+    )
+    ap.add_argument(
+        "--check", action="store_true", help="verify prerequisites and exit"
+    )
+    ap.add_argument("--build", action="store_true", help="force a UI rebuild")
+    ap.add_argument(
+        "--dev", action="store_true", help="also run Vite with hot reload on :5173"
+    )
+    ap.add_argument(
+        "--reload", action="store_true", help="restart the API when code changes"
+    )
+    ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8000)))
+    a = ap.parse_args()
+
+    if a.setup:
+        print("Brand Intelligence -- setup")
+        ok = setup(force=True)
+        print()
+        check()
+        sys.exit(0 if ok else 1)
+
+    if a.check:
+        sys.exit(0 if check() else 1)
+
+    # first run, or a missing piece: install without being asked
+    if missing_packages() or not DIST.is_dir() or a.build:
+        print("Brand Intelligence -- first-run setup\n")
+        setup(force=a.build)
+        print()
+
+    good, detail = mongo_ok()
+    if not good:
+        print(f"\n  MongoDB is not reachable ({detail}).")
+        print(
+            "  Jobs will run but nothing will be stored. Start mongod, "
+            "or set MONGO_URI in .env\n"
+        )
+
+    vite = None
+    if a.dev:
+        print("starting Vite on :5173 (hot reload)")
+        vite = subprocess.Popen([npm(), "run", "dev"], cwd=FRONTEND)
+
+    try:
+        import uvicorn
+
+        print(f"\n  Brand Intelligence -> http://127.0.0.1:{a.port}\n")
+        uvicorn.run(
+            "backend.main:app",
+            host="127.0.0.1",
+            port=a.port,
+            reload=a.reload,
+            workers=1,
+        )
+    except KeyboardInterrupt:
+        print("\nstopped")
+    finally:
+        if vite is not None:
+            vite.terminate()
+
+
+if __name__ == "__main__":
+    main()

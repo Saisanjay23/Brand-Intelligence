@@ -1,0 +1,3 @@
+# Session cookies are live credentials for a real account -- never commit them.
+*.json
+!example.json

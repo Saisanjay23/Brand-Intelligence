@@ -1,0 +1,30 @@
+# Brand Intelligence -- runtime dependencies
+# install with:  python run.py --setup
+
+# browser automation (Facebook, X, Instagram)
+playwright>=1.40
+
+# API + service
+fastapi>=0.110
+uvicorn[standard]>=0.27
+pydantic>=2.5
+
+# storage
+motor>=3.3
+pymongo>=4.6
+
+# Telegram (MTProto)
+telethon>=1.34
+
+# reporting
+openpyxl>=3.1
+
+# better name matching; the tool falls back to difflib without it
+rapidfuzz>=3.6
+
+# scheduled per-client discovery/analysis cron
+apscheduler>=3.10
+
+# --- development only ---
+pytest>=8.0
+pyflakes>=3.2
