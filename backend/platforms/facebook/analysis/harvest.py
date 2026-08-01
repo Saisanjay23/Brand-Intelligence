@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from typing import Any, Iterator
 
-from backend.shared.text import iter_dicts, iter_kv
+from backend.utils.text import iter_dicts, iter_kv
 
 
 class Harvest:

@@ -34,7 +34,7 @@ import sys
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from backend.platforms.registry import PLATFORMS
-from backend.shared.config import settings
+from backend.config.settings import settings
 
 OLD_DB_PREFIX = "brand_intel"  # the DDD-era backend's own db prefix
 

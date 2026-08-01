@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from backend.shared.logging import get_logger
+from backend.utils.logging import get_logger
 
 log = get_logger("telegram")
 
@@ -144,7 +144,7 @@ class Telegram:
         self.o = options
         self.api_id = int(os.environ.get("TELEGRAM_API_ID", "0") or 0)
         self.api_hash = os.environ.get("TELEGRAM_API_HASH", "")
-        from backend.shared.config import settings
+        from backend.config.settings import settings
 
         self.session_file = str(settings.session_blob_path / "telegram")
         self.client: Any = None

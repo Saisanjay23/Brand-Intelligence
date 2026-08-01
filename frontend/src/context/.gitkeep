@@ -1,0 +1,3 @@
+# No React Context is currently used -- every page reads state passed down
+# from App.tsx as props. This folder is reserved for when shared state
+# (e.g. the active client, theme) is promoted to a Context provider instead.

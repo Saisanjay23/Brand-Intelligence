@@ -24,7 +24,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Optional
 
-from backend.shared.logging import get_logger
+from backend.utils.logging import get_logger
 
 log = get_logger("youtube.api")
 

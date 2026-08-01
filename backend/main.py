@@ -4,10 +4,10 @@ Brand Intelligence Engine (headless)
     uvicorn backend.main:app --port 8000
 
 Single worker, by design -- job state lives in this process's memory (see
-`engine/jobs.py`). No auth, no rate limiting, no frontend: this is reached
-only by your own SaaS backend over a trusted internal path, which already
-owns authenticating and rate-limiting its own callers before it ever gets
-here. Errors come back as FastAPI's own plain `{"detail": "message"}`.
+`services/job_service.py`). No auth, no rate limiting, no frontend: this is
+reached only by your own SaaS backend over a trusted internal path, which
+already owns authenticating and rate-limiting its own callers before it
+ever gets here. Errors come back as FastAPI's own plain `{"detail": "message"}`.
 """
 
 from __future__ import annotations
@@ -18,26 +18,26 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.api.middleware.request_logging import RequestLoggingMiddleware
-from backend.api.routes_analysis import router as analysis_router
-from backend.api.routes_clients import router as clients_router
-from backend.api.routes_discovery import router as discovery_router
-from backend.api.routes_health import router as health_router
-from backend.api.routes_incidents import router as incidents_router
-from backend.api.routes_jobs import router as jobs_router
-from backend.api.routes_profiles import router as profiles_router
-from backend.api.routes_sessions import router as sessions_router
-from backend.db import clients as clients_db
-from backend.db import incidents as incidents_db
-from backend.db import profiles as profiles_db
-from backend.db import sessions as sessions_db
-from backend.engine import scheduler
-from backend.engine import sessions as sessions_engine
-from backend.engine.jobs import job_manager
-from backend.shared.errors import DomainError
-from backend.shared.logging import configure_logging, get_logger
-from backend.shared.mongo import close as mongo_close
-from backend.shared.mongo import ping as mongo_ping
+from backend.middleware.request_logging import RequestLoggingMiddleware
+from backend.api.analysis_routes import router as analysis_router
+from backend.api.client_routes import router as clients_router
+from backend.api.discovery_routes import router as discovery_router
+from backend.api.health_routes import router as health_router
+from backend.api.incident_routes import router as incidents_router
+from backend.api.job_routes import router as jobs_router
+from backend.api.profile_routes import router as profiles_router
+from backend.api.session_routes import router as sessions_router
+from backend.repositories import client_repository as clients_db
+from backend.repositories import incident_repository as incidents_db
+from backend.repositories import profile_repository as profiles_db
+from backend.repositories import session_repository as sessions_db
+from backend.services import scheduler_service as scheduler
+from backend.services import session_service as sessions_engine
+from backend.services.job_service import job_manager
+from backend.exceptions.errors import DomainError
+from backend.utils.logging import configure_logging, get_logger
+from backend.config.database import close as mongo_close
+from backend.config.database import ping as mongo_ping
 
 configure_logging()
 log = get_logger("main")

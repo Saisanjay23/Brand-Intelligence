@@ -7,8 +7,8 @@ is pure dict/list logic, no I/O, so it doesn't need one.
 
 from __future__ import annotations
 
-from backend.engine import jobs as job_manager_module
-from backend.engine.jobs import DONE, QUEUED, RUNNING, Job, JobManager
+from backend.services import job_service as job_manager_module
+from backend.services.job_service import DONE, QUEUED, RUNNING, Job, JobManager
 
 
 def _fresh_manager() -> JobManager:

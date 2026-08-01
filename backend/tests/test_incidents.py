@@ -6,7 +6,7 @@ the generic one rather than matching something misleading.
 
 from __future__ import annotations
 
-from backend.engine.incidents import _GENERIC, diagnose
+from backend.services.incident_service import _GENERIC, diagnose
 
 
 def test_session_checkpoint_gets_a_specific_diagnosis():

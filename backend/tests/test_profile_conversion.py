@@ -7,9 +7,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from backend.engine.analysis import _row_to_fields
-from backend.engine.discovery import _hit_to_fields
-from backend.engine.row import Row
+from backend.services.analysis_service import _row_to_fields
+from backend.services.discovery_service import _hit_to_fields
+from backend.models.row import Row
 
 
 def test_row_to_fields_carries_the_scored_fields():

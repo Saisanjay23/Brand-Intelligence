@@ -10,22 +10,22 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PlatformHealth, Profile } from "../api";
+import type { PlatformHealth, Profile } from "../api/types";
 import { ResultsGrid } from "./ResultsGrid";
 
-vi.mock("../api", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../api")>();
+vi.mock("../api/profilesApi", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/profilesApi")>();
   return {
     ...actual,
-    api: {
-      ...actual.api,
+    profilesApi: {
+      ...actual.profilesApi,
       profiles: vi.fn(),
       patchProfile: vi.fn(),
     },
   };
 });
 
-import { api } from "../api";
+import { profilesApi as api } from "../api/profilesApi";
 
 const PLATFORMS: PlatformHealth[] = [
   {

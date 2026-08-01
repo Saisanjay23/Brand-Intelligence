@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, type Job, type PlatformHealth, type SessionInfo } from "./api";
-import { DashboardView } from "./components/DashboardView";
-import { Header, type ViewPage } from "./components/Header";
-import { HomeView } from "./components/HomeView";
+import { healthApi } from "./api/healthApi";
+import { sessionsApi } from "./api/sessionsApi";
+import type { Job, PlatformHealth, SessionInfo } from "./api/types";
 import { ResultsGrid } from "./components/ResultsGrid";
-import { SessionPanel } from "./components/SessionPanel";
+import type { ViewPage } from "./components/Header";
+import { AppLayout } from "./layouts/AppLayout";
+import { DashboardView } from "./pages/DashboardView";
+import { HomeView } from "./pages/HomeView";
+import { SessionPanel } from "./pages/SessionPanel";
 import { useJobPolling } from "./hooks/useJobPolling";
-import { loadRecentClients, rememberClient, forgetClient, type RecentClient } from "./lib/recentClients";
+import { loadRecentClients, rememberClient, forgetClient, type RecentClient } from "./services/recentClients";
 
 const ACTIVE_JOB_STATUSES = new Set(["queued", "running"]);
 
@@ -29,7 +32,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    api
+    healthApi
       .platformsHealth()
       .then((res) => setPlatforms(res.items))
       .catch((e) => setError(e.message));
@@ -37,7 +40,7 @@ export default function App() {
 
   const refreshSessions = useCallback(() => {
     if (!platforms.length) return;
-    Promise.all(platforms.map((p) => api.sessionStatus(p.platform).catch(() => null)))
+    Promise.all(platforms.map((p) => sessionsApi.sessionStatus(p.platform).catch(() => null)))
       .then((results) => setSessions(results.filter((s): s is SessionInfo => s !== null)))
       .catch(() => {});
   }, [platforms]);
@@ -78,80 +81,61 @@ export default function App() {
   const readySessionsCount = sessions.filter((s) => s.state === "ready").length;
 
   return (
-    <div className="app-container">
-      <Header
-        page={page}
-        onPage={setPage}
-        clientId={clientId}
-        clientName={clientName}
-        recentClients={recentClients}
-        onClient={onClient}
-        onForgetClient={onForgetClient}
-        activeJobsCount={activeJobsCount}
-        readySessionsCount={readySessionsCount}
-        platformCount={platforms.length}
-      />
-
-      <main className="page-content">
-        {error && (
-          <div
-            style={{
-              background: "rgba(233, 80, 83,0.1)",
-              border: "1px solid rgba(233, 80, 83,0.25)",
-              color: "var(--danger)",
-              padding: "10px 16px",
-              borderRadius: "10px",
-              marginBottom: "16px",
-              fontSize: "13px",
+    <AppLayout
+      page={page}
+      onPage={setPage}
+      clientId={clientId}
+      clientName={clientName}
+      recentClients={recentClients}
+      onClient={onClient}
+      onForgetClient={onForgetClient}
+      activeJobsCount={activeJobsCount}
+      readySessionsCount={readySessionsCount}
+      platformCount={platforms.length}
+      error={error}
+    >
+      {page === "home" && (
+        <>
+          <HomeView
+            clientId={clientId}
+            clientName={clientName}
+            onClient={onClient}
+            busy={discoveryJobs.running}
+            analysisBusy={analysisJobs.running}
+            onJobs={(jobs) => {
+              setError("");
+              const disc = jobs.filter((j) => j.kind === "discovery");
+              const analysis = jobs.filter((j) => j.kind !== "discovery");
+              if (disc.length) discoveryJobs.watch(disc);
+              if (analysis.length) analysisJobs.watch(analysis);
             }}
-          >
-            ⚠️ {error}
-          </div>
-        )}
-
-        {page === "home" && (
-          <>
-            <HomeView
+            onError={setError}
+          />
+          <div style={{ marginTop: "32px", animation: "fadeUp 0.6s ease" }}>
+            <ResultsGrid
               clientId={clientId}
-              clientName={clientName}
-              onClient={onClient}
-              busy={discoveryJobs.running}
-              analysisBusy={analysisJobs.running}
-              onJobs={(jobs) => {
-                setError("");
-                const disc = jobs.filter((j) => j.kind === "discovery");
-                const analysis = jobs.filter((j) => j.kind !== "discovery");
-                if (disc.length) discoveryJobs.watch(disc);
-                if (analysis.length) analysisJobs.watch(analysis);
-              }}
+              platforms={platforms}
+              discoveryRunning={discoveryJobs.running}
+              discoveryLog={discoveryJobs.log}
+              analysisRunning={analysisJobs.running}
+              analysisLog={analysisJobs.log}
               onError={setError}
             />
-            <div style={{ marginTop: "32px", animation: "fadeUp 0.6s ease" }}>
-              <ResultsGrid
-                clientId={clientId}
-                platforms={platforms}
-                discoveryRunning={discoveryJobs.running}
-                discoveryLog={discoveryJobs.log}
-                analysisRunning={analysisJobs.running}
-                analysisLog={analysisJobs.log}
-                onError={setError}
-              />
-            </div>
-          </>
-        )}
+          </div>
+        </>
+      )}
 
-        {page === "dashboard" && (
-          <DashboardView
-            clientId={clientId}
-            activeJobsCount={activeJobsCount}
-            platforms={platforms}
-            sessions={sessions}
-            logs={[...discoveryJobs.log, ...analysisJobs.log]}
-          />
-        )}
+      {page === "dashboard" && (
+        <DashboardView
+          clientId={clientId}
+          activeJobsCount={activeJobsCount}
+          platforms={platforms}
+          sessions={sessions}
+          logs={[...discoveryJobs.log, ...analysisJobs.log]}
+        />
+      )}
 
-        {page === "sessions" && <SessionPanel sessions={sessions} onChanged={refreshSessions} />}
-      </main>
-    </div>
+      {page === "sessions" && <SessionPanel sessions={sessions} onChanged={refreshSessions} />}
+    </AppLayout>
   );
 }

@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from backend.engine.row import Row
+from backend.models.row import Row
 from backend.platforms.linkedin.session import LinkedInSession
 from backend.platforms.linkedin.urls import entity_type, normalize_url, profile_id
 

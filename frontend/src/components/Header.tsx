@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { RecentClient } from "../lib/recentClients";
+import type { RecentClient } from "../services/recentClients";
 
 export type ViewPage = "home" | "dashboard" | "sessions";
 

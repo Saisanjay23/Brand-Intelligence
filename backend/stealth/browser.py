@@ -31,7 +31,7 @@ try:
 except ImportError:
     sys.exit("pip install playwright && playwright install chromium")
 
-from backend.shared.logging import get_logger
+from backend.utils.logging import get_logger
 from backend.stealth.human import Human
 
 log = get_logger("browser")
@@ -163,7 +163,7 @@ class Session:
             }
         self.ctx = await self.browser.new_context(**ctx_opts)
         await self.ctx.add_init_script(INIT_JS)
-        from backend.engine.cookies import normalize_cookies
+        from backend.utils.cookies import normalize_cookies
         safe_cookies = normalize_cookies(self.cookies)
         await self.ctx.add_cookies(safe_cookies)
         if not self.load_images:

@@ -14,8 +14,8 @@ from __future__ import annotations
 import sys
 from urllib.parse import urlparse
 
-from backend.engine.row import Row
-from backend.shared.text import fmt_created, name_score
+from backend.models.row import Row
+from backend.utils.text import fmt_created, name_score
 from backend.platforms.telegram.client import (FloodWait, NotAuthorised,
                                                Telegram, TelegramEntity)
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend.engine import health as health_engine
+from backend.services import health_service as health_engine
 
 
 @pytest.fixture(autouse=True)

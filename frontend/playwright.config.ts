@@ -19,9 +19,9 @@ export default defineConfig({
     // cwd is the repo root (backend/ lives there); build the frontend into
     // dist/ first, then serve both from the same real FastAPI process.
     command:
-      "npm run build --prefix frontend && python -m uvicorn backend.api.app:app --port 8010",
+      "npm run build --prefix frontend && python -m uvicorn backend.main:app --port 8010",
     cwd: "..",
-    url: "http://127.0.0.1:8010/api/platforms",
+    url: "http://127.0.0.1:8010/health/live",
     reuseExistingServer: false,
     timeout: 60_000,
   },

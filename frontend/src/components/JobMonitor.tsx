@@ -1,4 +1,4 @@
-import type { Job, JobEvent } from "../api";
+import type { Job, JobEvent } from "../api/types";
 
 interface Props {
   job: Job;

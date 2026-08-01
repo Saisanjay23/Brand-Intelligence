@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterator, Optional
 
-from backend.shared.text import iter_dicts
+from backend.utils.text import iter_dicts
 
 PROFILE_ENDPOINTS = ("users/web_profile_info", "api/v1/users/", "graphql/query")
 SEARCH_ENDPOINTS = (

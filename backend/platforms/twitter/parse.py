@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Iterator, Optional
 
-from backend.shared.text import iter_dicts
+from backend.utils.text import iter_dicts
 
 SEARCH_QUERY = "SearchTimeline"
 USER_QUERIES = ("UserByScreenName", "UserByRestId")

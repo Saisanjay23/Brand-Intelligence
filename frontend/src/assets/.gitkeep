@@ -1,0 +1,4 @@
+# No local static assets exist yet -- platform icons are inline SVG
+# (components/PlatformIcon.tsx) and fonts load from Google Fonts in
+# index.html. This folder is reserved for images/fonts/icons if the app
+# moves off inline SVG and CDN fonts.

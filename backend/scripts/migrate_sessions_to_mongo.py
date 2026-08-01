@@ -26,10 +26,10 @@ import asyncio
 import json
 import sys
 
-from backend.db import sessions as sessions_db
-from backend.engine.cookies import normalize_cookies
+from backend.repositories import session_repository as sessions_db
+from backend.utils.cookies import normalize_cookies
 from backend.platforms.registry import PLATFORMS
-from backend.shared.config import settings
+from backend.config.settings import settings
 
 
 def _read_pool_file(path) -> list[dict]:

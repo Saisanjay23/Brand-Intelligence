@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type Job, type JobEvent } from "../api";
+import { jobsApi } from "../api/jobsApi";
+import type { Job, JobEvent } from "../api/types";
 
 const TERMINAL = new Set(["done", "failed", "cancelled"]);
 const POLL_MS = 2000;
@@ -42,8 +43,8 @@ export function useJobPolling(onFinish?: () => void, onItem?: () => void) {
       const poll = async () => {
         try {
           const [updated, events] = await Promise.all([
-            api.job(j.id),
-            api.jobEvents(j.id, seqs.current[j.id] || 0),
+            jobsApi.job(j.id),
+            jobsApi.jobEvents(j.id, seqs.current[j.id] || 0),
           ]);
           setJobs((prev) => ({ ...prev, [j.id]: updated }));
 
@@ -80,7 +81,7 @@ export function useJobPolling(onFinish?: () => void, onItem?: () => void) {
     .join(" | ");
 
   const cancelAll = () => {
-    activeJobs.forEach((j) => api.cancelJob(j.id).catch(() => {}));
+    activeJobs.forEach((j) => jobsApi.cancelJob(j.id).catch(() => {}));
   };
 
   return {

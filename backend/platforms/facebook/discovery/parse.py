@@ -24,7 +24,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterator, Optional
 
-from backend.shared.text import iter_dicts
+from backend.utils.text import iter_dicts
 from backend.platforms.facebook.analysis.constants import RE_DEFAULT_PIC
 from backend.platforms.facebook.urls import hd_picture_url
 

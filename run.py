@@ -74,7 +74,7 @@ def mongo_ok() -> tuple[bool, str]:
     try:
         from pymongo import MongoClient
 
-        from backend.shared.config import settings
+        from backend.config.settings import settings
 
         MongoClient(settings.mongo_uri, serverSelectionTimeoutMS=1500).server_info()
         return True, settings.mongo_uri

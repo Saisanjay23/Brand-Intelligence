@@ -15,8 +15,8 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
-from backend.engine.row import Row
-from backend.shared.text import fmt_created, name_score
+from backend.models.row import Row
+from backend.utils.text import fmt_created, name_score
 from backend.platforms.twitter.parse import (TWEETS_QUERY, USER_QUERIES,
                                              TwitterUser, iter_users,
                                              latest_post, parse_lines)

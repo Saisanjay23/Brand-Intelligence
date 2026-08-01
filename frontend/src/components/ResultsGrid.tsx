@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, type JobEvent, type PlatformHealth, type Profile, type Status } from "../api";
+import { profilesApi } from "../api/profilesApi";
+import type { JobEvent, PlatformHealth, Profile, Status } from "../api/types";
 import { PlatformIcon } from "./PlatformIcon";
 import {
   emptyLabel,
@@ -7,7 +8,8 @@ import {
   sortResults,
   type ExtraFilters,
   type ResultFilters,
-} from "../lib/resultsFilter";
+} from "../services/resultsFilter";
+import { download } from "../utils/download";
 
 interface Props {
   clientId: string;
@@ -62,16 +64,6 @@ function toCsv(rows: Profile[]): string {
   const lines = [cols.join(",")];
   for (const r of rows) lines.push(cols.map((c) => esc(r[c])).join(","));
   return lines.join("\n");
-}
-
-function download(filename: string, content: string, mime: string) {
-  const blob = new Blob([content], { type: mime });
-  const href = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = href;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(href);
 }
 
 function ProfileAvatar({ r, size }: { r: Profile; size?: number }) {
@@ -216,7 +208,7 @@ export function ResultsGrid({
       }
       if (showLoading) setLoading(true);
       try {
-        const res = await api.profiles({
+        const res = await profilesApi.profiles({
           client_id: clientId,
           platform: platform || undefined,
           status: !isAnalysisView && status ? status : undefined,
@@ -265,7 +257,7 @@ export function ResultsGrid({
     setProfiles((rows) => rows.map((r) => (r.id === id ? { ...r, status: next } : r)));
     setSavingId(id);
     try {
-      await api.patchProfile(id, { status: next });
+      await profilesApi.patchProfile(id, { status: next });
       // approving auto-queues analysis server-side -- nothing else to do here
     } catch (e) {
       if (prev) setProfiles((rows) => rows.map((r) => (r.id === id ? prev : r)));
@@ -283,7 +275,7 @@ export function ResultsGrid({
     const prev = profiles.find((r) => r.id === id);
     setProfiles((rows) => rows.map((r) => (r.id === id ? { ...r, [field]: value } : r)));
     try {
-      await api.patchProfile(id, { [field]: value } as Record<string, unknown>);
+      await profilesApi.patchProfile(id, { [field]: value } as Record<string, unknown>);
     } catch (e) {
       if (prev) setProfiles((rows) => rows.map((r) => (r.id === id ? prev : r)));
       onError?.((e as Error).message);
@@ -313,7 +305,7 @@ export function ResultsGrid({
     if (!clientId) return;
     setExporting(true);
     try {
-      const res = await api.profiles({
+      const res = await profilesApi.profiles({
         client_id: clientId,
         platform: platform || undefined,
         status: !isAnalysisView && status ? status : undefined,

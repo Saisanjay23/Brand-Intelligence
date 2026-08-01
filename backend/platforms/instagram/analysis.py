@@ -51,8 +51,8 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
-from backend.engine.row import Row
-from backend.shared.text import fmt_created, name_score, parse_count
+from backend.models.row import Row
+from backend.utils.text import fmt_created, name_score, parse_count
 from backend.platforms.instagram.parse import (DEFAULT_PIC_HINTS,
                                                PROFILE_ENDPOINTS,
                                                InstagramUser, parse_lines,
