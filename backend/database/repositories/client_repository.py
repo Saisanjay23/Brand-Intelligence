@@ -25,6 +25,11 @@ def _to_out(doc: dict) -> dict:
         # independently. Combined at search time, never merged in storage.
         "name_keywords": doc.get("name_keywords", []),
         "domain_keywords": doc.get("domain_keywords", []),
+        # per-platform discovery cap, keyed by platform id -- a platform
+        # absent from this map (or mapped to 0) means "scrape everything",
+        # never "scrape nothing". See services/discovery_service.py, which
+        # reads this per platform when a sweep starts.
+        "platform_limits": doc.get("platform_limits", {}),
         "cron": doc.get("cron"),
         "created_at": doc.get("created_at"),
     }
@@ -33,7 +38,7 @@ def _to_out(doc: dict) -> dict:
 async def upsert(
     client_id: str, name: str, domain: str = "",
     name_keywords: Optional[list[str]] = None, domain_keywords: Optional[list[str]] = None,
-    cron: Optional[str] = None,
+    platform_limits: Optional[dict[str, int]] = None, cron: Optional[str] = None,
 ) -> dict:
     """`cron` is optional -- a client with keywords but no cron only ever
     gets swept when `POST /discovery` is called for it explicitly; setting
@@ -46,6 +51,7 @@ async def upsert(
             "$set": {
                 "name": name, "domain": domain,
                 "name_keywords": name_keywords or [], "domain_keywords": domain_keywords or [],
+                "platform_limits": platform_limits or {},
                 "cron": cron,
             },
             "$setOnInsert": {"_id": client_id, "created_at": now},

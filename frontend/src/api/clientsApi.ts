@@ -12,8 +12,12 @@ export const clientsApi = {
     domain?: string;
     name_keywords?: string[];
     domain_keywords?: string[];
+    platform_limits?: Record<string, number>;
     cron?: string | null;
-  }) => post("/clients", { domain: "", name_keywords: [], domain_keywords: [], ...body }).then(json<Client>),
+  }) =>
+    post("/clients", { domain: "", name_keywords: [], domain_keywords: [], platform_limits: {}, ...body }).then(
+      json<Client>,
+    ),
   getClient: (clientId: string) => fetch(url(`/clients/${encodeURIComponent(clientId)}`)).then(json<Client>),
   deleteClient: (clientId: string) =>
     fetch(url(`/clients/${encodeURIComponent(clientId)}`), { method: "DELETE" }).then(

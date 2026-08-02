@@ -98,6 +98,7 @@ export default function App() {
         <HomeView
           clientId={clientId}
           clientName={clientName}
+          platforms={platforms}
           onClient={onClient}
           busy={discoveryJobs.running}
           analysisBusy={analysisJobs.running}

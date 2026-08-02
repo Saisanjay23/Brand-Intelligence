@@ -19,6 +19,9 @@ export interface Client {
   domain: string;
   name_keywords: string[];
   domain_keywords: string[];
+  // platform id -> max results to scrape for this client. Missing (or 0)
+  // means uncapped -- "scrape all" for that platform.
+  platform_limits: Record<string, number>;
   cron?: string | null;
   created_at?: string;
 }

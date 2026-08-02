@@ -62,6 +62,7 @@ async def _ready_platforms() -> list[str]:
 async def run_discovery(job: Job) -> None:
     from backend.services.job_service import JobManager
     from backend.platforms import registry
+    from backend.database.repositories import client_repository as clients_db
 
     mgr = JobManager()
     p = job.params
@@ -71,6 +72,11 @@ async def run_discovery(job: Job) -> None:
     ready = await _ready_platforms()
     if not ready:
         raise RuntimeError("no platform has a ready session to sweep")
+
+    # per-platform result caps saved on the client (see dto/client_dto.py);
+    # a platform missing here is uncapped -- "scrape all" for that platform.
+    client = await clients_db.try_get(job.client_id)
+    platform_limits = (client or {}).get("platform_limits") or {}
 
     await mgr.emit(job, "progress", f"sweeping {len(ready)} platform(s) for {len(keywords)} keyword(s)", total=len(ready))
 
@@ -84,7 +90,8 @@ async def run_discovery(job: Job) -> None:
     async def _run_one(platform_id: str) -> tuple[str, int, int, str]:
         plat = registry.get(platform_id)
         try:
-            saved, new, note = await _sweep_platform(job, mgr, plat, keywords, tabs, p)
+            platform_params = {**p, "max_results": platform_limits.get(platform_id, p.get("max_results", 0))}
+            saved, new, note = await _sweep_platform(job, mgr, plat, keywords, tabs, platform_params)
             await mgr.emit(job, "progress", platform=platform_id, platform_status="done", platform_processed=sweep_units)
             return platform_id, saved, new, note
         except Exception as e:

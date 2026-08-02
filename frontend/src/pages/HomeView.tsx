@@ -3,7 +3,8 @@ import { analysisApi } from "../api/analysisApi";
 import { clientsApi } from "../api/clientsApi";
 import { discoveryApi } from "../api/discoveryApi";
 import { jobsApi } from "../api/jobsApi";
-import type { Client, Job } from "../api/types";
+import type { Client, Job, PlatformHealth } from "../api/types";
+import { PlatformIcon } from "../components/PlatformIcon";
 
 type KeywordTab = "names" | "domain";
 type Mode = "create" | "select";
@@ -11,6 +12,7 @@ type Mode = "create" | "select";
 interface Props {
   clientId: string;
   clientName: string;
+  platforms: PlatformHealth[];
   onClient: (clientId: string, name: string) => void;
   busy: boolean;
   analysisBusy: boolean;
@@ -122,9 +124,52 @@ function KeywordTabs({
   );
 }
 
+function PlatformLimitsEditor({
+  platforms,
+  limits,
+  onChange,
+  disabled,
+}: {
+  platforms: PlatformHealth[];
+  limits: Record<string, string>;
+  onChange: (platform: string, value: string) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div style={{ marginTop: "20px" }}>
+      <label className="field-label">🎯 Per-Platform Scrape Limits</label>
+      <div style={{ fontSize: "11px", color: "var(--text-dim)", marginTop: "3px", marginBottom: "8px" }}>
+        Leave a platform blank to scrape everything found for it. Set a number to cap results per sweep.
+      </div>
+      <div className="platform-limits-grid">
+        {platforms.map((p) => (
+          <div key={p.platform} className="platform-limit-row">
+            <div className="platform-limit-label">
+              <PlatformIcon platform={p.platform} size={16} />
+              <span>{p.name}</span>
+            </div>
+            <input
+              type="number"
+              min={0}
+              value={limits[p.platform] ?? ""}
+              onChange={(e) => onChange(p.platform, e.target.value)}
+              placeholder="Scrape All"
+              disabled={disabled}
+              className="platform-limit-input"
+            />
+          </div>
+        ))}
+        {!platforms.length && (
+          <div style={{ fontSize: "12px", color: "var(--text-dim)" }}>No platforms registered yet.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const EMPTY_FORM = { id: "", name: "", domain: "", nameKw: [] as string[], domainKw: [] as string[], cron: "" };
 
-export function HomeView({ clientId, onClient, busy, analysisBusy, onJobs, onError }: Props) {
+export function HomeView({ clientId, platforms, onClient, busy, analysisBusy, onJobs, onError }: Props) {
   const [clients, setClients] = useState<Client[]>([]);
   const [loadingClients, setLoadingClients] = useState(true);
   const [mode, setMode] = useState<Mode>(clientId ? "select" : "create");
@@ -137,6 +182,7 @@ export function HomeView({ clientId, onClient, busy, analysisBusy, onJobs, onErr
   const [domainInput, setDomainInput] = useState(EMPTY_FORM.domain);
   const [nameKeywords, setNameKeywords] = useState<string[]>(EMPTY_FORM.nameKw);
   const [domainKeywords, setDomainKeywords] = useState<string[]>(EMPTY_FORM.domainKw);
+  const [platformLimits, setPlatformLimits] = useState<Record<string, string>>({});
   const [cron, setCron] = useState(EMPTY_FORM.cron);
   const [activeTab, setActiveTab] = useState<KeywordTab>("names");
 
@@ -164,6 +210,9 @@ export function HomeView({ clientId, onClient, busy, analysisBusy, onJobs, onErr
     setDomainInput(c.domain || "");
     setNameKeywords(c.name_keywords || []);
     setDomainKeywords(c.domain_keywords || []);
+    setPlatformLimits(
+      Object.fromEntries(Object.entries(c.platform_limits || {}).map(([k, v]) => [k, String(v)])),
+    );
     setCron(c.cron || "");
   };
 
@@ -173,6 +222,7 @@ export function HomeView({ clientId, onClient, busy, analysisBusy, onJobs, onErr
     setDomainInput(EMPTY_FORM.domain);
     setNameKeywords(EMPTY_FORM.nameKw);
     setDomainKeywords(EMPTY_FORM.domainKw);
+    setPlatformLimits({});
     setCron(EMPTY_FORM.cron);
   };
 
@@ -236,12 +286,18 @@ export function HomeView({ clientId, onClient, busy, analysisBusy, onJobs, onErr
     setSaving(true);
     setSaved(false);
     try {
+      const parsedLimits: Record<string, number> = {};
+      for (const [platform, raw] of Object.entries(platformLimits)) {
+        const n = Number(raw);
+        if (raw.trim() && Number.isFinite(n) && n > 0) parsedLimits[platform] = Math.floor(n);
+      }
       const client = await clientsApi.upsertClient({
         client_id: id,
         name,
         domain: domainInput.trim(),
         name_keywords: nameKeywords,
         domain_keywords: domainKeywords,
+        platform_limits: parsedLimits,
         cron: cron.trim() || null,
       });
       setActiveClient(client);
@@ -384,6 +440,12 @@ export function HomeView({ clientId, onClient, busy, analysisBusy, onJobs, onErr
                 <span className="meta-chip">🌐 {activeClient.domain || "no domain set"}</span>
                 <span className="meta-chip">👤 {activeClient.name_keywords?.length || 0} names</span>
                 <span className="meta-chip">🏷️ {activeClient.domain_keywords?.length || 0} domain kw</span>
+                <span className="meta-chip">
+                  🎯{" "}
+                  {Object.keys(activeClient.platform_limits || {}).length
+                    ? `${Object.keys(activeClient.platform_limits).length} platform cap(s)`
+                    : "scrape all platforms"}
+                </span>
                 {activeClient.cron && <span className="meta-chip">⏱️ {activeClient.cron}</span>}
               </div>
             </div>
@@ -458,6 +520,13 @@ export function HomeView({ clientId, onClient, busy, analysisBusy, onJobs, onErr
               onRemoveName={(i) => setNameKeywords((prev) => prev.filter((_, idx) => idx !== i))}
               onAddDomain={(v) => setDomainKeywords((prev) => (prev.includes(v) ? prev : [...prev, v]))}
               onRemoveDomain={(i) => setDomainKeywords((prev) => prev.filter((_, idx) => idx !== i))}
+              disabled={busy}
+            />
+
+            <PlatformLimitsEditor
+              platforms={platforms}
+              limits={platformLimits}
+              onChange={(platform, value) => setPlatformLimits((prev) => ({ ...prev, [platform]: value }))}
               disabled={busy}
             />
 

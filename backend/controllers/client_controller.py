@@ -13,7 +13,8 @@ from backend.services import scheduler_service as scheduler
 
 async def upsert_client(body: ClientIn) -> dict:
     out = await client_service.upsert(
-        body.client_id, body.name, body.domain, body.name_keywords, body.domain_keywords, body.cron,
+        body.client_id, body.name, body.domain, body.name_keywords, body.domain_keywords,
+        body.platform_limits, body.cron,
     )
     scheduler.sync()
     return out
