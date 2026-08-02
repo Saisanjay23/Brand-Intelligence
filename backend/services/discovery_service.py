@@ -21,8 +21,25 @@ from backend.services.job_service import Job
 from backend.platforms.scan_options import DiscoveryOptions
 from backend.config.settings import settings
 from backend.shared.logging import get_logger
+from backend.shared.text import name_score
 
 log = get_logger("services.discovery")
+
+# Each platform's discovery_engine.py only ever understands its own fixed
+# tab vocabulary (see each module's `sweep(keyword, tab)`); a caller-supplied
+# `tabs` list from POST /discovery used to be applied identically to every
+# platform in the sweep, which meant e.g. Twitter/Instagram/YouTube -- none
+# of which have a "pages" tab -- were swept for "pages" too, wasting a whole
+# extra pass per keyword for nothing. Every platform now always sweeps
+# exactly the tab(s) it actually supports, regardless of what was requested.
+PLATFORM_TABS: dict[str, list[str]] = {
+    "facebook": ["people", "pages"],
+    "twitter": ["people"],
+    "instagram": ["people"],
+    "youtube": ["channels"],
+    "telegram": ["all"],
+    "linkedin": ["people"],
+}
 
 
 def _hit_to_fields(hit, platform: str) -> dict:
@@ -44,6 +61,10 @@ def _hit_to_fields(hit, platform: str) -> dict:
         "discovery_source": hit.source, "profile_image_url": getattr(hit, "avatar", ""),
         "has_logo": bool(getattr(hit, "has_custom_pic", False)),
         "verified": bool(getattr(hit, "verified", False)),
+        # how closely the scraped name matches the keyword that found it --
+        # seeds the card's High/Low match badge; analysis re-scores this
+        # more precisely once a profile is actually visited.
+        "name_score": name_score(hit.name or "", hit.keyword or ""),
     }
 
 
@@ -67,7 +88,6 @@ async def run_discovery(job: Job) -> None:
     mgr = JobManager()
     p = job.params
     keywords = [k.strip() for k in p["keywords"] if k.strip()]
-    tabs = p.get("tabs", ["people", "pages"])
 
     ready = await _ready_platforms()
     if not ready:
@@ -80,18 +100,21 @@ async def run_discovery(job: Job) -> None:
 
     await mgr.emit(job, "progress", f"sweeping {len(ready)} platform(s) for {len(keywords)} keyword(s)", total=len(ready))
 
-    sweep_units = max(1, len(keywords) * len(tabs))
     for platform_id in ready:
-        await mgr.emit(job, "progress", platform=platform_id, platform_status="pending", platform_total=sweep_units)
+        platform_tabs = PLATFORM_TABS.get(platform_id, p.get("tabs") or ["people"])
+        await mgr.emit(job, "progress", platform=platform_id, platform_status="pending",
+                        platform_total=max(1, len(keywords) * len(platform_tabs)))
 
     total_saved = total_new = 0
     notes: list[str] = []
 
     async def _run_one(platform_id: str) -> tuple[str, int, int, str]:
         plat = registry.get(platform_id)
+        platform_tabs = PLATFORM_TABS.get(platform_id, p.get("tabs") or ["people"])
+        sweep_units = max(1, len(keywords) * len(platform_tabs))
         try:
             platform_params = {**p, "max_results": platform_limits.get(platform_id, p.get("max_results", 0))}
-            saved, new, note = await _sweep_platform(job, mgr, plat, keywords, tabs, platform_params)
+            saved, new, note = await _sweep_platform(job, mgr, plat, keywords, platform_tabs, platform_params)
             await mgr.emit(job, "progress", platform=platform_id, platform_status="done", platform_processed=sweep_units)
             return platform_id, saved, new, note
         except Exception as e:

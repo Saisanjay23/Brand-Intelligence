@@ -14,11 +14,11 @@ router = APIRouter(tags=["profiles"])
 async def list_profiles(
     client_id: str, status: Optional[str] = None, phase: Optional[str] = None,
     platform: Optional[str] = None, limit: int = 100, offset: int = 0,
-    include_held: bool = False,
+    include_held: bool = False, keyword: Optional[str] = None,
 ) -> dict:
     return await profile_controller.list_profiles(
         client_id, status=status, phase=phase, platform=platform, limit=limit, offset=offset,
-        include_held=include_held,
+        include_held=include_held, keyword=keyword,
     )
 
 

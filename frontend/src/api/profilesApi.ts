@@ -8,6 +8,7 @@ export const profilesApi = {
     status?: string;
     phase?: string;
     platform?: string;
+    keyword?: string;
     limit?: number;
     offset?: number;
   }) => {
@@ -15,6 +16,7 @@ export const profilesApi = {
     if (q.status) p.set("status", q.status);
     if (q.phase) p.set("phase", q.phase);
     if (q.platform) p.set("platform", q.platform);
+    if (q.keyword) p.set("keyword", q.keyword);
     p.set("limit", String(q.limit ?? 100));
     p.set("offset", String(q.offset ?? 0));
     // This is the analyst tool -- always see a freshly analysed result
@@ -22,7 +24,11 @@ export const profilesApi = {
     // the client-facing default (used by anything that omits this) hides it.
     p.set("include_held", "true");
     return fetch(url(`/profiles?${p}`)).then(
-      json<{ items: Profile[]; total: number; counts?: { platforms?: Record<string, number>; statuses?: Record<string, number> } }>,
+      json<{
+        items: Profile[];
+        total: number;
+        counts?: { platforms?: Record<string, number>; statuses?: Record<string, number>; keywords?: Record<string, number> };
+      }>,
     );
   },
   profile: (id: string) => fetch(url(`/profiles/${id}`)).then(json<Profile>),

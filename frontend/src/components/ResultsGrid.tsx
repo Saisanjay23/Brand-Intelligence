@@ -183,11 +183,24 @@ interface CardProps {
   savingId: string | null;
   onDecide: (id: string, next: Status) => void;
   onPublish: (id: string) => void;
+  onValidate: (id: string, logoMatch: boolean, usernameMatch: boolean) => void;
 }
 
-function ProfileCard({ r, isAnalysisView, savingId, onDecide, onPublish }: CardProps) {
+// Mirrors backend shared/models/scoring.py::NAME_THRESHOLD.
+const MATCH_HIGH_THRESHOLD = 80;
+
+function ProfileCard({ r, isAnalysisView, savingId, onDecide, onPublish, onValidate }: CardProps) {
   const name = r.profile_name || r.username || r.url;
   const isHeld = isAnalysisView && r.published === false;
+  const isDiscovery = !isAnalysisView;
+  const [logoMatch, setLogoMatch] = useState(r.logo_match ?? false);
+  const [usernameMatch, setUsernameMatch] = useState(r.username_match ?? false);
+
+  useEffect(() => {
+    setLogoMatch(r.logo_match ?? false);
+    setUsernameMatch(r.username_match ?? false);
+  }, [r.id, r.logo_match, r.username_match]);
+
   return (
     <div className="profile-card">
       <div className="profile-card-header">
@@ -212,6 +225,18 @@ function ProfileCard({ r, isAnalysisView, savingId, onDecide, onPublish }: CardP
             {r.priority}
           </span>
         )}
+        {isDiscovery && r.name_score !== null && r.name_score !== undefined && (
+          <span
+            className="card-badge-top-right"
+            title={`Name-to-keyword match score: ${r.name_score}/100`}
+            style={{
+              background: r.name_score >= MATCH_HIGH_THRESHOLD ? "rgba(0,193,77,0.85)" : "rgba(255,128,0,0.85)",
+              color: "#fff",
+            }}
+          >
+            {r.name_score >= MATCH_HIGH_THRESHOLD ? "🎯 High Match" : "🎯 Low Match"}
+          </span>
+        )}
         <span className="card-badge-platform">
           <PlatformIcon platform={r.platform} size={14} />
           {r.platform}
@@ -229,6 +254,15 @@ function ProfileCard({ r, isAnalysisView, savingId, onDecide, onPublish }: CardP
           )}
         </div>
         {isAnalysisView && r.username && <div className="profile-handle">@{r.username}</div>}
+        {isDiscovery && !!r.keywords?.length && (
+          <div className="card-keyword-tags">
+            {r.keywords.map((kw) => (
+              <span key={kw} className="card-keyword-tag">
+                🔑 {kw}
+              </span>
+            ))}
+          </div>
+        )}
 
         {isHeld && (
           <div
@@ -251,13 +285,43 @@ function ProfileCard({ r, isAnalysisView, savingId, onDecide, onPublish }: CardP
           </div>
         )}
 
+        {(r.logo_match || r.username_match) && (
+          <div className="card-detail-row">
+            {r.logo_match && <span>🖼️ Logo match</span>}
+            {r.username_match && <span>🔖 Username match</span>}
+          </div>
+        )}
+
         <div className="card-meta-row">
           <span style={{ fontSize: "11px", color: "var(--text-dim)" }}>
             {isAnalysisView ? `Risk ${r.risk_score ?? "—"}` : r.comments || ""}
           </span>
         </div>
 
+        {isDiscovery && r.status !== "approved" && r.status !== "rejected" && (
+          <div className="card-validate-row" title="Tick what you visually confirmed matches the brand, then Validate">
+            <label className="card-validate-check">
+              <input type="checkbox" checked={logoMatch} onChange={(e) => setLogoMatch(e.target.checked)} />
+              Logo match
+            </label>
+            <label className="card-validate-check">
+              <input type="checkbox" checked={usernameMatch} onChange={(e) => setUsernameMatch(e.target.checked)} />
+              Username match
+            </label>
+          </div>
+        )}
+
         <div className="card-actions-row">
+          {isDiscovery && r.status !== "approved" && (
+            <button
+              className="btn-accept"
+              disabled={savingId === r.id}
+              onClick={() => onValidate(r.id, logoMatch, usernameMatch)}
+              title="Approves this profile and records the logo/username match confirmation, carried through to analysis"
+            >
+              ✅ Validate
+            </button>
+          )}
           {r.status !== "approved" && (
             <button className="btn-accept" disabled={savingId === r.id} onClick={() => onDecide(r.id, "approved")}>
               ✓ Approve
@@ -301,13 +365,18 @@ export function ResultsGrid({
   const [priority, setPriority] = useState("");
   const [sortOrder, setSortOrder] = useState<"recent" | "past">("recent");
   const [keywordFilter, setKeywordFilter] = useState("");
+  const [matchLevel, setMatchLevel] = useState<"" | "high" | "low">("");
   const [searchQuery, setSearchQuery] = useState("");
   const [offset, setOffset] = useState(0);
   const [viewMode, setViewMode] = useState<"grid" | "table">("grid");
 
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [total, setTotal] = useState(0);
-  const [counts, setCounts] = useState<{ platforms: Record<string, number>; statuses: Record<string, number> }>({ platforms: {}, statuses: {} });
+  const [counts, setCounts] = useState<{ platforms: Record<string, number>; statuses: Record<string, number>; keywords: Record<string, number> }>({
+    platforms: {},
+    statuses: {},
+    keywords: {},
+  });
   const [loading, setLoading] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -320,7 +389,7 @@ export function ResultsGrid({
       if (!clientId) {
         setProfiles([]);
         setTotal(0);
-        setCounts({ platforms: {}, statuses: {} });
+        setCounts({ platforms: {}, statuses: {}, keywords: {} });
         return;
       }
       if (showLoading) setLoading(true);
@@ -330,6 +399,7 @@ export function ResultsGrid({
           platform: platform || undefined,
           status: !isAnalysisView && status ? status : undefined,
           phase,
+          keyword: !isAnalysisView && keywordFilter ? keywordFilter : undefined,
           limit: PAGE_SIZE,
           offset,
         });
@@ -343,6 +413,7 @@ export function ResultsGrid({
           setCounts({
             platforms: res.counts.platforms || {},
             statuses: res.counts.statuses || {},
+            keywords: res.counts.keywords || {},
           });
         }
       } catch (e) {
@@ -351,12 +422,12 @@ export function ResultsGrid({
         if (showLoading) setLoading(false);
       }
     },
-    [clientId, platform, status, phase, offset, isAnalysisView, onError],
+    [clientId, platform, status, phase, keywordFilter, isAnalysisView, offset, onError],
   );
 
   useEffect(() => {
     setOffset(0);
-  }, [clientId, platform, status, phase]);
+  }, [clientId, platform, status, phase, keywordFilter]);
 
   useEffect(() => {
     load(true);
@@ -372,11 +443,11 @@ export function ResultsGrid({
   }, [discoveryRunning, analysisRunning, load]);
 
   const filters: ResultFilters = { status: !isAnalysisView ? status : "", priority, phase };
-  const extra: ExtraFilters = { keywordFilter, searchQuery };
+  const extra: ExtraFilters = { keywordFilter, searchQuery, matchLevel: !isAnalysisView ? matchLevel : "" };
   const displayed = useMemo(
     () => sortResults(filterResults(profiles, filters, extra, platform), sortOrder, phase, keywordFilter),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [profiles, status, priority, phase, keywordFilter, searchQuery, sortOrder, platform],
+    [profiles, status, priority, phase, keywordFilter, matchLevel, searchQuery, sortOrder, platform],
   );
 
   const decide = async (id: string, next: Status) => {
@@ -389,6 +460,30 @@ export function ResultsGrid({
     try {
       await profilesApi.patchProfile(id, { status: next });
       // Automatically pull next items from page 2 into page 1 without needing manual navigation
+      await load(false);
+    } catch (e) {
+      if (prev) setProfiles((rows) => [...rows.filter((r) => r.id !== prev.id), prev]);
+      onError?.((e as Error).message);
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  // Approves the profile the same way `decide` does, but also records the
+  // analyst's own visual confirmation of a logo/username impersonation
+  // match -- saved to the DB and carried through unchanged onto the
+  // analysis-phase record (see backend/services/profile_service.py).
+  const validate = async (id: string, logoMatch: boolean, usernameMatch: boolean) => {
+    const prev = profiles.find((r) => r.id === id);
+    setProfiles((rows) => {
+      const updated = rows.map((r) =>
+        r.id === id ? { ...r, status: "approved" as Status, logo_match: logoMatch, username_match: usernameMatch } : r,
+      );
+      return status ? updated.filter((r) => r.status === status) : updated;
+    });
+    setSavingId(id);
+    try {
+      await profilesApi.patchProfile(id, { status: "approved", logo_match: logoMatch, username_match: usernameMatch });
       await load(false);
     } catch (e) {
       if (prev) setProfiles((rows) => [...rows.filter((r) => r.id !== prev.id), prev]);
@@ -785,13 +880,43 @@ export function ResultsGrid({
 
           {/* Filter toolbar */}
           <div className="filter-toolbar" style={{ marginTop: "12px" }}>
-            <input
-              value={keywordFilter}
-              onChange={(e) => setKeywordFilter(e.target.value)}
-              placeholder="Filter by keyword…"
-              className="input-filter"
-              title="No server-side keyword index on this backend -- filters whatever's on the current page"
-            />
+            {isAnalysisView ? (
+              <input
+                value={keywordFilter}
+                onChange={(e) => setKeywordFilter(e.target.value)}
+                placeholder="Filter by keyword…"
+                className="input-filter"
+                title="No server-side keyword index for analysis rows -- filters whatever's on the current page"
+              />
+            ) : (
+              <select
+                value={keywordFilter}
+                onChange={(e) => setKeywordFilter(e.target.value)}
+                className="select-filter"
+                title="Only show profiles found by this exact keyword"
+              >
+                <option value="">All Keywords</option>
+                {Object.entries(counts.keywords)
+                  .sort((a, b) => b[1] - a[1])
+                  .map(([kw, n]) => (
+                    <option key={kw} value={kw}>
+                      🔑 {kw} ({n})
+                    </option>
+                  ))}
+              </select>
+            )}
+            {!isAnalysisView && (
+              <select
+                value={matchLevel}
+                onChange={(e) => setMatchLevel(e.target.value as "" | "high" | "low")}
+                className="select-filter"
+                title="How closely the scraped name matches the keyword that found it"
+              >
+                <option value="">All Match Levels</option>
+                <option value="high">🎯 High Match</option>
+                <option value="low">🎯 Low Match</option>
+              </select>
+            )}
             {isAnalysisView && (
               <>
                 <select value={sortOrder} onChange={(e) => setSortOrder(e.target.value as "recent" | "past")} className="select-filter">
@@ -880,7 +1005,7 @@ export function ResultsGrid({
           {!loading && displayed.length > 0 && viewMode === "grid" && (
             <div className="profile-grid-container" style={{ marginTop: "12px" }}>
               {displayed.map((r) => (
-                <ProfileCard key={r.id} r={r} isAnalysisView={isAnalysisView} savingId={savingId} onDecide={decide} onPublish={publish} />
+                <ProfileCard key={r.id} r={r} isAnalysisView={isAnalysisView} savingId={savingId} onDecide={decide} onPublish={publish} onValidate={validate} />
               ))}
             </div>
           )}

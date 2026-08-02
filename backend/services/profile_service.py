@@ -38,6 +38,17 @@ def _to_card(doc: dict) -> dict:
         "priority": doc.get("priority"),
         "comments": doc.get("comments"),
         "followers": doc.get("followers"),
+        # every keyword sweep that has ever (re)found this profile -- lets
+        # the discovery filter narrow to "only what THIS keyword matched"
+        "keywords": doc.get("keywords", []),
+        # 0-100 name-vs-keyword closeness, seeded at discovery time and
+        # refined once analysis actually visits the profile -- the card's
+        # High/Low match badge
+        "name_score": doc.get("name_score"),
+        # an analyst's own visual confirmation, set via the card's Validate
+        # action -- see EDITABLE in profile_repository.py
+        "logo_match": doc.get("logo_match"),
+        "username_match": doc.get("username_match"),
     }
 
 
@@ -60,17 +71,22 @@ def _to_full(doc: dict, client_name: str) -> dict:
         "comments": doc.get("comments"),
         "published": doc.get("published", True),
         "publish_hold_until": doc.get("publish_hold_until"),
+        # carried over unchanged from the discovery card's Validate action --
+        # "logo match yes / username match yes" stays visible on the
+        # analysis-phase record too
+        "logo_match": doc.get("logo_match"),
+        "username_match": doc.get("username_match"),
     }
 
 
 async def list_profiles(
     client_id: str, status: Optional[str] = None, phase: Optional[str] = None,
     platform: Optional[str] = None, limit: int = 100, offset: int = 0,
-    include_held: bool = False,
+    include_held: bool = False, keyword: Optional[str] = None,
 ) -> dict:
     docs, total, counts = await profiles_db.find(
         client_id, platform=platform, status=status, phase=phase, limit=limit, offset=offset,
-        include_held=include_held,
+        include_held=include_held, keyword=keyword,
     )
     if phase == profiles_db.PHASE_ANALYSIS:
         client = await clients_db.try_get(client_id)

@@ -1415,6 +1415,41 @@ a:hover {
   gap: 7px;
 }
 
+.card-keyword-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 2px 0 8px;
+}
+.card-keyword-tag {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--bg-inner);
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.card-validate-row {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 8px;
+}
+.card-validate-check {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.card-validate-check input {
+  accent-color: var(--success);
+  cursor: pointer;
+}
+
 .btn-accept {
   flex: 1;
   background: rgba(0, 193, 77, 0.1);

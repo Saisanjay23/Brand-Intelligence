@@ -88,6 +88,11 @@ export interface ResultFilters {
 export interface ExtraFilters {
   keywordFilter: string;
   searchQuery: string;
+  // discovery-only "how closely does the name match the keyword" badge
+  // filter -- optional so existing callers/tests that only set the two
+  // fields above keep compiling unchanged. Threshold mirrors backend's
+  // shared/models/scoring.py::NAME_THRESHOLD (80).
+  matchLevel?: "" | "high" | "low";
 }
 
 export type SortOrder = "recent" | "past";
@@ -164,16 +169,29 @@ export function filterResults(
       }
     }
 
-    // keyword is only present on the analysis-phase (full) shape -- a
-    // discovery card simply never matches a keyword filter, by design. This
-    // backend has no server-side keyword query param on GET /profiles (no
-    // dataset to build a picklist from), so this is a free-text substring
-    // filter over whatever page is currently loaded, not an exact picker.
-    if (
-      extra.keywordFilter.trim() &&
-      !(r.keyword || "").toLowerCase().includes(extra.keywordFilter.trim().toLowerCase())
-    )
-      return false;
+    if (extra.keywordFilter.trim()) {
+      const kf = extra.keywordFilter.trim();
+      if (r.phase === "discovery") {
+        // discovery cards carry every keyword sweep that has (re)found
+        // them as an array -- an analyst picks one exact keyword from a
+        // list (see GET /profiles?keyword=, the server already scoped the
+        // fetch to it; this is just a defensive re-check for whatever's
+        // in memory, e.g. during live-poll refreshes).
+        if (!(r.keywords || []).includes(kf)) return false;
+      } else if (!(r.keyword || "").toLowerCase().includes(kf.toLowerCase())) {
+        // analysis-phase keyword field is a single comma-joined string
+        // with no server-side index to filter on -- substring match over
+        // whatever page is currently loaded, not an exact picker.
+        return false;
+      }
+    }
+
+    if (extra.matchLevel) {
+      const score = r.name_score;
+      if (score === null || score === undefined) return false;
+      const level = score >= 80 ? "high" : "low";
+      if (level !== extra.matchLevel) return false;
+    }
 
     if (extra.searchQuery.trim()) {
       const q = extra.searchQuery.toLowerCase();

@@ -83,6 +83,16 @@ export interface Profile {
   priority?: Priority | null;
   comments?: string | null;
   followers?: number | null;
+  // every keyword sweep that has (re)found this profile -- discovery cards
+  // only, see backend/services/profile_service.py::_to_card
+  keywords?: string[];
+  // 0-100 name-vs-keyword closeness (discovery-seeded, analysis-refined) --
+  // powers the card's High/Low match badge
+  name_score?: number | null;
+  // an analyst's own visual confirmation, set via the discovery card's
+  // Validate action -- carried through to the analysis-phase record too
+  logo_match?: boolean | null;
+  username_match?: boolean | null;
   // full fields (phase=analysis)
   client_id?: string;
   client_name?: string;
@@ -100,6 +110,8 @@ export interface Profile {
 export interface ProfilePatch {
   status?: Status;
   priority?: Priority;
+  logo_match?: boolean;
+  username_match?: boolean;
   comments?: string;
   followers?: number;
   location?: string;

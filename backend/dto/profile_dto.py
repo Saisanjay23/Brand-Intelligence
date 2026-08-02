@@ -10,6 +10,8 @@ from pydantic import BaseModel
 class ProfilePatch(BaseModel):
     status: Optional[str] = None
     has_logo: Optional[bool] = None
+    logo_match: Optional[bool] = None
+    username_match: Optional[bool] = None
     is_active: Optional[bool] = None
     has_name_match: Optional[bool] = None
     risk_score: Optional[int] = None

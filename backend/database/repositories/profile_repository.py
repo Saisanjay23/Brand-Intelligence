@@ -37,7 +37,7 @@ PHASE_ANALYSIS = "analysis"
 # fields discovery is allowed to write; everything else is analysis territory
 DISCOVERY_FIELDS = (
     "entity_id", "username", "display_name", "entity_type",
-    "discovery_source", "profile_image_url", "has_logo", "verified",
+    "discovery_source", "profile_image_url", "has_logo", "verified", "name_score",
 )
 
 ANALYSIS_FIELDS = (
@@ -53,6 +53,12 @@ EDITABLE = {
     "has_logo", "is_active", "has_name_match", "risk_score", "priority",
     "comments", "target", "official_feed", "status",
     "display_name", "followers", "location", "last_post_date",
+    # an analyst's own visual confirmation that the profile is lifting the
+    # brand's logo/photo and/or username -- distinct from has_logo (which
+    # only says a custom photo exists, not that it matches anything) and
+    # never scored automatically; set via the discovery card's Validate action
+    # and carried through to the analysis-phase record unchanged.
+    "logo_match", "username_match",
 }
 
 # fields a rediscovery can actually observe that matter for reconsidering a
@@ -195,18 +201,25 @@ async def save_many(
 async def find(
     client_id: str, *, platform: Optional[str] = None, status: Optional[str] = None,
     phase: Optional[str] = None, limit: int = 100, offset: int = 0,
-    include_held: bool = False,
+    include_held: bool = False, keyword: Optional[str] = None,
 ) -> tuple[list[dict], int, dict]:
     """`include_held=False` (the default -- used by any caller that doesn't
     explicitly ask otherwise, i.e. the SaaS backend's normal poll) hides a
     freshly analysed row until its publish hold clears -- see ADR 0007. The
     analyst-facing frontend always passes `include_held=True` so analysts
-    see held rows immediately, flagged with a countdown."""
+    see held rows immediately, flagged with a countdown.
+
+    `keyword` matches exactly one entry of the profile's `keywords` array
+    (a scalar-vs-array Mongo query already does "array contains" for free) --
+    an analyst picks one of the client's actual searched keywords from a
+    list, not a free-text substring."""
     q: dict[str, Any] = {"client_id": client_id}
     if platform:
         q["platform"] = platform
     if status:
         q["status"] = status
+    if keyword:
+        q["keywords"] = keyword
     if phase:
         if phase == PHASE_DISCOVERY:
             q["$or"] = [{"phase": PHASE_DISCOVERY}, {"status": "approved"}]
@@ -243,7 +256,17 @@ async def find(
         if doc.get("_id"):
             status_counts[str(doc["_id"])] = doc["count"]
 
-    counts = {"platforms": plat_counts, "statuses": status_counts}
+    keyword_match = dict(q)
+    keyword_match.pop("keywords", None)
+    keyword_counts: dict[str, int] = {}
+    async for doc in coll.aggregate([
+        {"$match": keyword_match}, {"$unwind": "$keywords"},
+        {"$group": {"_id": "$keywords", "count": {"$sum": 1}}},
+    ]):
+        if doc.get("_id"):
+            keyword_counts[str(doc["_id"])] = doc["count"]
+
+    counts = {"platforms": plat_counts, "statuses": status_counts, "keywords": keyword_counts}
     return rows, total, counts
 
 
