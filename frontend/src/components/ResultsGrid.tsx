@@ -177,6 +177,45 @@ function ProfileAvatar({ r, size }: { r: Profile; size?: number }) {
   );
 }
 
+// Direct "jump to page N" input -- Prev/Next alone means clicking dozens of
+// times to cross a 1000-profile, 40-page listing. Commits on Enter/blur
+// (not on every keystroke) so a half-typed number never jumps mid-edit.
+function PageJumpInput({ currentPage, pageCount, onJump }: { currentPage: number; pageCount: number; onJump: (page: number) => void }) {
+  const [value, setValue] = useState(String(currentPage));
+
+  useEffect(() => {
+    setValue(String(currentPage));
+  }, [currentPage]);
+
+  const commit = () => {
+    const n = Math.round(Number(value));
+    if (Number.isFinite(n) && n > 0) {
+      onJump(Math.min(pageCount, Math.max(1, n)));
+    } else {
+      setValue(String(currentPage));
+    }
+  };
+
+  return (
+    <input
+      type="number"
+      min={1}
+      max={pageCount}
+      value={value}
+      onChange={(e) => setValue(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commit();
+        }
+      }}
+      onBlur={commit}
+      className="page-jump-input"
+      title="Jump to page"
+    />
+  );
+}
+
 interface CardProps {
   r: Profile;
   isAnalysisView: boolean;
@@ -470,7 +509,7 @@ export function ResultsGrid({
     entityType: !isAnalysisView && isFacebook ? entityType : "",
   };
   const displayed = useMemo(
-    () => sortResults(filterResults(profiles, filters, extra, platform), sortOrder, phase, keywordFilter),
+    () => sortResults(filterResults(profiles, filters, extra, platform), sortOrder, phase, keywordFilter, status),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [profiles, status, priority, phase, keywordFilter, matchLevel, entityType, searchQuery, sortOrder, platform],
   );
@@ -1203,7 +1242,25 @@ export function ResultsGrid({
           )}
 
           {!loading && total > PAGE_SIZE && (
-            <div style={{ display: "flex", justifyContent: "center", gap: "10px", alignItems: "center", marginTop: "16px" }}>
+            <div style={{ display: "flex", justifyContent: "center", gap: "6px", alignItems: "center", marginTop: "16px", flexWrap: "wrap" }}>
+              <button
+                disabled={offset === 0}
+                onClick={() => setOffset(0)}
+                className="btn-cyber-primary"
+                title="First page"
+                style={{ width: "auto", padding: "6px 10px", marginTop: 0 }}
+              >
+                ⏮
+              </button>
+              <button
+                disabled={offset === 0}
+                onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE * 10))}
+                className="btn-cyber-primary"
+                title="Back 10 pages"
+                style={{ width: "auto", padding: "6px 10px", marginTop: 0 }}
+              >
+                −10
+              </button>
               <button
                 disabled={offset === 0}
                 onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
@@ -1212,8 +1269,9 @@ export function ResultsGrid({
               >
                 ← Prev
               </button>
-              <span style={{ fontSize: "12px", color: "var(--text-dim)" }}>
-                Page {currentPage} of {pageCount} · {total} total
+              <span style={{ fontSize: "12px", color: "var(--text-dim)", display: "flex", alignItems: "center", gap: "6px" }}>
+                Page <PageJumpInput currentPage={currentPage} pageCount={pageCount} onJump={(p) => setOffset((p - 1) * PAGE_SIZE)} /> of{" "}
+                {pageCount} · {total} total
               </span>
               <button
                 disabled={currentPage >= pageCount}
@@ -1222,6 +1280,24 @@ export function ResultsGrid({
                 style={{ width: "auto", padding: "6px 12px", marginTop: 0 }}
               >
                 Next →
+              </button>
+              <button
+                disabled={currentPage >= pageCount}
+                onClick={() => setOffset(Math.min((pageCount - 1) * PAGE_SIZE, offset + PAGE_SIZE * 10))}
+                className="btn-cyber-primary"
+                title="Forward 10 pages"
+                style={{ width: "auto", padding: "6px 10px", marginTop: 0 }}
+              >
+                +10
+              </button>
+              <button
+                disabled={currentPage >= pageCount}
+                onClick={() => setOffset((pageCount - 1) * PAGE_SIZE)}
+                className="btn-cyber-primary"
+                title="Last page"
+                style={{ width: "auto", padding: "6px 10px", marginTop: 0 }}
+              >
+                ⏭
               </button>
             </div>
           )}

@@ -212,13 +212,21 @@ export function filterResults(
 /** "recent" = highest risk first, "past" = lowest first. Does not mutate the
  * input array. `phase`/`activeKeyword` are only meaningful for Discovery:
  * that's the one view with no risk score to sort by, so it sorts by keyword
- * relevance instead. */
+ * relevance instead.
+ *
+ * `status === "rejected"` is a deliberate exception to that: the server
+ * already returns rejected rows most-recently-rejected first (rejected_at
+ * desc, see profile_repository.py::find), and that decision order is the
+ * one thing an analyst reviewing rejections actually wants preserved --
+ * re-sorting by keyword relevance here would silently undo it. */
 export function sortResults(
   rows: Profile[],
   order: SortOrder,
   phase?: string,
   activeKeyword?: string,
+  status?: string,
 ): Profile[] {
+  if (phase === "discovery" && status === "rejected") return rows;
   if (phase === "discovery") {
     return [...rows].sort((a, b) => {
       const ra = keywordRelevance(a, activeKeyword);

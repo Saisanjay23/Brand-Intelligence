@@ -1121,6 +1121,23 @@ a:hover {
   border-color: var(--cyan);
 }
 
+/* jump-to-page number input in pagination controls */
+.page-jump-input {
+  width: 52px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--border-radius-sm);
+  color: var(--text-main);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  padding: 4px 6px;
+  text-align: center;
+  outline: none;
+}
+.page-jump-input:focus {
+  border-color: var(--cyan);
+}
+
 /* ---- applied-filters summary: what's actually narrowing the view right
    now, as removable chips, instead of only living silently in each dropdown ---- */
 .applied-filters-row {
