@@ -288,16 +288,43 @@ class Sweep:
 
 
 class Discovery:
-    """`ctx` is accepted and unused -- MTProto needs no browser."""
+    """`ctx` is accepted and unused -- MTProto needs no browser.
+
+    `sweep()` connects `self.tg` itself, lazily, the first time it's called
+    -- discovery_service.py's shared harness (_run_incremental) drives every
+    platform by calling `sweep(keyword, tab)` per keyword directly, it never
+    calls `run()` below. `run()` predates that harness and is dead code from
+    the caller's perspective (nothing imports/calls it), but every keyword
+    it once looped over now arrives as its own `sweep()` call instead, so
+    the connect step it used to own has to happen inside `sweep()`.
+    A lock guards the connect because `_run_incremental` fires multiple
+    keywords concurrently (semaphore-limited), and Telethon's `connect()`
+    is not safe to race.
+    """
 
     def __init__(self, args, ctx=None):
         self.a = args
         self.tg: Telegram | None = None
+        self._connect_lock = asyncio.Lock()
+
+    async def _ensure_connected(self) -> None:
+        if self.tg is not None:
+            return
+        async with self._connect_lock:
+            if self.tg is not None:
+                return
+            tg = Telegram(self.a)
+            await tg.start()
+            if not await tg.check_session():
+                await tg.stop()
+                raise NotAuthorised("telegram session rejected")
+            self.tg = tg
 
     async def sweep(self, keyword: str, tab: str = "all") -> Sweep:
         out = Sweep(keyword=keyword, tab=tab)
         started = time.time()
         try:
+            await self._ensure_connected()
             found = await self.tg.search(keyword, SEARCH_LIMIT)
             out.pages = 1
             out.entities = found
@@ -327,6 +354,7 @@ class Discovery:
             out.stopped, out.error = "flood-wait", str(e)
         except Exception as e:
             out.stopped, out.error = "error", f"{type(e).__name__}: {e}"
+            log.error(f"[telegram] {keyword!r} sweep failed: {out.error}")
         finally:
             out.seconds = time.time() - started
         return out
