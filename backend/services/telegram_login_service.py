@@ -36,6 +36,8 @@ class _Pending:
     client: "TelegramClient"
     phone: str
     phone_code_hash: str
+    api_id: int = 0
+    api_hash: str = ""
     step: str = "code"  # code | password
 
 
@@ -86,7 +88,7 @@ async def send_code(api_id: int, api_hash: str, phone: str) -> dict:
         raise ValidationError(f"could not request a code: {e}") from e
 
     global _pending
-    _pending = _Pending(client=client, phone=phone, phone_code_hash=sent.phone_code_hash)
+    _pending = _Pending(client=client, phone=phone, phone_code_hash=sent.phone_code_hash, api_id=api_id, api_hash=api_hash)
 
     # Save now, not on success: the Telegram scanner adapter reads these
     # from the environment on its next start() regardless of how this login
@@ -130,6 +132,19 @@ async def _finish() -> dict:
     me = await _pending.client.get_me()
     await _pending.client.disconnect()
     label = f"@{me.username}" if me and me.username else str(getattr(me, "id", ""))
+
+    session_path = settings.session_blob_path / "telegram.session"
+    session_blob = session_path.read_bytes() if session_path.exists() else None
+    from backend.database.repositories import session_repository as sessions_db
+    await sessions_db.save_mtproto_session(
+        "telegram",
+        identifier=label,
+        api_id=_pending.api_id,
+        api_hash=_pending.api_hash,
+        phone=_pending.phone,
+        session_blob=session_blob,
+    )
+
     _pending = None
     log.info(f"telegram login complete -> {label}")
     return {"status": "saved", "message": f"logged in as {label}"}

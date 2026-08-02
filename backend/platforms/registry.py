@@ -144,13 +144,9 @@ async def session_state(p: Platform) -> str:
 
     A key-authed platform is ready when its key is set; an env-keys
     platform (Telegram) needs those set AND its saved MTProto session. A
-    cookie-backed platform is resolved by engine.sessions against the
-    pooled cookies in Mongo.
+    cookie-backed platform is resolved against pooled sessions in Mongo.
+    All state checks delegate to manager.state_for to enable DB restoration.
     """
-    if p.uses_api_key:
-        return "ready" if os.environ.get(p.api_key_env) else "missing"
-    if p.env_keys and any(not os.environ.get(k) for k in p.env_keys):
-        return "incomplete"
     from backend.sessions import manager as sessions_engine
 
     return await sessions_engine.state_for(p.id)

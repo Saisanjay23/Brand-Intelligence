@@ -29,6 +29,11 @@ def _to_item(doc: dict) -> dict:
         "cookies": doc.get("cookies", []), "proxy": doc.get("proxy"),
         "rate_limited_until": float(doc.get("rate_limited_until") or 0),
         "last_used": float(doc.get("last_used") or 0),
+        "api_key": doc.get("api_key", ""),
+        "api_id": doc.get("api_id", ""),
+        "api_hash": doc.get("api_hash", ""),
+        "phone": doc.get("phone", ""),
+        "session_blob": doc.get("session_blob"),
     }
 
 
@@ -49,6 +54,29 @@ async def add_item(platform: str, cookies: list[dict], identifier: str, proxy: O
         "rate_limited_until": 0.0, "last_used": 0.0,
     }
     await db()[SESSIONS].insert_one(doc)
+    return _to_item(doc)
+
+
+async def save_api_key_session(platform: str, key: str, identifier: str) -> dict:
+    session_id = "api_key"
+    doc = {
+        "_id": _doc_id(platform, session_id), "platform": platform, "session_id": session_id,
+        "identifier": identifier, "status": "ready", "api_key": key, "cookies": [],
+        "proxy": None, "rate_limited_until": 0.0, "last_used": 0.0,
+    }
+    await db()[SESSIONS].update_one({"_id": _doc_id(platform, session_id)}, {"$set": doc}, upsert=True)
+    return _to_item(doc)
+
+
+async def save_mtproto_session(platform: str, identifier: str, api_id: int, api_hash: str, phone: str, session_blob: Optional[bytes]) -> dict:
+    session_id = "mtproto"
+    doc = {
+        "_id": _doc_id(platform, session_id), "platform": platform, "session_id": session_id,
+        "identifier": identifier, "status": "ready", "api_id": api_id, "api_hash": api_hash,
+        "phone": phone, "session_blob": session_blob, "cookies": [], "proxy": None,
+        "rate_limited_until": 0.0, "last_used": 0.0,
+    }
+    await db()[SESSIONS].update_one({"_id": _doc_id(platform, session_id)}, {"$set": doc}, upsert=True)
     return _to_item(doc)
 
 

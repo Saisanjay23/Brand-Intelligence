@@ -80,7 +80,7 @@ def _public(s: dict) -> dict:
     return {
         "id": s["id"], "identifier": s["identifier"], "status": s["status"],
         "rate_limited_until": s["rate_limited_until"], "last_used": s["last_used"],
-        "cookie_count": len(s["cookies"]), "proxy_host": proxy_host,
+        "cookie_count": len(s.get("cookies", []) or []), "proxy_host": proxy_host,
     }
 
 
@@ -88,15 +88,41 @@ def _public(s: dict) -> dict:
 
 async def state_for(platform_id: str) -> str:
     """ready | missing | incomplete -- called by platforms.registry."""
+    import os
     p = _get_platform(platform_id)
-    if not p.uses_cookies:
-        return "ready"
+    if p.uses_api_key:
+        if os.environ.get(p.api_key_env):
+            return "ready"
+        items = await sessions_db.list_pool(platform_id)
+        if items and items[0].get("api_key"):
+            os.environ[p.api_key_env] = str(items[0]["api_key"])
+            return "ready"
+        return "missing"
+    if p.env_keys:
+        from backend.config.settings import settings
+        session_path = settings.session_blob_path / "telegram.session"
+        if all(os.environ.get(k) for k in p.env_keys) and session_path.exists():
+            return "ready"
+        items = await sessions_db.list_pool(platform_id)
+        if items and items[0].get("api_id") and items[0].get("api_hash"):
+            item = items[0]
+            if not all(os.environ.get(k) for k in p.env_keys):
+                os.environ["TELEGRAM_API_ID"] = str(item.get("api_id", ""))
+                os.environ["TELEGRAM_API_HASH"] = str(item.get("api_hash", ""))
+            if item.get("phone"):
+                os.environ["TELEGRAM_PHONE"] = str(item.get("phone", ""))
+            if item.get("session_blob") and not session_path.exists():
+                settings.session_blob_path.mkdir(parents=True, exist_ok=True)
+                session_path.write_bytes(item["session_blob"])
+            if all(os.environ.get(k) for k in p.env_keys) and session_path.exists():
+                return "ready"
+        return "incomplete"
     items = await sessions_db.list_pool(platform_id)
     if not items:
         return "missing"
     names: set[str] = set()
     for item in items:
-        names.update(c["name"] for c in item["cookies"])
+        names.update(c["name"] for c in (item.get("cookies") or []))
     return "ready" if set(p.required_cookies) <= names else "incomplete"
 
 
@@ -112,7 +138,7 @@ async def status(platform_id: str, live_health: Optional[dict] = None) -> dict:
         "state": await registry.session_state(p),
         "kind": "api-key" if p.uses_api_key else "mtproto" if p.env_keys else "cookies",
         "can_login": p.id in LOGIN_FLOW,
-        "cookie_count": sum(len(s["cookies"]) for s in items),
+        "cookie_count": sum(len(s.get("cookies", []) or []) for s in items),
         "sessions": [_public(s) for s in items],
         "pool_total": len(items),
         "pool_ready": sum(1 for s in items if _is_available(s, now)),
@@ -222,6 +248,7 @@ async def save_api_key(platform_id: str, key: str) -> dict:
     if not key:
         raise ValidationError("empty key")
     write_env(p.api_key_env, key)
+    await sessions_db.save_api_key_session(platform_id, key, identifier="YouTube API Key")
     log.info(f"{platform_id}: API key saved")
     return await status(platform_id)
 
@@ -238,6 +265,7 @@ async def set_proxy(platform_id: str, session_id: str, proxy: Optional[dict]) ->
 
 
 async def delete(platform_id: str, session_id: str = "") -> dict:
+    import os
     _get_platform(platform_id)
     if session_id:
         if await sessions_db.delete_item(platform_id, session_id):
@@ -246,6 +274,20 @@ async def delete(platform_id: str, session_id: str = "") -> dict:
         n = await sessions_db.delete_pool(platform_id)
         if n:
             log.info(f"{platform_id}: whole session pool deleted ({n})")
+    if platform_id == "youtube":
+        os.environ.pop("YOUTUBE_API_KEY", None)
+    elif platform_id == "telegram":
+        os.environ.pop("TELEGRAM_API_ID", None)
+        os.environ.pop("TELEGRAM_API_HASH", None)
+        os.environ.pop("TELEGRAM_PHONE", None)
+        from backend.config.settings import settings
+        session_path = settings.session_blob_path / "telegram"
+        for stale in (session_path.with_suffix(".session"), session_path.with_suffix(".session-journal")):
+            if stale.exists():
+                try:
+                    stale.unlink()
+                except Exception:
+                    pass
     return await status(platform_id)
 
 

@@ -51,6 +51,9 @@ async def lifespan(app: FastAPI):
         await sessions_db.ensure_indexes()
         await incidents_db.ensure_indexes()
         log.info("startup: mongo reachable, indexes ensured")
+        from backend.platforms import registry
+        for p in registry.PLATFORMS.values():
+            await registry.session_state(p)
         sessions_engine.start_monitor()
         scheduler.start()
     else:
@@ -93,3 +96,11 @@ app.include_router(profiles_router)
 app.include_router(sessions_router)
 app.include_router(jobs_router)
 app.include_router(incidents_router)
+
+from pathlib import Path
+from fastapi.staticfiles import StaticFiles
+
+_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+if _dist.is_dir():
+    app.mount("/", StaticFiles(directory=str(_dist), html=True), name="ui")
+

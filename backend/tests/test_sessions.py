@@ -55,3 +55,14 @@ def test_pool_summary_counts():
     items = [_item("a", status="ready", last_used=0), _item("b", status="expired"), _item("c", rate_limited_until=NOW + 10)]
     summary = pool_summary_of(items, NOW)
     assert summary == {"total": 3, "available": 1, "dead": 1}
+
+
+def test_public_view_of_non_cookie_items():
+    from backend.sessions.manager import _public
+    yt_item = {"id": "api_key", "identifier": "YouTube API Key", "status": "ready",
+               "rate_limited_until": 0.0, "last_used": 0.0, "api_key": "secret"}
+    assert _public(yt_item) == {
+        "id": "api_key", "identifier": "YouTube API Key", "status": "ready",
+        "rate_limited_until": 0.0, "last_used": 0.0, "cookie_count": 0, "proxy_host": ""
+    }
+
