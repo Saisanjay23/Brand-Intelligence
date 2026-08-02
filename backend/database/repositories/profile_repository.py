@@ -82,7 +82,7 @@ def _stamp_utc_for_api(doc: dict) -> dict:
     """Mongo hands every datetime back naive-but-UTC-VALUED (motor isn't
     tz_aware); stamp UTC explicitly on the way out so a JSON client doesn't
     read the unmarked ISO string as local time."""
-    for f in ("first_seen", "last_seen", "changed_at", "publish_hold_until"):
+    for f in ("first_seen", "last_seen", "changed_at", "publish_hold_until", "rejected_at"):
         v = doc.get(f)
         if isinstance(v, datetime) and v.tzinfo is None:
             doc[f] = v.replace(tzinfo=timezone.utc)
@@ -237,16 +237,29 @@ async def find(
 
     coll = db()[PROFILES]
     total = await coll.count_documents(q)
-    # Discovery listing sorts oldest-first (_id is a MongoDB ObjectId, whose
-    # leading bytes are an insertion timestamp -- ascending _id is the same
-    # order documents were saved in, i.e. the order each platform actually
-    # returned them, page by page). That makes page 1 of this listing the
-    # first results a platform's own search returned and the last listing
-    # page the last ones scraped, matching every platform's own top-to-
-    # bottom order instead of "whichever profile was touched most recently"
-    # (analysis keeps that recency sort -- newest finding first is what an
-    # analyst reviewing scored results actually wants).
-    sort_field, sort_dir = ("_id", 1) if phase == PHASE_DISCOVERY else ("last_seen", -1)
+    if phase == PHASE_DISCOVERY and status == "rejected":
+        # Rejected is the one status view that reads newest-decision-first
+        # on purpose -- an analyst reviewing what they've dismissed wants
+        # the profile they JUST rejected at the top, not buried under
+        # everything rejected before it. rejected_at (set only by an actual
+        # reject decision in patch(), never by a routine re-discovery
+        # sweep) is what makes "most recent" mean the reject, not a re-scan.
+        sort_field, sort_dir = "rejected_at", -1
+    elif phase == PHASE_DISCOVERY:
+        # Every other discovery view (pending, approved, unfiltered) sorts
+        # oldest-first (_id is a MongoDB ObjectId, whose leading bytes are
+        # an insertion timestamp -- ascending _id is the same order
+        # documents were saved in, i.e. the order each platform actually
+        # returned them, page by page). That makes page 1 of this listing
+        # the first results a platform's own search returned and the last
+        # listing page the last ones scraped, matching every platform's own
+        # top-to-bottom order instead of "whichever profile was touched
+        # most recently."
+        sort_field, sort_dir = "_id", 1
+    else:
+        # analysis keeps the recency sort -- newest finding first is what
+        # an analyst reviewing scored results actually wants.
+        sort_field, sort_dir = "last_seen", -1
     rows = []
     async for doc in coll.find(q).sort(sort_field, sort_dir).skip(offset).limit(limit):
         doc["id"] = str(doc.pop("_id"))
@@ -354,6 +367,14 @@ async def patch(doc_id: str, fields: dict) -> dict:
         if field_name in safe:
             safe[f"sources.{source_key}"] = "manual"
     safe["last_seen"] = datetime.now(timezone.utc)
+    if safe.get("status") == "rejected":
+        # a dedicated timestamp for exactly the moment an analyst rejected
+        # this profile -- last_seen is no good for that ordering since a
+        # routine re-discovery sweep bumps it on ANY already-seen profile,
+        # rejected or not, with no analyst action involved. find()'s
+        # rejected-list sort depends on this being untouched by anything
+        # except an actual reject decision.
+        safe["rejected_at"] = datetime.now(timezone.utc)
 
     write: dict[str, Any] = {"$set": safe}
     if "status" in safe:
