@@ -237,8 +237,18 @@ async def find(
 
     coll = db()[PROFILES]
     total = await coll.count_documents(q)
+    # Discovery listing sorts oldest-first (_id is a MongoDB ObjectId, whose
+    # leading bytes are an insertion timestamp -- ascending _id is the same
+    # order documents were saved in, i.e. the order each platform actually
+    # returned them, page by page). That makes page 1 of this listing the
+    # first results a platform's own search returned and the last listing
+    # page the last ones scraped, matching every platform's own top-to-
+    # bottom order instead of "whichever profile was touched most recently"
+    # (analysis keeps that recency sort -- newest finding first is what an
+    # analyst reviewing scored results actually wants).
+    sort_field, sort_dir = ("_id", 1) if phase == PHASE_DISCOVERY else ("last_seen", -1)
     rows = []
-    async for doc in coll.find(q).sort("last_seen", -1).skip(offset).limit(limit):
+    async for doc in coll.find(q).sort(sort_field, sort_dir).skip(offset).limit(limit):
         doc["id"] = str(doc.pop("_id"))
         rows.append(_stamp_utc_for_api(doc))
 
