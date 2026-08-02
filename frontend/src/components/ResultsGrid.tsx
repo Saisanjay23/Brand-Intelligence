@@ -543,7 +543,7 @@ export function ResultsGrid({
                 <span style={{ fontSize: "12px", fontWeight: 500 }}>All Platforms</span>
               </div>
               <div className="rail-card-foot">
-                <span className="rail-pill" style={{ color: "var(--cyan)", fontWeight: 700 }}>
+                <span className="rail-pill" style={{ color: "var(--text-main)", fontWeight: 700 }}>
                   {Object.values(counts.platforms).reduce((a, b) => a + b, 0)} results
                 </span>
               </div>
@@ -567,7 +567,7 @@ export function ResultsGrid({
                     >
                       {p.session_state}
                     </span>
-                    <span className="rail-pill" style={{ color: count > 0 ? "var(--cyan)" : "var(--text-dim)", fontWeight: count > 0 ? 700 : 400 }}>
+                    <span className="rail-pill" style={{ color: count > 0 ? "var(--text-main)" : "var(--text-dim)", fontWeight: count > 0 ? 700 : 400 }}>
                       {count} {count === 1 ? "result" : "results"}
                     </span>
                   </div>
@@ -740,9 +740,9 @@ export function ResultsGrid({
               {(["pending", "approved", "rejected"] as const).map((s) => {
                 const count = counts.statuses[s] ?? 0;
                 const look = {
-                  pending: { label: "⏳ Pending", color: "var(--purple)" },
-                  approved: { label: "✅ Validated", color: "var(--success)" },
-                  rejected: { label: "✕ Rejected", color: "var(--danger)" },
+                  pending: { label: "⏳ Pending", color: "var(--purple)", text: "var(--text-main)" },
+                  approved: { label: "✅ Validated", color: "var(--success)", text: "var(--success)" },
+                  rejected: { label: "✕ Rejected", color: "var(--danger)", text: "var(--danger)" },
                 }[s];
                 return (
                   <button
@@ -760,7 +760,7 @@ export function ResultsGrid({
                       cursor: "pointer",
                       fontSize: "12px",
                       fontWeight: 600,
-                      color: status === s ? look.color : "var(--text-muted)",
+                      color: status === s ? look.text : "var(--text-muted)",
                       transition: "all 0.2s ease",
                     }}
                   >
@@ -820,7 +820,7 @@ export function ResultsGrid({
                 style={{
                   background: viewMode === "grid" ? "rgba(136, 56, 221,0.12)" : "var(--bg-surface)",
                   border: `1px solid ${viewMode === "grid" ? "var(--cyan)" : "var(--border-color)"}`,
-                  color: viewMode === "grid" ? "var(--cyan)" : "var(--text-muted)",
+                  color: viewMode === "grid" ? "var(--text-main)" : "var(--text-muted)",
                   borderRadius: "8px",
                   padding: "7px 10px",
                   cursor: "pointer",
@@ -834,7 +834,7 @@ export function ResultsGrid({
                 style={{
                   background: viewMode === "table" ? "rgba(136, 56, 221,0.12)" : "var(--bg-surface)",
                   border: `1px solid ${viewMode === "table" ? "var(--cyan)" : "var(--border-color)"}`,
-                  color: viewMode === "table" ? "var(--cyan)" : "var(--text-muted)",
+                  color: viewMode === "table" ? "var(--text-main)" : "var(--text-muted)",
                   borderRadius: "8px",
                   padding: "7px 10px",
                   cursor: "pointer",

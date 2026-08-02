@@ -342,10 +342,20 @@ async def launch_login(platform_id: str, timeout_s: int = 300, identifier: str =
 
 # ---------- background health monitor ----------
 
-async def verify_session_item(platform_id: str, cookies: list[dict]) -> tuple[bool, str]:
+async def verify_session_item(platform_id: str, cookies: list[dict]) -> tuple[bool, str, bool]:
     """Exercises the platform's own check_session() against ONE specific
     set of cookies -- the same live check an analysis job runs at its own
-    start, just invoked here without a job attached."""
+    start, just invoked here without a job attached.
+
+    Returns (ok, detail, conclusive). `conclusive` is False whenever the
+    check itself couldn't run to completion -- browser launch failure, or
+    the probe navigation raising (timeout, DNS failure, no internet in
+    this environment right now, etc.) -- as opposed to the navigation
+    succeeding and the platform's own page content showing a login/
+    checkpoint wall. Only a conclusive result is trustworthy evidence that
+    the SESSION (not the network) is the problem; a transient connectivity
+    blip must never be recorded as "this session is now expired."
+    """
     from backend.platforms import registry
     from backend.platforms.scan_options import ScanOptions
 
@@ -354,13 +364,16 @@ async def verify_session_item(platform_id: str, cookies: list[dict]) -> tuple[bo
     try:
         scraper = plat.scraper()(options, cookies)
     except Exception as e:
-        return False, f"could not construct scraper: {type(e).__name__}: {e}"
+        return False, f"could not construct scraper: {type(e).__name__}: {e}", False
     try:
         await scraper.start()
-        ok = await scraper.check_session()
-        return ok, "" if ok else "session invalid or checkpointed"
     except Exception as e:
-        return False, f"{type(e).__name__}: {e}"
+        return False, f"{type(e).__name__}: {e}", False
+    try:
+        ok = await scraper.check_session()
+        return ok, "" if ok else "session invalid or checkpointed", True
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}", False
     finally:
         try:
             await scraper.stop()
@@ -368,10 +381,18 @@ async def verify_session_item(platform_id: str, cookies: list[dict]) -> tuple[bo
             pass
 
 
-async def _record_item_result(platform_id: str, session_id: str, identifier: str, ok: bool, detail: str) -> None:
+async def _record_item_result(
+    platform_id: str, session_id: str, identifier: str, ok: bool, detail: str, conclusive: bool = True,
+) -> None:
     from backend.services import incident_service as incidents_engine
 
     previous = await sessions_db.record_item_health(platform_id, session_id, identifier, ok, detail)
+    if not conclusive:
+        # the check itself failed to run (network/transport error) -- leave
+        # the session's actual status untouched, it may well still be fine
+        if not ok:
+            log.warning(f"{platform_id}/{identifier}: session check inconclusive, leaving status as-is -- {detail}")
+        return
     was_ok = previous is None or previous.get("ok", True)
     if was_ok and not ok:
         await mark_session_failed(platform_id, session_id, "expired")
@@ -411,28 +432,28 @@ async def _pick_batch(platform_id: str, limit: int) -> list[tuple[str, str, list
     return [(s["id"], s["identifier"], s["cookies"]) for _, s in stamped[:limit]]
 
 
-async def verify_session(platform_id: str) -> tuple[bool, str, Optional[tuple[str, str]]]:
+async def verify_session(platform_id: str) -> tuple[bool, str, Optional[tuple[str, str]], bool]:
     from backend.platforms import registry
 
     plat = registry.get(platform_id)
     state = await registry.session_state(plat)
     if state != "ready":
-        return False, f"session {state} (no cookies/credentials to check)", None
+        return False, f"session {state} (no cookies/credentials to check)", None, True
     if plat.uses_api_key or plat.env_keys:
-        return True, "", None
+        return True, "", None, True
     picked = await _pick_batch(platform_id, limit=1)
     if not picked:
-        return False, "no available sessions in the pool to check", None
+        return False, "no available sessions in the pool to check", None, True
     session_id, identifier, cookies = picked[0]
-    ok, detail = await verify_session_item(platform_id, cookies)
-    return ok, detail, (session_id, identifier)
+    ok, detail, conclusive = await verify_session_item(platform_id, cookies)
+    return ok, detail, (session_id, identifier), conclusive
 
 
 async def check_one(platform_id: str) -> tuple[bool, str]:
-    ok, detail, item = await verify_session(platform_id)
+    ok, detail, item, conclusive = await verify_session(platform_id)
     if item is not None:
         session_id, identifier = item
-        await _record_item_result(platform_id, session_id, identifier, ok, detail)
+        await _record_item_result(platform_id, session_id, identifier, ok, detail, conclusive)
     await _record_platform_summary(platform_id)
     return ok, detail
 
@@ -456,8 +477,8 @@ async def check_all_once() -> dict[str, dict]:
             continue
         results = []
         for session_id, identifier, cookies in batch:
-            ok, detail = await verify_session_item(platform_id, cookies)
-            await _record_item_result(platform_id, session_id, identifier, ok, detail)
+            ok, detail, conclusive = await verify_session_item(platform_id, cookies)
+            await _record_item_result(platform_id, session_id, identifier, ok, detail, conclusive)
             results.append({"identifier": identifier, "ok": ok, "detail": detail})
         out[platform_id] = {"checked": len(batch), "results": results}
         await _record_platform_summary(platform_id)
