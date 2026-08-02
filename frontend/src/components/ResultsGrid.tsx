@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { profilesApi } from "../api/profilesApi";
 import type { JobEvent, PlatformHealth, PlatformProgress, Profile, Status } from "../api/types";
 import { PlatformIcon } from "./PlatformIcon";
@@ -389,8 +389,21 @@ export function ResultsGrid({
 
   const isAnalysisView = phase === "analysis";
 
+  // load() is called from a lot of places that can overlap in time: the
+  // 3s live-poll while a job runs, and a fresh reload fired right after
+  // every approve/reject/validate/publish. Those requests can resolve out
+  // of order (a fast small query can land after a slower earlier one), and
+  // without guarding against that, whichever response happens to arrive
+  // LAST wins -- even if it's the stale one -- silently reverting a card
+  // that had just been acted on and making the rest of the grid look like
+  // it never moved. This ref tracks the most recently ISSUED request; a
+  // response only gets applied to state if it's still the latest one by
+  // the time it comes back, so a slow stale response is simply discarded.
+  const requestSeq = useRef(0);
+
   const load = useCallback(
     async (showLoading = true) => {
+      const seq = ++requestSeq.current;
       if (!clientId) {
         setProfiles([]);
         setTotal(0);
@@ -408,6 +421,7 @@ export function ResultsGrid({
           limit: PAGE_SIZE,
           offset,
         });
+        if (seq !== requestSeq.current) return; // a newer load() has since been issued -- drop this stale response
         if (res.items.length === 0 && offset > 0 && res.total > 0) {
           setOffset(0);
           return;
@@ -422,9 +436,9 @@ export function ResultsGrid({
           });
         }
       } catch (e) {
-        onError?.((e as Error).message);
+        if (seq === requestSeq.current) onError?.((e as Error).message);
       } finally {
-        if (showLoading) setLoading(false);
+        if (showLoading && seq === requestSeq.current) setLoading(false);
       }
     },
     [clientId, platform, status, phase, keywordFilter, isAnalysisView, offset, onError],
