@@ -154,7 +154,7 @@ export function filterResults(
 ): Profile[] {
   return rows.filter((r) => {
     if (platform && platform !== "all" && r.platform !== platform) return false;
-    if (filters.status && r.status !== filters.status) return false;
+    if (filters.phase !== "analysis" && filters.status && r.status !== filters.status) return false;
     if (filters.priority && r.priority !== filters.priority) return false;
     if (filters.phase) {
       if (filters.phase === "discovery") {

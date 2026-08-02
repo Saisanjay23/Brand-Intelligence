@@ -76,18 +76,24 @@ async def run_analysis(job: Job) -> None:
 
     await mgr.emit(job, "progress", f"{total_urls} url(s) across {len(targets)} platform(s)", total=total_urls)
 
-    # Every targeted platform is queued up front, so the UI can show all of
-    # them (pending -> running -> done) even though they run one at a time
-    # below, not concurrently.
     for platform_id, urls in targets:
         await mgr.emit(job, "progress", platform=platform_id, platform_status="pending", platform_total=len(urls))
 
-    grand_saved = grand_new = 0
-    for platform_id, urls in targets:
-        saved, new = await _analyse_platform(job, mgr, platform_id, urls, p)
-        grand_saved += saved
-        grand_new += new
-        await mgr.emit(job, "progress", platform=platform_id, platform_status="done", platform_processed=len(urls))
+    import asyncio
+
+    async def _run_one(platform_id: str, urls: list[str]) -> tuple[int, int]:
+        try:
+            saved, new = await _analyse_platform(job, mgr, platform_id, urls, p)
+            await mgr.emit(job, "progress", platform=platform_id, platform_status="done", platform_processed=len(urls))
+            return saved, new
+        except Exception as e:
+            log.error(f"job {job.id}: {platform_id} analysis failed: {type(e).__name__}: {e}")
+            await mgr.emit(job, "progress", platform=platform_id, platform_status="failed")
+            return 0, 0
+
+    results = await asyncio.gather(*(_run_one(pid, urls) for pid, urls in targets))
+    grand_saved = sum(r[0] for r in results)
+    grand_new = sum(r[1] for r in results)
 
     job.new_profiles = grand_new
     job.message = job.message or f"{grand_saved} analysed, {grand_new} new"
@@ -104,11 +110,18 @@ async def _analyse_platform(job: Job, mgr, platform_id: str, urls: list[str], pa
     remaining = urls.copy()
     rows: list[Row] = []
     consecutive_timeouts = 0
+    saved = new = 0
 
     await mgr.emit(job, "progress", platform=platform_id, platform_status="running", platform_total=len(urls))
 
     while remaining:
-        plat, session_item = await sessions_engine.session_for_job(platform_id)
+        try:
+            plat, session_item = await sessions_engine.session_for_job(platform_id)
+        except Exception as e:
+            log.warning(f"[{platform_id}] stopping analysis early: could not acquire session: {e}")
+            await mgr.emit(job, "progress", f"[{platform_id}] stopped early: no healthy session remaining")
+            break
+
         scraper = plat.scraper()(
             options, session_item.get("cookies", []),
             session_id=session_item.get("id", ""), proxy=session_item.get("proxy"),
@@ -120,7 +133,8 @@ async def _analyse_platform(job: Job, mgr, platform_id: str, urls: list[str], pa
                 if not session_id:
                     # key/MTProto-authed: no pool to rotate through -- the
                     # same credential would just fail again forever
-                    raise RuntimeError(f"{platform_id} credentials invalid or rejected")
+                    log.warning(f"[{platform_id}] credentials invalid or rejected")
+                    break
                 await sessions_engine.mark_session_failed(platform_id, session_id, "expired")
                 continue  # retry loop with the next available pooled session
 
@@ -164,6 +178,17 @@ async def _analyse_platform(job: Job, mgr, platform_id: str, urls: list[str], pa
                     consecutive_timeouts = 0
                 remaining.pop(0)
 
+                # Save immediately to database so results are visible right away in UI
+                try:
+                    s, n = await profiles_db.save_many(
+                        job.client_id, platform_id, "analysis", [_row_to_fields(row)]
+                    )
+                    saved += s
+                    new += n
+                    job.new_profiles += n
+                except Exception as e:
+                    log.warning(f"job {job.id}: failed to save analyzed profile {url}: {e}")
+
                 try:
                     health_engine.record(platform_id, row.status, row.notes)
                 except Exception:
@@ -190,6 +215,4 @@ async def _analyse_platform(job: Job, mgr, platform_id: str, urls: list[str], pa
         finally:
             await scraper.stop()
 
-    if not rows:
-        return 0, 0
-    return await profiles_db.save_many(job.client_id, platform_id, "analysis", [_row_to_fields(r) for r in rows])
+    return saved, new

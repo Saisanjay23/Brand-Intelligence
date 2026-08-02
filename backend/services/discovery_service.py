@@ -73,9 +73,6 @@ async def run_discovery(job: Job) -> None:
 
     await mgr.emit(job, "progress", f"sweeping {len(ready)} platform(s) for {len(keywords)} keyword(s)", total=len(ready))
 
-    # Every ready platform is queued up front, so the UI can show all of
-    # them (pending -> running -> done/failed) even though they run one at
-    # a time below, not concurrently.
     sweep_units = max(1, len(keywords) * len(tabs))
     for platform_id in ready:
         await mgr.emit(job, "progress", platform=platform_id, platform_status="pending", platform_total=sweep_units)
@@ -83,19 +80,23 @@ async def run_discovery(job: Job) -> None:
     total_saved = total_new = 0
     notes: list[str] = []
 
-    for platform_id in ready:
+    async def _run_one(platform_id: str) -> tuple[str, int, int, str]:
         plat = registry.get(platform_id)
         try:
             saved, new, note = await _sweep_platform(job, mgr, plat, keywords, tabs, p)
-            total_saved += saved
-            total_new += new
-            if note:
-                notes.append(f"{platform_id}: {note}")
             await mgr.emit(job, "progress", platform=platform_id, platform_status="done", platform_processed=sweep_units)
+            return platform_id, saved, new, note
         except Exception as e:
             log.error(f"job {job.id}: {platform_id} sweep failed: {type(e).__name__}: {e}")
-            notes.append(f"{platform_id}: FAILED ({type(e).__name__}: {e})")
             await mgr.emit(job, "progress", platform=platform_id, platform_status="failed")
+            return platform_id, 0, 0, f"FAILED ({type(e).__name__}: {e})"
+
+    results = await asyncio.gather(*(_run_one(pid) for pid in ready))
+    for platform_id, saved, new, note in results:
+        total_saved += saved
+        total_new += new
+        if note:
+            notes.append(f"{platform_id}: {note}")
         await mgr.emit(job, "progress", f"{platform_id} done", found=total_saved)
 
     job.message = f"{total_saved} stored, {total_new} new" + (f" -- {'; '.join(notes)}" if notes else "")
