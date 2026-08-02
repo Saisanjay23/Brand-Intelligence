@@ -14,6 +14,10 @@ interface Props {
   clientName: string;
   platforms: PlatformHealth[];
   onClient: (clientId: string, name: string) => void;
+  // removes a client from the browser's local "recently used" cache -- must
+  // be called on delete, or the deleted client keeps reappearing in the
+  // header's dropdown even though it's gone from the database.
+  onForgetClient: (clientId: string) => void;
   busy: boolean;
   analysisBusy: boolean;
   onJobs: (jobs: Job[]) => void;
@@ -205,7 +209,7 @@ function PlatformLimitsEditor({
 
 const EMPTY_FORM = { id: "", name: "", domain: "", nameKw: [] as string[], domainKw: [] as string[], cron: "" };
 
-export function HomeView({ clientId, platforms, onClient, busy, analysisBusy, onJobs, onError }: Props) {
+export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, analysisBusy, onJobs, onError }: Props) {
   const [clients, setClients] = useState<Client[]>([]);
   const [loadingClients, setLoadingClients] = useState(true);
   const [mode, setMode] = useState<Mode>(clientId ? "select" : "create");
@@ -409,10 +413,10 @@ export function HomeView({ clientId, platforms, onClient, busy, analysisBusy, on
     setDeleting(true);
     try {
       await clientsApi.deleteClient(activeClient.client_id);
+      onForgetClient(activeClient.client_id);
       setActiveClient(null);
       setEditing(false);
       clearForm();
-      onClient("", "");
       refreshClients();
     } catch (e) {
       onError((e as Error).message);

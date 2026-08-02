@@ -52,7 +52,9 @@ export default function App() {
   const onClient = useCallback((id: string, name: string) => {
     setClientId(id);
     setClientName(name);
-    setRecentClients(rememberClient({ client_id: id, name }));
+    // an empty id means "clear the active client" (e.g. the picker's blank
+    // option) -- must not write a blank entry into the recent-clients cache
+    if (id) setRecentClients(rememberClient({ client_id: id, name }));
   }, []);
 
   const onForgetClient = useCallback(
@@ -100,6 +102,7 @@ export default function App() {
           clientName={clientName}
           platforms={platforms}
           onClient={onClient}
+          onForgetClient={onForgetClient}
           busy={discoveryJobs.running}
           analysisBusy={analysisJobs.running}
           onJobs={(jobs) => {
