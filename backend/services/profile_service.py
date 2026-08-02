@@ -56,22 +56,26 @@ def _to_full(doc: dict, client_name: str) -> dict:
         "risk_score": doc.get("risk_score"),
         "priority": doc.get("priority"),
         "comments": doc.get("comments"),
+        "published": doc.get("published", True),
+        "publish_hold_until": doc.get("publish_hold_until"),
     }
 
 
 async def list_profiles(
     client_id: str, status: Optional[str] = None, phase: Optional[str] = None,
     platform: Optional[str] = None, limit: int = 100, offset: int = 0,
+    include_held: bool = False,
 ) -> dict:
-    docs, total = await profiles_db.find(
+    docs, total, counts = await profiles_db.find(
         client_id, platform=platform, status=status, phase=phase, limit=limit, offset=offset,
+        include_held=include_held,
     )
     if phase == profiles_db.PHASE_ANALYSIS:
         client = await clients_db.try_get(client_id)
         items = [_to_full(d, client["name"] if client else "") for d in docs]
     else:
         items = [_to_card(d) for d in docs]
-    return {"items": items, "total": total}
+    return {"items": items, "total": total, "counts": counts}
 
 
 async def get_profile(profile_id: str) -> dict:
@@ -88,3 +92,9 @@ async def patch_profile(profile_id: str, body_fields: dict) -> dict:
     if fields.get("status") == "approved":
         job_manager.create(ANALYSIS, updated["client_id"], {}, platform=updated.get("platform"))
     return updated
+
+
+async def publish_profile(profile_id: str) -> dict:
+    """An analyst confirming a held analysis result before its hold clears
+    on its own -- see ADR 0007."""
+    return await profiles_db.publish(profile_id)

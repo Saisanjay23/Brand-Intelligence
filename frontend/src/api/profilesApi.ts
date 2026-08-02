@@ -17,7 +17,13 @@ export const profilesApi = {
     if (q.platform) p.set("platform", q.platform);
     p.set("limit", String(q.limit ?? 100));
     p.set("offset", String(q.offset ?? 0));
-    return fetch(url(`/profiles?${p}`)).then(json<{ items: Profile[]; total: number }>);
+    // This is the analyst tool -- always see a freshly analysed result
+    // even while it's on its publish hold (see backend/docs/adr/0007-publish-hold.md);
+    // the client-facing default (used by anything that omits this) hides it.
+    p.set("include_held", "true");
+    return fetch(url(`/profiles?${p}`)).then(
+      json<{ items: Profile[]; total: number; counts?: { platforms?: Record<string, number>; statuses?: Record<string, number> } }>,
+    );
   },
   profile: (id: string) => fetch(url(`/profiles/${id}`)).then(json<Profile>),
   patchProfile: (id: string, fields: ProfilePatch) =>
@@ -26,4 +32,6 @@ export const profilesApi = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(fields),
     }).then(json<Profile>),
+  publishProfile: (id: string) =>
+    fetch(url(`/profiles/${id}/publish`), { method: "POST" }).then(json<Profile>),
 };

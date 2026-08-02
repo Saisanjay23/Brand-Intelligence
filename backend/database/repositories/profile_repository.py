@@ -15,13 +15,14 @@ run unattended.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from bson import ObjectId
 from bson.errors import InvalidId
 from pymongo.errors import DuplicateKeyError
 
+from backend.config.settings import settings
 from backend.shared.errors import NotFoundError, ValidationError
 from backend.shared.logging import get_logger
 from backend.database.connection import db
@@ -75,7 +76,7 @@ def _stamp_utc_for_api(doc: dict) -> dict:
     """Mongo hands every datetime back naive-but-UTC-VALUED (motor isn't
     tz_aware); stamp UTC explicitly on the way out so a JSON client doesn't
     read the unmarked ISO string as local time."""
-    for f in ("first_seen", "last_seen", "changed_at"):
+    for f in ("first_seen", "last_seen", "changed_at", "publish_hold_until"):
         v = doc.get(f)
         if isinstance(v, datetime) and v.tzinfo is None:
             doc[f] = v.replace(tzinfo=timezone.utc)
@@ -127,6 +128,12 @@ async def save(
     # already-scored profile must not demote it back to "discovery"
     if phase == PHASE_ANALYSIS:
         update["$set"]["phase"] = PHASE_ANALYSIS
+        # every fresh analysis result starts held back from the default
+        # (client-facing) view for a review window -- see ADR 0007
+        update["$set"]["published"] = False
+        update["$set"]["publish_hold_until"] = datetime.now(timezone.utc) + timedelta(
+            minutes=settings.publish_hold_minutes
+        )
     if keyword:
         update["$addToSet"]["keywords"] = keyword
 
@@ -188,7 +195,13 @@ async def save_many(
 async def find(
     client_id: str, *, platform: Optional[str] = None, status: Optional[str] = None,
     phase: Optional[str] = None, limit: int = 100, offset: int = 0,
-) -> tuple[list[dict], int]:
+    include_held: bool = False,
+) -> tuple[list[dict], int, dict]:
+    """`include_held=False` (the default -- used by any caller that doesn't
+    explicitly ask otherwise, i.e. the SaaS backend's normal poll) hides a
+    freshly analysed row until its publish hold clears -- see ADR 0007. The
+    analyst-facing frontend always passes `include_held=True` so analysts
+    see held rows immediately, flagged with a countdown."""
     q: dict[str, Any] = {"client_id": client_id}
     if platform:
         q["platform"] = platform
@@ -199,6 +212,15 @@ async def find(
             q["$or"] = [{"phase": PHASE_DISCOVERY}, {"status": "approved"}]
         else:
             q["phase"] = phase
+            if not include_held:
+                q["$or"] = [
+                    {"published": True},
+                    {"publish_hold_until": {"$lte": datetime.now(timezone.utc)}},
+                    # a row analysed before this feature existed has neither
+                    # field at all -- treat it as already published rather
+                    # than retroactively hiding it (see ADR 0007)
+                    {"publish_hold_until": {"$exists": False}},
+                ]
 
     coll = db()[PROFILES]
     total = await coll.count_documents(q)
@@ -206,7 +228,23 @@ async def find(
     async for doc in coll.find(q).sort("last_seen", -1).skip(offset).limit(limit):
         doc["id"] = str(doc.pop("_id"))
         rows.append(_stamp_utc_for_api(doc))
-    return rows, total
+
+    plat_match = dict(q)
+    plat_match.pop("platform", None)
+    plat_counts = {}
+    async for doc in coll.aggregate([{"$match": plat_match}, {"$group": {"_id": "$platform", "count": {"$sum": 1}}}]):
+        if doc.get("_id"):
+            plat_counts[str(doc["_id"])] = doc["count"]
+
+    status_match = dict(q)
+    status_match.pop("status", None)
+    status_counts = {}
+    async for doc in coll.aggregate([{"$match": status_match}, {"$group": {"_id": "$status", "count": {"$sum": 1}}}]):
+        if doc.get("_id"):
+            status_counts[str(doc["_id"])] = doc["count"]
+
+    counts = {"platforms": plat_counts, "statuses": status_counts}
+    return rows, total, counts
 
 
 async def urls_for(
@@ -291,6 +329,18 @@ async def patch(doc_id: str, fields: dict) -> dict:
         write["$unset"] = {"changes": "", "changed_at": ""}
 
     res = await db()[PROFILES].update_one({"_id": oid}, write)
+    if res.matched_count == 0:
+        raise NotFoundError(f"profile {doc_id!r} not found")
+    updated = await get_by_id(doc_id)
+    return updated or {}
+
+
+async def publish(doc_id: str) -> dict:
+    """An analyst confirming a held analysis result early, before its hold
+    naturally clears -- see ADR 0007. A no-op find()-visibility-wise for a
+    row that was never held (already published, or not yet analysed)."""
+    oid = _oid(doc_id)
+    res = await db()[PROFILES].update_one({"_id": oid}, {"$set": {"published": True}})
     if res.matched_count == 0:
         raise NotFoundError(f"profile {doc_id!r} not found")
     updated = await get_by_id(doc_id)

@@ -15,9 +15,11 @@ from backend.services import profile_service
 async def list_profiles(
     client_id: str, status: Optional[str] = None, phase: Optional[str] = None,
     platform: Optional[str] = None, limit: int = 100, offset: int = 0,
+    include_held: bool = False,
 ) -> dict:
     return await profile_service.list_profiles(
         client_id, status=status, phase=phase, platform=platform, limit=limit, offset=offset,
+        include_held=include_held,
     )
 
 
@@ -27,3 +29,7 @@ async def get_profile(profile_id: str) -> dict:
 
 async def patch_profile(profile_id: str, body: ProfilePatch) -> dict:
     return await profile_service.patch_profile(profile_id, body.model_dump())
+
+
+async def publish_profile(profile_id: str) -> dict:
+    return await profile_service.publish_profile(profile_id)

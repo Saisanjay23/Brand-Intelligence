@@ -84,6 +84,11 @@ export interface Profile {
   username?: string;
   location?: string;
   last_post_date?: string | null;
+  // publish hold (phase=analysis only) -- see backend/docs/adr/0007-publish-hold.md.
+  // A row missing these (discovery-phase, or analysed before this feature
+  // existed) should be treated as already published.
+  published?: boolean;
+  publish_hold_until?: string | null;
 }
 
 export interface ProfilePatch {

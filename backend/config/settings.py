@@ -66,6 +66,12 @@ class Settings(BaseSettings):
     webhook_timeout_sec: float = 10.0
     webhook_max_retries: int = 3
 
+    # a freshly analysed profile is held back from the default (client-
+    # facing) view for this long, so an analyst who approved a false
+    # positive has a window to revert it before anyone downstream sees the
+    # scored result -- see docs/adr/0007-publish-hold.md
+    publish_hold_minutes: float = 10.0
+
     @field_validator("alert_emails", mode="before")
     @classmethod
     def _split_csv(cls, v):

@@ -118,6 +118,19 @@ function LiveFeed({ title, log }: { title: string; log: JobEvent[] }) {
   );
 }
 
+// A freshly analysed row is held back from the client-facing view for a
+// review window (see backend/docs/adr/0007-publish-hold.md) -- this is the
+// countdown shown to the analyst, recomputed on every render rather than a
+// ticking interval, since minute-level precision is all a review workflow
+// needs.
+function holdRemainingLabel(publishHoldUntil?: string | null): string {
+  if (!publishHoldUntil) return "";
+  const remainingMs = new Date(publishHoldUntil).getTime() - Date.now();
+  if (remainingMs <= 0) return "publishing…";
+  const mins = Math.ceil(remainingMs / 60000);
+  return mins <= 1 ? "~1m left" : `~${mins}m left`;
+}
+
 function toCsv(rows: Profile[]): string {
   const cols = [
     "id", "platform", "status", "phase", "url", "profile_name", "username",
@@ -133,7 +146,13 @@ function toCsv(rows: Profile[]): string {
 }
 
 function ProfileAvatar({ r, size }: { r: Profile; size?: number }) {
-  if (!r.profile_image_url) {
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    setError(false);
+  }, [r.profile_image_url]);
+
+  if (!r.profile_image_url || error) {
     return (
       <span
         className="profile-avatar-circle"
@@ -143,14 +162,17 @@ function ProfileAvatar({ r, size }: { r: Profile; size?: number }) {
       </span>
     );
   }
+  const src = r.profile_image_url.startsWith("http")
+    ? `/profiles/media-proxy?url=${encodeURIComponent(r.profile_image_url)}`
+    : r.profile_image_url;
   return (
     <img
-      src={r.profile_image_url}
+      src={src}
       alt=""
       referrerPolicy="no-referrer"
       loading="lazy"
       style={size ? { width: size, height: size, borderRadius: "50%", objectFit: "cover" } : { width: "100%", height: "100%", objectFit: "cover" }}
-      onError={(e) => ((e.target as HTMLImageElement).style.visibility = "hidden")}
+      onError={() => setError(true)}
     />
   );
 }
@@ -160,10 +182,12 @@ interface CardProps {
   isAnalysisView: boolean;
   savingId: string | null;
   onDecide: (id: string, next: Status) => void;
+  onPublish: (id: string) => void;
 }
 
-function ProfileCard({ r, isAnalysisView, savingId, onDecide }: CardProps) {
+function ProfileCard({ r, isAnalysisView, savingId, onDecide, onPublish }: CardProps) {
   const name = r.profile_name || r.username || r.url;
+  const isHeld = isAnalysisView && r.published === false;
   return (
     <div className="profile-card">
       <div className="profile-card-header">
@@ -206,6 +230,19 @@ function ProfileCard({ r, isAnalysisView, savingId, onDecide }: CardProps) {
         </div>
         {isAnalysisView && r.username && <div className="profile-handle">@{r.username}</div>}
 
+        {isHeld && (
+          <div
+            style={{
+              fontSize: "11px", color: "var(--purple)", background: "rgba(136,56,221,0.1)",
+              border: "1px solid rgba(136,56,221,0.3)", borderRadius: "6px",
+              padding: "4px 8px", marginTop: "4px",
+            }}
+            title="Not yet visible outside this tool -- gives you a window to revert a false positive before it's published"
+          >
+            ⏳ On hold — {holdRemainingLabel(r.publish_hold_until)}
+          </div>
+        )}
+
         {isAnalysisView && (
           <div className="card-detail-row">
             <span>👥 {r.followers ?? emptyLabel(r, r.platform, "followers")}</span>
@@ -231,6 +268,16 @@ function ProfileCard({ r, isAnalysisView, savingId, onDecide }: CardProps) {
               ✕ Reject
             </button>
           )}
+          {isHeld && (
+            <button
+              className="btn-accept"
+              disabled={savingId === r.id}
+              onClick={() => onPublish(r.id)}
+              title="Skip the rest of the hold and publish this result now"
+            >
+              📢 Publish Now
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -250,7 +297,7 @@ export function ResultsGrid({
 }: Props) {
   const [platform, setPlatform] = useState("");
   const [phase, setPhase] = useState<"discovery" | "analysis">("discovery");
-  const [status, setStatus] = useState("");
+  const [status, setStatus] = useState("pending");
   const [priority, setPriority] = useState("");
   const [sortOrder, setSortOrder] = useState<"recent" | "past">("recent");
   const [keywordFilter, setKeywordFilter] = useState("");
@@ -260,6 +307,7 @@ export function ResultsGrid({
 
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [total, setTotal] = useState(0);
+  const [counts, setCounts] = useState<{ platforms: Record<string, number>; statuses: Record<string, number> }>({ platforms: {}, statuses: {} });
   const [loading, setLoading] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -272,6 +320,7 @@ export function ResultsGrid({
       if (!clientId) {
         setProfiles([]);
         setTotal(0);
+        setCounts({ platforms: {}, statuses: {} });
         return;
       }
       if (showLoading) setLoading(true);
@@ -284,8 +333,18 @@ export function ResultsGrid({
           limit: PAGE_SIZE,
           offset,
         });
+        if (res.items.length === 0 && offset > 0 && res.total > 0) {
+          setOffset(0);
+          return;
+        }
         setProfiles(res.items);
         setTotal(res.total);
+        if (res.counts) {
+          setCounts({
+            platforms: res.counts.platforms || {},
+            statuses: res.counts.statuses || {},
+          });
+        }
       } catch (e) {
         onError?.((e as Error).message);
       } finally {
@@ -312,7 +371,7 @@ export function ResultsGrid({
     return () => clearInterval(interval);
   }, [discoveryRunning, analysisRunning, load]);
 
-  const filters: ResultFilters = { status, priority, phase };
+  const filters: ResultFilters = { status: !isAnalysisView ? status : "", priority, phase };
   const extra: ExtraFilters = { keywordFilter, searchQuery };
   const displayed = useMemo(
     () => sortResults(filterResults(profiles, filters, extra, platform), sortOrder, phase, keywordFilter),
@@ -322,11 +381,29 @@ export function ResultsGrid({
 
   const decide = async (id: string, next: Status) => {
     const prev = profiles.find((r) => r.id === id);
-    setProfiles((rows) => rows.map((r) => (r.id === id ? { ...r, status: next } : r)));
+    setProfiles((rows) => {
+      const updated = rows.map((r) => (r.id === id ? { ...r, status: next } : r));
+      return status ? updated.filter((r) => r.status === status) : updated;
+    });
     setSavingId(id);
     try {
       await profilesApi.patchProfile(id, { status: next });
-      // approving auto-queues analysis server-side -- nothing else to do here
+      // Automatically pull next items from page 2 into page 1 without needing manual navigation
+      await load(false);
+    } catch (e) {
+      if (prev) setProfiles((rows) => [...rows.filter((r) => r.id !== prev.id), prev]);
+      onError?.((e as Error).message);
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  const publish = async (id: string) => {
+    const prev = profiles.find((r) => r.id === id);
+    setProfiles((rows) => rows.map((r) => (r.id === id ? { ...r, published: true } : r)));
+    setSavingId(id);
+    try {
+      await profilesApi.publishProfile(id);
     } catch (e) {
       if (prev) setProfiles((rows) => rows.map((r) => (r.id === id ? prev : r)));
       onError?.((e as Error).message);
@@ -465,49 +542,197 @@ export function ResultsGrid({
                 <span style={{ fontSize: "16px" }}>🌐</span>
                 <span style={{ fontSize: "12px", fontWeight: 500 }}>All Platforms</span>
               </div>
-            </div>
-            {platforms.map((p) => (
-              <div
-                key={p.platform}
-                className={`platform-rail-item ${platform === p.platform ? "active" : ""}`}
-                onClick={() => setPlatform(p.platform)}
-              >
-                <div className="rail-card-head">
-                  <PlatformIcon platform={p.platform} size={18} />
-                  <span style={{ fontSize: "12px", fontWeight: 500 }}>{p.name}</span>
-                </div>
-                <div className="rail-card-foot">
-                  <span
-                    className="rail-pill"
-                    style={{ color: p.session_state === "ready" ? "var(--success)" : "var(--text-dim)" }}
-                  >
-                    {p.session_state}
-                  </span>
-                </div>
-                {discoveryRunning && discoveryProgress[p.platform] && (
-                  <PlatformProgressRow label="🔍 Discovery" progress={discoveryProgress[p.platform]} />
-                )}
-                {analysisRunning && analysisProgress[p.platform] && (
-                  <PlatformProgressRow label="📊 Analysis" progress={analysisProgress[p.platform]} />
-                )}
+              <div className="rail-card-foot">
+                <span className="rail-pill" style={{ color: "var(--cyan)", fontWeight: 700 }}>
+                  {Object.values(counts.platforms).reduce((a, b) => a + b, 0)} results
+                </span>
               </div>
-            ))}
+            </div>
+            {platforms.map((p) => {
+              const count = counts.platforms[p.platform] || 0;
+              return (
+                <div
+                  key={p.platform}
+                  className={`platform-rail-item ${platform === p.platform ? "active" : ""}`}
+                  onClick={() => setPlatform(p.platform)}
+                >
+                  <div className="rail-card-head">
+                    <PlatformIcon platform={p.platform} size={18} />
+                    <span style={{ fontSize: "12px", fontWeight: 500 }}>{p.name}</span>
+                  </div>
+                  <div className="rail-card-foot" style={{ display: "flex", justifyContent: "space-between", width: "100%" }}>
+                    <span
+                      className="rail-pill"
+                      style={{ color: p.session_state === "ready" ? "var(--success)" : "var(--text-dim)" }}
+                    >
+                      {p.session_state}
+                    </span>
+                    <span className="rail-pill" style={{ color: count > 0 ? "var(--cyan)" : "var(--text-dim)", fontWeight: count > 0 ? 700 : 400 }}>
+                      {count} {count === 1 ? "result" : "results"}
+                    </span>
+                  </div>
+                  {(discoveryRunning || phase === "discovery") && discoveryProgress[p.platform] && (
+                    <PlatformProgressRow label="🔍 Discovery" progress={discoveryProgress[p.platform]} />
+                  )}
+                  {(analysisRunning || phase === "analysis") && analysisProgress[p.platform] && (
+                    <PlatformProgressRow label="📊 Analysis" progress={analysisProgress[p.platform]} />
+                  )}
+                </div>
+              );
+            })}
           </div>
+
+          {(discoveryRunning || (phase === "discovery" && Object.keys(discoveryProgress).length > 0)) && (
+            <div className="dashboard-card-box" style={{ marginTop: "16px", borderLeft: "4px solid var(--cyan)", background: "rgba(0, 229, 255, 0.04)" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px", flexWrap: "wrap", gap: "8px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <span style={{ fontSize: "18px" }}>🔍</span>
+                  <span style={{ fontWeight: 700, color: "var(--text-main)", fontSize: "14px" }}>
+                    {discoveryRunning ? "Live Discovery Sweep Progress" : "Recent Discovery Status"}
+                  </span>
+                  {discoveryRunning ? (
+                    <span className="rail-pill" style={{ background: "var(--cyan)", color: "#000", fontWeight: 700, animation: "pulse 1.5s infinite" }}>
+                      RUNNING
+                    </span>
+                  ) : (
+                    <span className="rail-pill" style={{ background: "rgba(0,193,77,0.2)", color: "var(--success)", fontWeight: 700 }}>
+                      COMPLETED
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontFamily: "var(--font-mono)", fontSize: "13px", fontWeight: 700, color: "var(--cyan)" }}>
+                  {Object.values(discoveryProgress).reduce((acc, p) => acc + (p.processed || 0), 0)} / {Object.values(discoveryProgress).reduce((acc, p) => acc + (p.total || 0), 0) || "?"} Sweeps Completed
+                </div>
+              </div>
+              <div style={{ height: "8px", background: "var(--bg-inner)", borderRadius: "4px", overflow: "hidden" }}>
+                <div
+                  style={{
+                    height: "100%",
+                    width: `${Math.min(100, Math.round((Object.values(discoveryProgress).reduce((acc, p) => acc + (p.processed || 0), 0) / (Object.values(discoveryProgress).reduce((acc, p) => acc + (p.total || 0), 0) || 1)) * 100))}%`,
+                    background: "linear-gradient(90deg, var(--cyan), var(--purple))",
+                    transition: "width 0.4s ease",
+                  }}
+                />
+              </div>
+              <div style={{ display: "flex", gap: "10px", marginTop: "12px", flexWrap: "wrap" }}>
+                {Object.entries(discoveryProgress).map(([plat, prog]) => (
+                  <div key={plat} style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", background: "var(--bg-surface)", padding: "5px 12px", borderRadius: "16px", border: "1px solid var(--border-color)" }}>
+                    <PlatformIcon platform={plat} size={15} />
+                    <span style={{ fontWeight: 600, textTransform: "capitalize", color: "var(--text-main)" }}>{plat}:</span>
+                    <span style={{ color: PLATFORM_STATUS_LOOK[prog.status]?.color || "var(--text-main)", fontWeight: 700 }}>
+                      {PLATFORM_STATUS_LOOK[prog.status]?.icon} {prog.processed}/{prog.total}
+                    </span>
+                    {prog.eta_seconds !== null && prog.status === "running" && (
+                      <span style={{ fontSize: "11px", color: "var(--text-dim)", marginLeft: "4px" }}>
+                        ({formatEta(prog.eta_seconds)})
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {(analysisRunning || (phase === "analysis" && Object.keys(analysisProgress).length > 0)) && (
+            <div className="dashboard-card-box" style={{ marginTop: "16px", borderLeft: "4px solid var(--purple)", background: "rgba(136, 56, 221, 0.05)" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px", flexWrap: "wrap", gap: "8px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <span style={{ fontSize: "18px" }}>📊</span>
+                  <span style={{ fontWeight: 700, color: "var(--text-main)", fontSize: "14px" }}>
+                    {analysisRunning ? "Live Analysis Progress" : "Recent Analysis Status"}
+                  </span>
+                  {analysisRunning ? (
+                    <span className="rail-pill" style={{ background: "var(--purple)", color: "#fff", fontWeight: 700, animation: "pulse 1.5s infinite" }}>
+                      RUNNING
+                    </span>
+                  ) : (
+                    <span className="rail-pill" style={{ background: "rgba(0,193,77,0.2)", color: "var(--success)", fontWeight: 700 }}>
+                      COMPLETED
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontFamily: "var(--font-mono)", fontSize: "13px", fontWeight: 700, color: "var(--purple)" }}>
+                  {Object.values(analysisProgress).reduce((acc, p) => acc + (p.processed || 0), 0)} / {Object.values(analysisProgress).reduce((acc, p) => acc + (p.total || 0), 0) || "?"} Profiles Analysed
+                  {Object.values(analysisProgress).reduce((acc, p) => acc + (p.total || 0), 0) > 0 ? ` (${Math.round((Object.values(analysisProgress).reduce((acc, p) => acc + (p.processed || 0), 0) / Object.values(analysisProgress).reduce((acc, p) => acc + (p.total || 0), 0)) * 100)}%)` : ""}
+                </div>
+              </div>
+              <div style={{ height: "8px", background: "var(--bg-inner)", borderRadius: "4px", overflow: "hidden" }}>
+                <div
+                  style={{
+                    height: "100%",
+                    width: `${Math.min(100, Math.round((Object.values(analysisProgress).reduce((acc, p) => acc + (p.processed || 0), 0) / (Object.values(analysisProgress).reduce((acc, p) => acc + (p.total || 0), 0) || 1)) * 100))}%`,
+                    background: "linear-gradient(90deg, var(--purple), var(--cyan), var(--success))",
+                    transition: "width 0.4s ease",
+                  }}
+                />
+              </div>
+              <div style={{ display: "flex", gap: "10px", marginTop: "12px", flexWrap: "wrap" }}>
+                {Object.entries(analysisProgress).map(([plat, prog]) => (
+                  <div key={plat} style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", background: "var(--bg-surface)", padding: "5px 12px", borderRadius: "16px", border: "1px solid var(--border-color)" }}>
+                    <PlatformIcon platform={plat} size={15} />
+                    <span style={{ fontWeight: 600, textTransform: "capitalize", color: "var(--text-main)" }}>{plat}:</span>
+                    <span style={{ color: PLATFORM_STATUS_LOOK[prog.status]?.color || "var(--text-main)", fontWeight: 700 }}>
+                      {PLATFORM_STATUS_LOOK[prog.status]?.icon} {prog.processed}/{prog.total}
+                    </span>
+                    {prog.eta_seconds !== null && prog.status === "running" && (
+                      <span style={{ fontSize: "11px", color: "var(--text-dim)", marginLeft: "4px" }}>
+                        ({formatEta(prog.eta_seconds)})
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {discoveryRunning && discoveryLog.length > 0 && <LiveFeed title="Discovery Feed" log={discoveryLog} />}
           {analysisRunning && analysisLog.length > 0 && <LiveFeed title="Analysis Feed" log={analysisLog} />}
 
           {!isAnalysisView && (
-            <div className="status-summary-row" style={{ marginTop: "16px" }}>
-              {(["pending", "approved", "rejected"] as const).map((s) => (
-                <span
-                  key={s}
-                  className={`status-chip ${status === s ? "on" : ""}`}
-                  onClick={() => setStatus(status === s ? "" : s)}
-                >
-                  {s}
-                </span>
-              ))}
+            <div className="status-summary-row" style={{ marginTop: "16px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              {(["pending", "approved", "rejected"] as const).map((s) => {
+                const count = counts.statuses[s] ?? 0;
+                const look = {
+                  pending: { label: "⏳ Pending", color: "var(--purple)" },
+                  approved: { label: "✅ Validated", color: "var(--success)" },
+                  rejected: { label: "✕ Rejected", color: "var(--danger)" },
+                }[s];
+                return (
+                  <button
+                    key={s}
+                    className={`status-chip ${status === s ? "on" : ""}`}
+                    onClick={() => setStatus(status === s ? "" : s)}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "8px",
+                      padding: "6px 14px",
+                      borderRadius: "20px",
+                      border: `1px solid ${status === s ? look.color : "var(--border-color)"}`,
+                      background: status === s ? "var(--bg-surface)" : "transparent",
+                      cursor: "pointer",
+                      fontSize: "12px",
+                      fontWeight: 600,
+                      color: status === s ? look.color : "var(--text-muted)",
+                      transition: "all 0.2s ease",
+                    }}
+                  >
+                    <span>{look.label}</span>
+                    <span
+                      style={{
+                        background: status === s ? look.color : "var(--bg-inner)",
+                        color: status === s ? "#fff" : "var(--text-dim)",
+                        padding: "2px 8px",
+                        borderRadius: "12px",
+                        fontSize: "11px",
+                        fontWeight: 700,
+                      }}
+                    >
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           )}
 
@@ -608,7 +833,7 @@ export function ResultsGrid({
           {!loading && displayed.length > 0 && viewMode === "grid" && (
             <div className="profile-grid-container" style={{ marginTop: "12px" }}>
               {displayed.map((r) => (
-                <ProfileCard key={r.id} r={r} isAnalysisView={isAnalysisView} savingId={savingId} onDecide={decide} />
+                <ProfileCard key={r.id} r={r} isAnalysisView={isAnalysisView} savingId={savingId} onDecide={decide} onPublish={publish} />
               ))}
             </div>
           )}
@@ -633,7 +858,9 @@ export function ResultsGrid({
                   </tr>
                 </thead>
                 <tbody>
-                  {displayed.map((r) => (
+                  {displayed.map((r) => {
+                    const isHeld = isAnalysisView && r.published === false;
+                    return (
                     <tr key={r.id}>
                       <td>
                         <ProfileAvatar r={r} size={28} />
@@ -718,6 +945,14 @@ export function ResultsGrid({
                         <span className="status-chip on" style={{ cursor: "default" }}>
                           {r.status}
                         </span>
+                        {isHeld && (
+                          <div
+                            style={{ fontSize: "10px", color: "var(--purple)", marginTop: "3px", whiteSpace: "nowrap" }}
+                            title="Not yet visible outside this tool -- gives you a window to revert a false positive before it's published"
+                          >
+                            ⏳ {holdRemainingLabel(r.publish_hold_until)}
+                          </div>
+                        )}
                       </td>
                       <td>
                         {r.status !== "approved" && (
@@ -733,14 +968,25 @@ export function ResultsGrid({
                           <button
                             disabled={savingId === r.id}
                             onClick={() => decide(r.id, "rejected")}
-                            style={{ background: "rgba(233,80,83,0.1)", color: "var(--danger)", border: "1px solid rgba(233,80,83,0.25)", borderRadius: "6px", padding: "4px 8px", cursor: "pointer" }}
+                            style={{ marginRight: "4px", background: "rgba(233,80,83,0.1)", color: "var(--danger)", border: "1px solid rgba(233,80,83,0.25)", borderRadius: "6px", padding: "4px 8px", cursor: "pointer" }}
                           >
                             ✕ Reject
                           </button>
                         )}
+                        {isHeld && (
+                          <button
+                            disabled={savingId === r.id}
+                            onClick={() => publish(r.id)}
+                            title="Skip the rest of the hold and publish this result now"
+                            style={{ background: "rgba(136,56,221,0.12)", color: "var(--purple)", border: "1px solid rgba(136,56,221,0.3)", borderRadius: "6px", padding: "4px 8px", cursor: "pointer" }}
+                          >
+                            📢 Publish
+                          </button>
+                        )}
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
