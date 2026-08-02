@@ -89,8 +89,8 @@ function KeywordTabs({
   disabled?: boolean;
 }) {
   return (
-    <div style={{ marginTop: "18px" }}>
-      <label className="field-label">Config Keywords</label>
+    <div style={{ marginTop: "20px" }}>
+      <label className="field-label">🗂️ Config Keywords</label>
       <div className="kw-tab-row">
         <button className={`kw-tab-btn ${activeTab === "names" ? "active" : ""}`} onClick={() => onTab("names")}>
           👤 Individual Names
@@ -128,6 +128,7 @@ export function HomeView({ clientId, onClient, busy, analysisBusy, onJobs, onErr
   const [clients, setClients] = useState<Client[]>([]);
   const [loadingClients, setLoadingClients] = useState(true);
   const [mode, setMode] = useState<Mode>(clientId ? "select" : "create");
+  const [editing, setEditing] = useState(false);
 
   const [activeClient, setActiveClient] = useState<Client | null>(null);
 
@@ -184,6 +185,7 @@ export function HomeView({ clientId, onClient, busy, analysisBusy, onJobs, onErr
       setActiveClient(existing);
       loadIntoForm(existing);
       setMode("select");
+      setEditing(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientId, clients]);
@@ -191,12 +193,14 @@ export function HomeView({ clientId, onClient, busy, analysisBusy, onJobs, onErr
   const switchToCreate = () => {
     setMode("create");
     setActiveClient(null);
+    setEditing(false);
     clearForm();
   };
 
   const selectSavedClient = (id: string) => {
     if (!id) {
       setActiveClient(null);
+      setEditing(false);
       clearForm();
       onClient("", "");
       return;
@@ -205,10 +209,22 @@ export function HomeView({ clientId, onClient, busy, analysisBusy, onJobs, onErr
     if (!c) return;
     setActiveClient(c);
     loadIntoForm(c);
+    setEditing(false);
     onClient(c.client_id, c.name);
   };
 
-  const totalKeywords = nameKeywords.length + domainKeywords.length;
+  const startEditing = () => {
+    if (!activeClient) return;
+    loadIntoForm(activeClient);
+    setEditing(true);
+  };
+
+  const cancelEditing = () => {
+    if (activeClient) loadIntoForm(activeClient);
+    setEditing(false);
+  };
+
+  const activeKeywordCount = (activeClient?.name_keywords?.length || 0) + (activeClient?.domain_keywords?.length || 0);
 
   const saveConfig = async (): Promise<Client | null> => {
     const id = idInput.trim();
@@ -230,6 +246,7 @@ export function HomeView({ clientId, onClient, busy, analysisBusy, onJobs, onErr
       });
       setActiveClient(client);
       setMode("select");
+      setEditing(false);
       onClient(client.client_id, client.name);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -244,16 +261,15 @@ export function HomeView({ clientId, onClient, busy, analysisBusy, onJobs, onErr
   };
 
   const handleSearch = async () => {
-    if (!totalKeywords) {
-      onError("Add at least one individual-name or domain keyword before searching.");
+    if (!activeClient) return;
+    if (!activeKeywordCount) {
+      onError("This client has no keywords yet — click Edit to add individual-name or domain keywords first.");
       return;
     }
-    const client = await saveConfig();
-    if (!client) return;
     try {
       const { job_id } = await discoveryApi.discover({
-        client_id: client.client_id,
-        keywords: [...(client.name_keywords || []), ...(client.domain_keywords || [])],
+        client_id: activeClient.client_id,
+        keywords: [...(activeClient.name_keywords || []), ...(activeClient.domain_keywords || [])],
       });
       const job = await jobsApi.job(job_id);
       onJobs([job]);
@@ -286,6 +302,7 @@ export function HomeView({ clientId, onClient, busy, analysisBusy, onJobs, onErr
     try {
       await clientsApi.deleteClient(activeClient.client_id);
       setActiveClient(null);
+      setEditing(false);
       clearForm();
       onClient("", "");
       refreshClients();
@@ -296,11 +313,11 @@ export function HomeView({ clientId, onClient, busy, analysisBusy, onJobs, onErr
     }
   };
 
-  const isEditingSaved = mode === "select" && !!activeClient;
+  const showForm = mode === "create" || (mode === "select" && activeClient && editing);
 
   return (
     <div className="home-container">
-      <div className="home-icon-badge">🏢</div>
+      <div className="home-icon-badge">🛡️</div>
       <h1 className="home-title">Client Configuration</h1>
       <p className="home-sub">
         Create an organization or pick a saved one, then run a search — every field here is what gets stored and
@@ -312,17 +329,14 @@ export function HomeView({ clientId, onClient, busy, analysisBusy, onJobs, onErr
           <button className={`mode-tab-btn ${mode === "create" ? "active" : ""}`} onClick={switchToCreate}>
             ➕ Create Client
           </button>
-          <button
-            className={`mode-tab-btn ${mode === "select" ? "active" : ""}`}
-            onClick={() => setMode("select")}
-          >
+          <button className={`mode-tab-btn ${mode === "select" ? "active" : ""}`} onClick={() => setMode("select")}>
             📂 Select Saved Client
           </button>
         </div>
 
         {mode === "select" && (
-          <div style={{ marginTop: "16px" }}>
-            <label className="field-label">Saved Clients</label>
+          <div style={{ marginTop: "18px" }}>
+            <label className="field-label">🔎 Saved Clients</label>
             <select
               className="client-select-input"
               style={{ marginTop: "7px", width: "100%" }}
@@ -347,18 +361,78 @@ export function HomeView({ clientId, onClient, busy, analysisBusy, onJobs, onErr
           </div>
         )}
 
-        {(mode === "create" || isEditingSaved) && (
+        {/* Read-only summary + run actions -- shown the moment a client is
+            selected. Editable fields only appear after an explicit "Edit". */}
+        {mode === "select" && activeClient && !editing && (
+          <div className="active-client-panel">
+            <div className="client-summary-card">
+              <div className="client-summary-head">
+                <span className="client-avatar-lg">{(activeClient.name || activeClient.client_id).charAt(0).toUpperCase()}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="client-summary-name">{activeClient.name || activeClient.client_id}</div>
+                  <div className="client-summary-id">🆔 {activeClient.client_id}</div>
+                </div>
+                <span className="status-dot-badge">
+                  <span className="status-dot" /> Active
+                </span>
+                <button className="icon-edit-btn" onClick={startEditing} title="Edit this client's details and keywords">
+                  ✏️ Edit
+                </button>
+              </div>
+
+              <div className="client-summary-meta">
+                <span className="meta-chip">🌐 {activeClient.domain || "no domain set"}</span>
+                <span className="meta-chip">👤 {activeClient.name_keywords?.length || 0} names</span>
+                <span className="meta-chip">🏷️ {activeClient.domain_keywords?.length || 0} domain kw</span>
+                {activeClient.cron && <span className="meta-chip">⏱️ {activeClient.cron}</span>}
+              </div>
+            </div>
+
+            <button
+              className="btn-cyber-primary"
+              disabled={busy || !activeKeywordCount}
+              onClick={handleSearch}
+              title="Sweeps every ready platform for this client's combined name + domain keywords"
+            >
+              {busy ? "⚡ Discovery Sweep Running…" : "🔍 Search This Client"}
+            </button>
+
+            <button
+              className="btn-secondary-action"
+              disabled={analysisBusy}
+              onClick={handleRunAnalysis}
+              title="Analyses every already-approved, not-yet-analysed profile for this client across every platform"
+            >
+              {analysisBusy ? "🧪 Analysis Running…" : "🧪 Analyse Approved Profiles (catch-up)"}
+            </button>
+
+            <div style={{ marginTop: "14px", textAlign: "right" }}>
+              <button onClick={handleDelete} disabled={deleting} title="Permanently deletes this client and cascades to all of its profiles + incidents" className="danger-link-btn">
+                {deleting ? "Deleting…" : "🗑️ Delete Client & All Its Data"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {showForm && (
           <>
             <div style={{ marginTop: "20px", paddingTop: "18px", borderTop: "1px solid var(--border-subtle)" }}>
-              <label className="field-label">{isEditingSaved ? `Editing "${activeClient!.name}"` : "New Client Details"}</label>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <label className="field-label">{editing ? `✏️ Editing "${activeClient!.name}"` : "🆕 New Client Details"}</label>
+                {editing && (
+                  <button className="text-link-btn" onClick={cancelEditing}>
+                    ✕ Cancel
+                  </button>
+                )}
+              </div>
               <div className="client-setup-box" style={{ flexWrap: "wrap" }}>
                 <input
                   value={idInput}
                   onChange={(e) => setIdInput(e.target.value)}
                   placeholder="🆔 org id (unique, e.g. acme-corp)…"
-                  disabled={isEditingSaved}
+                  disabled={editing}
                   className="client-select-input"
-                  style={{ opacity: isEditingSaved ? 0.6 : 1 }}
+                  style={{ opacity: editing ? 0.6 : 1 }}
                 />
                 <input
                   value={nameInput}
@@ -387,8 +461,8 @@ export function HomeView({ clientId, onClient, busy, analysisBusy, onJobs, onErr
               disabled={busy}
             />
 
-            <div style={{ marginTop: "18px" }}>
-              <label className="field-label">Recurring Schedule (optional)</label>
+            <div style={{ marginTop: "20px" }}>
+              <label className="field-label">⏱️ Recurring Schedule (optional)</label>
               <input
                 value={cron}
                 onChange={(e) => setCron(e.target.value)}
@@ -413,69 +487,13 @@ export function HomeView({ clientId, onClient, busy, analysisBusy, onJobs, onErr
               disabled={saving || !idInput.trim()}
               className="btn-cyber-primary"
               style={{
-                marginTop: "16px",
-                background: "rgba(136,56,221,0.12)",
-                color: "var(--cyan-bright)",
-                border: "1px solid rgba(136,56,221,0.35)",
-                boxShadow: "none",
+                marginTop: "18px",
+                background: "linear-gradient(135deg, var(--cyan), var(--purple))",
               }}
             >
-              {saving ? "Saving…" : saved ? "✓ Saved" : isEditingSaved ? "💾 Save Changes" : "💾 Create Client"}
+              {saving ? "Saving…" : saved ? "✓ Saved" : editing ? "💾 Save Changes" : "💾 Create Client"}
             </button>
           </>
-        )}
-
-        {activeClient && (
-          <div className="active-client-panel">
-            <div className="active-client-banner">
-              <span className="client-avatar-sm">{(activeClient.name || activeClient.client_id).charAt(0).toUpperCase()}</span>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: "13px", fontWeight: 700 }}>{activeClient.name || activeClient.client_id}</div>
-                <div style={{ fontSize: "11px", color: "var(--text-dim)" }}>
-                  {activeClient.client_id}
-                  {activeClient.domain ? ` · ${activeClient.domain}` : ""} · {totalKeywords} keyword(s)
-                </div>
-              </div>
-              <span className="rail-pill" style={{ color: "var(--success)", fontWeight: 700 }}>
-                ● Active
-              </span>
-            </div>
-
-            <button
-              className="btn-cyber-primary"
-              disabled={busy || !totalKeywords || saving}
-              onClick={handleSearch}
-              title="Saves any pending edits, then sweeps every ready platform for this client's combined name + domain keywords"
-            >
-              {busy ? "⚡ Discovery Sweep Running…" : "🔍 Search This Client"}
-            </button>
-
-            <button
-              className="btn-cyber-primary"
-              style={{
-                marginTop: "10px",
-                background: "rgba(136,56,221,0.12)",
-                color: "var(--cyan-bright)",
-                border: "1px solid rgba(136,56,221,0.35)",
-              }}
-              disabled={analysisBusy}
-              onClick={handleRunAnalysis}
-              title="Analyses every already-approved, not-yet-analysed profile for this client across every platform"
-            >
-              {analysisBusy ? "🔬 Analysis Running…" : "🔬 Analyse Approved Profiles (catch-up)"}
-            </button>
-
-            <div style={{ marginTop: "14px", textAlign: "right" }}>
-              <button
-                onClick={handleDelete}
-                disabled={deleting}
-                title="Permanently deletes this client and cascades to all of its profiles + incidents"
-                className="danger-link-btn"
-              >
-                {deleting ? "Deleting…" : "🗑 Delete Client & All Its Data"}
-              </button>
-            </div>
-          </div>
         )}
       </div>
     </div>

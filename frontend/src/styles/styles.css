@@ -652,15 +652,139 @@ a:hover {
   border-top: 1px solid var(--border-subtle);
   animation: fadeUp 0.35s ease;
 }
-.active-client-banner {
+
+/* Read-only client summary card -- shown on selection; editable fields
+   only appear once "Edit" is explicitly clicked. */
+.client-summary-card {
+  background: linear-gradient(160deg, rgba(0, 193, 77, 0.07), rgba(0, 193, 77, 0.02));
+  border: 1px solid rgba(0, 193, 77, 0.25);
+  border-radius: var(--border-radius-lg);
+  padding: 16px 18px;
+  margin-bottom: 16px;
+}
+.client-summary-head {
   display: flex;
   align-items: center;
-  gap: 10px;
-  background: rgba(0, 193, 77, 0.06);
-  border: 1px solid rgba(0, 193, 77, 0.25);
+  gap: 12px;
+}
+.client-avatar-lg {
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  border-radius: 14px;
+  background: linear-gradient(135deg, var(--cyan), var(--purple));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  color: #fff;
+  font-weight: 800;
+  box-shadow: 0 6px 18px rgba(119, 39, 205, 0.35);
+}
+.client-summary-name {
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--text-main);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.client-summary-id {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+.status-dot-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--success);
+  background: rgba(0, 193, 77, 0.14);
+  border-radius: 999px;
+  padding: 4px 10px;
+  white-space: nowrap;
+}
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 3px rgba(0, 193, 77, 0.25);
+  animation: pulse 1.8s infinite;
+}
+.client-summary-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 14px;
+}
+.meta-chip {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  padding: 5px 11px;
+}
+.icon-edit-btn {
+  flex-shrink: 0;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--cyan-bright);
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease;
+}
+.icon-edit-btn:hover {
+  border-color: var(--cyan);
+  background: rgba(136, 56, 221, 0.1);
+}
+
+.btn-secondary-action {
+  margin-top: 10px;
+  width: 100%;
+  background: rgba(136, 56, 221, 0.12);
+  color: var(--cyan-bright);
+  border: 1px solid rgba(136, 56, 221, 0.35);
   border-radius: var(--border-radius-md);
-  padding: 10px 14px;
-  margin-bottom: 14px;
+  padding: 16px;
+  font-size: var(--label-font-size);
+  font-weight: var(--bolder-font-weight);
+  cursor: pointer;
+  transition:
+    transform 0.15s ease,
+    background 0.15s ease;
+}
+.btn-secondary-action:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: rgba(136, 56, 221, 0.18);
+}
+.btn-secondary-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.text-link-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+.text-link-btn:hover {
+  color: var(--danger);
 }
 
 .danger-link-btn {
