@@ -322,7 +322,11 @@ function ProfileCard({ r, isAnalysisView, savingId, onDecide, onPublish, onValid
               ✅ Validate
             </button>
           )}
-          {r.status !== "approved" && (
+          {/* Discovery cards use Validate (above) instead of a plain Approve
+              -- it captures the logo/username match confirmation the same
+              action would otherwise skip. Analysis cards have no Validate
+              alternative, so they keep the plain Approve. */}
+          {!isDiscovery && r.status !== "approved" && (
             <button className="btn-accept" disabled={savingId === r.id} onClick={() => onDecide(r.id, "approved")}>
               ✓ Approve
             </button>
