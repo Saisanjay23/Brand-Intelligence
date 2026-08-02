@@ -16,7 +16,9 @@ export type JobKind = "discovery" | "analysis";
 export interface Client {
   client_id: string;
   name: string;
-  keywords: string[];
+  domain: string;
+  name_keywords: string[];
+  domain_keywords: string[];
   cron?: string | null;
   created_at?: string;
 }

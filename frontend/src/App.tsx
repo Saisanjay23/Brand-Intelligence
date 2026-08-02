@@ -2,11 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { healthApi } from "./api/healthApi";
 import { sessionsApi } from "./api/sessionsApi";
 import type { Job, PlatformHealth, SessionInfo } from "./api/types";
-import { ResultsGrid } from "./components/ResultsGrid";
 import type { ViewPage } from "./components/Header";
 import { AppLayout } from "./layouts/AppLayout";
 import { DashboardView } from "./pages/DashboardView";
 import { HomeView } from "./pages/HomeView";
+import { LiveResultsView } from "./pages/LiveResultsView";
 import { SessionPanel } from "./pages/SessionPanel";
 import { useJobPolling } from "./hooks/useJobPolling";
 import { loadRecentClients, rememberClient, forgetClient, type RecentClient } from "./services/recentClients";
@@ -95,36 +95,37 @@ export default function App() {
       error={error}
     >
       {page === "home" && (
-        <>
-          <HomeView
-            clientId={clientId}
-            clientName={clientName}
-            onClient={onClient}
-            busy={discoveryJobs.running}
-            analysisBusy={analysisJobs.running}
-            onJobs={(jobs) => {
-              setError("");
-              const disc = jobs.filter((j) => j.kind === "discovery");
-              const analysis = jobs.filter((j) => j.kind !== "discovery");
-              if (disc.length) discoveryJobs.watch(disc);
-              if (analysis.length) analysisJobs.watch(analysis);
-            }}
-            onError={setError}
-          />
-          <div style={{ marginTop: "32px", animation: "fadeUp 0.6s ease" }}>
-            <ResultsGrid
-              clientId={clientId}
-              platforms={platforms}
-              discoveryRunning={discoveryJobs.running}
-              discoveryLog={discoveryJobs.log}
-              discoveryProgress={discoveryJobs.platformProgress}
-              analysisRunning={analysisJobs.running}
-              analysisLog={analysisJobs.log}
-              analysisProgress={analysisJobs.platformProgress}
-              onError={setError}
-            />
-          </div>
-        </>
+        <HomeView
+          clientId={clientId}
+          clientName={clientName}
+          onClient={onClient}
+          busy={discoveryJobs.running}
+          analysisBusy={analysisJobs.running}
+          onJobs={(jobs) => {
+            setError("");
+            const disc = jobs.filter((j) => j.kind === "discovery");
+            const analysis = jobs.filter((j) => j.kind !== "discovery");
+            if (disc.length) discoveryJobs.watch(disc);
+            if (analysis.length) analysisJobs.watch(analysis);
+            if (jobs.length) setPage("results");
+          }}
+          onError={setError}
+        />
+      )}
+
+      {page === "results" && (
+        <LiveResultsView
+          clientId={clientId}
+          clientName={clientName}
+          platforms={platforms}
+          discoveryRunning={discoveryJobs.running}
+          discoveryLog={discoveryJobs.log}
+          discoveryProgress={discoveryJobs.platformProgress}
+          analysisRunning={analysisJobs.running}
+          analysisLog={analysisJobs.log}
+          analysisProgress={analysisJobs.platformProgress}
+          onError={setError}
+        />
       )}
 
       {page === "dashboard" && (

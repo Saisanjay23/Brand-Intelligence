@@ -1,7 +1,9 @@
-"""`POST /discovery` is the engine's front door: the caller supplies its
-own `client_id`/`client_name`/`keywords`, this upserts the client record
-(so the name is on file for the final response, see `profile_controller.py`)
-and launches one job that sweeps every platform with a ready session.
+"""`POST /discovery` sweeps every ready platform for one already-existing
+client's keywords (see `dto/discovery_dto.py`). The client itself is
+created/configured separately via `POST /clients` -- this no longer
+upserts it as a side effect, since a client's org id/name/domain/keyword
+config is now curated up front, not inferred from whatever a discovery
+call happened to be called with.
 """
 
 from __future__ import annotations
@@ -12,7 +14,7 @@ from backend.services.job_service import DISCOVERY, job_manager
 
 
 async def start_discovery(body: DiscoveryIn) -> dict:
-    await client_service.upsert(body.client_id, body.client_name, body.keywords)
+    await client_service.get(body.client_id)  # 404s if the client was never configured
 
     params: dict = {"keywords": body.keywords, "tabs": body.tabs, "max_results": body.max_results}
     if body.max_seconds is not None:

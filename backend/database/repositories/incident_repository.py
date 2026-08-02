@@ -36,5 +36,13 @@ async def since(ts: datetime) -> list[dict]:
     return await db()[INCIDENTS].find({"ts": {"$gte": ts}}).to_list(length=1000)
 
 
+async def delete_for_client(client_id: str) -> int:
+    """Part of the client-deletion cascade -- only ever removes incidents
+    scoped to this one client; session-check incidents (scope is the
+    literal "-- all clients --") are cross-client and untouched."""
+    res = await db()[INCIDENTS].delete_many({"scope": client_id})
+    return res.deleted_count
+
+
 async def ensure_indexes() -> None:
     await db()[INCIDENTS].create_index("ts", expireAfterSeconds=RETENTION_DAYS * 86400, name="ttl_ts")

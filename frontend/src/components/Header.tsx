@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { RecentClient } from "../services/recentClients";
 
-export type ViewPage = "home" | "dashboard" | "sessions";
+export type ViewPage = "home" | "results" | "dashboard" | "sessions";
 
 interface Props {
   page: ViewPage;
@@ -14,6 +14,7 @@ interface Props {
   activeJobsCount: number;
   readySessionsCount: number;
   platformCount: number;
+  liveResultsCount?: number;
 }
 
 export function Header({
@@ -27,6 +28,7 @@ export function Header({
   activeJobsCount,
   readySessionsCount,
   platformCount,
+  liveResultsCount = 0,
 }: Props) {
   const [openDropdown, setOpenDropdown] = useState(false);
 
@@ -49,8 +51,17 @@ export function Header({
           onClick={() => onPage("home")}
           className={`top-nav-btn ${page === "home" ? "active" : ""}`}
         >
-          <span>🔍</span>
-          <span>Live Discovery</span>
+          <span>🏢</span>
+          <span>Clients</span>
+        </button>
+
+        <button
+          onClick={() => onPage("results")}
+          className={`top-nav-btn ${page === "results" ? "active" : ""}`}
+        >
+          <span>🛰️</span>
+          <span>Live Results</span>
+          {liveResultsCount > 0 && <span className="top-nav-badge">{liveResultsCount}</span>}
         </button>
 
         <button

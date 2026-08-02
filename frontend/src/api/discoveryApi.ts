@@ -3,11 +3,11 @@ import { json, post } from "./httpClient";
 import type { JobStatus } from "./types";
 
 // Always sweeps every platform with a ready session -- there is no
-// per-platform discovery call on this backend.
+// per-platform discovery call on this backend. The client must already
+// exist (see clientsApi.upsertClient) -- this no longer creates one.
 export const discoveryApi = {
   discover: (body: {
     client_id: string;
-    client_name: string;
     keywords: string[];
     tabs?: string[];
     max_results?: number;

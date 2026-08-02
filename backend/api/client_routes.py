@@ -13,6 +13,16 @@ async def upsert_client(body: ClientIn) -> dict:
     return await client_controller.upsert_client(body)
 
 
+@router.get("/clients")
+async def list_clients() -> dict:
+    return await client_controller.list_clients()
+
+
 @router.get("/clients/{client_id}")
 async def get_client(client_id: str) -> dict:
     return await client_controller.get_client(client_id)
+
+
+@router.delete("/clients/{client_id}")
+async def delete_client(client_id: str) -> dict:
+    return await client_controller.delete_client(client_id)

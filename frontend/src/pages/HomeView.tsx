@@ -3,41 +3,10 @@ import { analysisApi } from "../api/analysisApi";
 import { clientsApi } from "../api/clientsApi";
 import { discoveryApi } from "../api/discoveryApi";
 import { jobsApi } from "../api/jobsApi";
-import type { Job } from "../api/types";
+import type { Client, Job } from "../api/types";
 
-function relativeTime(iso: string): string {
-  if (!iso) return "";
-  const diffSec = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
-  if (diffSec < 60) return "just now";
-  const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m ago`;
-  const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
-  return `${Math.floor(diffHr / 24)}d ago`;
-}
-
-interface RecentRun {
-  keywords: string;
-  startedIso: string;
-}
-
-/** One row per discovery sweep -- unlike the old per-platform-job UI, a
- * discovery job here always covers every ready platform at once (see
- * backend/api/discovery_routes.py), so there is exactly one job per run. */
-function groupRecentRuns(jobs: Job[]): RecentRun[] {
-  const byKey = new Map<string, RecentRun>();
-  for (const j of jobs) {
-    if (j.kind !== "discovery" || !j.params?.keywords?.length) continue;
-    const keywords = j.params.keywords.join(", ");
-    const existing = byKey.get(keywords);
-    if (!existing || j.started > existing.startedIso) {
-      byKey.set(keywords, { keywords, startedIso: j.started });
-    }
-  }
-  return [...byKey.values()]
-    .sort((a, b) => b.startedIso.localeCompare(a.startedIso))
-    .slice(0, 5);
-}
+type KeywordTab = "names" | "domain";
+type Mode = "create" | "select";
 
 interface Props {
   clientId: string;
@@ -49,98 +18,254 @@ interface Props {
   onError: (m: string) => void;
 }
 
-export function HomeView({
-  clientId,
-  clientName,
-  onClient,
-  busy,
-  analysisBusy,
-  onJobs,
-  onError,
-}: Props) {
-  const [idInput, setIdInput] = useState(clientId);
-  const [nameInput, setNameInput] = useState(clientName);
-  const [chips, setChips] = useState<string[]>([]);
-  const [kwInput, setKwInput] = useState("");
-  const [cron, setCron] = useState("");
-  const [savingSchedule, setSavingSchedule] = useState(false);
-  const [scheduleSaved, setScheduleSaved] = useState(false);
-  const [recentRuns, setRecentRuns] = useState<RecentRun[]>([]);
-
-  useEffect(() => setIdInput(clientId), [clientId]);
-  useEffect(() => setNameInput(clientName), [clientName]);
-
-  const refreshRecentRuns = useCallback(() => {
-    if (!clientId) {
-      setRecentRuns([]);
-      return;
+function ChipInput({
+  chips,
+  onAdd,
+  onRemove,
+  placeholder,
+  disabled,
+}: {
+  chips: string[];
+  onAdd: (v: string) => void;
+  onRemove: (i: number) => void;
+  placeholder: string;
+  disabled?: boolean;
+}) {
+  const [input, setInput] = useState("");
+  const commit = () => {
+    const trimmed = input.trim();
+    if (trimmed) {
+      onAdd(trimmed);
+      setInput("");
     }
-    jobsApi
-      .jobs(clientId, 50)
-      .then((res) => setRecentRuns(groupRecentRuns(res.items)))
-      .catch(() => {});
-  }, [clientId]);
+  };
+  return (
+    <div className="chips-input-container">
+      {chips.map((kw, i) => (
+        <span key={i} className="kw-chip">
+          {kw}
+          <span className="remove-chip" onClick={() => onRemove(i)}>
+            ✕
+          </span>
+        </span>
+      ))}
+      <input
+        value={input}
+        onChange={(e) => setInput(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === ",") {
+            e.preventDefault();
+            commit();
+          }
+        }}
+        onBlur={commit}
+        placeholder={placeholder}
+        className="chip-input"
+        disabled={disabled}
+      />
+    </div>
+  );
+}
+
+function KeywordTabs({
+  activeTab,
+  onTab,
+  nameKeywords,
+  domainKeywords,
+  onAddName,
+  onRemoveName,
+  onAddDomain,
+  onRemoveDomain,
+  disabled,
+}: {
+  activeTab: KeywordTab;
+  onTab: (t: KeywordTab) => void;
+  nameKeywords: string[];
+  domainKeywords: string[];
+  onAddName: (v: string) => void;
+  onRemoveName: (i: number) => void;
+  onAddDomain: (v: string) => void;
+  onRemoveDomain: (i: number) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div style={{ marginTop: "18px" }}>
+      <label className="field-label">Config Keywords</label>
+      <div className="kw-tab-row">
+        <button className={`kw-tab-btn ${activeTab === "names" ? "active" : ""}`} onClick={() => onTab("names")}>
+          👤 Individual Names
+          {nameKeywords.length > 0 && <span className="kw-tab-count">{nameKeywords.length}</span>}
+        </button>
+        <button className={`kw-tab-btn ${activeTab === "domain" ? "active" : ""}`} onClick={() => onTab("domain")}>
+          🏷️ Domain Keywords
+          {domainKeywords.length > 0 && <span className="kw-tab-count">{domainKeywords.length}</span>}
+        </button>
+      </div>
+      {activeTab === "names" ? (
+        <ChipInput
+          chips={nameKeywords}
+          onAdd={onAddName}
+          onRemove={onRemoveName}
+          placeholder="type a person's name, press Enter…"
+          disabled={disabled}
+        />
+      ) : (
+        <ChipInput
+          chips={domainKeywords}
+          onAdd={onAddDomain}
+          onRemove={onRemoveDomain}
+          placeholder="type a brand/domain keyword, press Enter…"
+          disabled={disabled}
+        />
+      )}
+    </div>
+  );
+}
+
+const EMPTY_FORM = { id: "", name: "", domain: "", nameKw: [] as string[], domainKw: [] as string[], cron: "" };
+
+export function HomeView({ clientId, onClient, busy, analysisBusy, onJobs, onError }: Props) {
+  const [clients, setClients] = useState<Client[]>([]);
+  const [loadingClients, setLoadingClients] = useState(true);
+  const [mode, setMode] = useState<Mode>(clientId ? "select" : "create");
+
+  const [activeClient, setActiveClient] = useState<Client | null>(null);
+
+  const [idInput, setIdInput] = useState(EMPTY_FORM.id);
+  const [nameInput, setNameInput] = useState(EMPTY_FORM.name);
+  const [domainInput, setDomainInput] = useState(EMPTY_FORM.domain);
+  const [nameKeywords, setNameKeywords] = useState<string[]>(EMPTY_FORM.nameKw);
+  const [domainKeywords, setDomainKeywords] = useState<string[]>(EMPTY_FORM.domainKw);
+  const [cron, setCron] = useState(EMPTY_FORM.cron);
+  const [activeTab, setActiveTab] = useState<KeywordTab>("names");
+
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const refreshClients = useCallback(() => {
+    setLoadingClients(true);
+    clientsApi
+      .listClients()
+      .then((res) => setClients(res.items))
+      .catch((e) => onError((e as Error).message))
+      .finally(() => setLoadingClients(false));
+  }, [onError]);
 
   useEffect(() => {
-    refreshRecentRuns();
-  }, [refreshRecentRuns]);
+    refreshClients();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const addChip = () => {
-    const trimmed = kwInput.trim();
-    if (trimmed && !chips.includes(trimmed)) {
-      setChips([...chips, trimmed]);
-      setKwInput("");
+  const loadIntoForm = (c: Client) => {
+    setIdInput(c.client_id);
+    setNameInput(c.name);
+    setDomainInput(c.domain || "");
+    setNameKeywords(c.name_keywords || []);
+    setDomainKeywords(c.domain_keywords || []);
+    setCron(c.cron || "");
+  };
+
+  const clearForm = () => {
+    setIdInput(EMPTY_FORM.id);
+    setNameInput(EMPTY_FORM.name);
+    setDomainInput(EMPTY_FORM.domain);
+    setNameKeywords(EMPTY_FORM.nameKw);
+    setDomainKeywords(EMPTY_FORM.domainKw);
+    setCron(EMPTY_FORM.cron);
+  };
+
+  // Pick up an already-selected client (e.g. restored from the header's
+  // recent-clients list) once the server-side list has loaded.
+  useEffect(() => {
+    if (!clientId || activeClient || !clients.length) return;
+    const existing = clients.find((c) => c.client_id === clientId);
+    if (existing) {
+      setActiveClient(existing);
+      loadIntoForm(existing);
+      setMode("select");
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clientId, clients]);
+
+  const switchToCreate = () => {
+    setMode("create");
+    setActiveClient(null);
+    clearForm();
   };
 
-  const removeChip = (index: number) => {
-    setChips(chips.filter((_, i) => i !== index));
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter" || e.key === ",") {
-      e.preventDefault();
-      addChip();
-    }
-  };
-
-  const applyClient = (): { id: string; name: string } | null => {
-    const id = idInput.trim();
+  const selectSavedClient = (id: string) => {
     if (!id) {
-      onError("Enter a client id first.");
-      return null;
-    }
-    const name = nameInput.trim() || id;
-    onClient(id, name);
-    return { id, name };
-  };
-
-  const handleRunDiscovery = async () => {
-    const target = applyClient();
-    if (!target) return;
-    if (!chips.length) {
-      onError("Please enter at least one keyword chip.");
+      setActiveClient(null);
+      clearForm();
+      onClient("", "");
       return;
     }
+    const c = clients.find((x) => x.client_id === id);
+    if (!c) return;
+    setActiveClient(c);
+    loadIntoForm(c);
+    onClient(c.client_id, c.name);
+  };
+
+  const totalKeywords = nameKeywords.length + domainKeywords.length;
+
+  const saveConfig = async (): Promise<Client | null> => {
+    const id = idInput.trim();
+    const name = nameInput.trim() || id;
+    if (!id) {
+      onError("Enter an org id first.");
+      return null;
+    }
+    setSaving(true);
+    setSaved(false);
+    try {
+      const client = await clientsApi.upsertClient({
+        client_id: id,
+        name,
+        domain: domainInput.trim(),
+        name_keywords: nameKeywords,
+        domain_keywords: domainKeywords,
+        cron: cron.trim() || null,
+      });
+      setActiveClient(client);
+      setMode("select");
+      onClient(client.client_id, client.name);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+      refreshClients();
+      return client;
+    } catch (e) {
+      onError((e as Error).message);
+      return null;
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSearch = async () => {
+    if (!totalKeywords) {
+      onError("Add at least one individual-name or domain keyword before searching.");
+      return;
+    }
+    const client = await saveConfig();
+    if (!client) return;
     try {
       const { job_id } = await discoveryApi.discover({
-        client_id: target.id,
-        client_name: target.name,
-        keywords: chips,
+        client_id: client.client_id,
+        keywords: [...(client.name_keywords || []), ...(client.domain_keywords || [])],
       });
       const job = await jobsApi.job(job_id);
       onJobs([job]);
-      refreshRecentRuns();
     } catch (e) {
       onError((e as Error).message);
     }
   };
 
   const handleRunAnalysis = async () => {
-    const target = applyClient();
-    if (!target) return;
+    if (!activeClient) return;
     try {
-      const { job_id } = await analysisApi.analyse({ client_id: target.id });
+      const { job_id } = await analysisApi.analyse({ client_id: activeClient.client_id });
       const job = await jobsApi.job(job_id);
       onJobs([job]);
     } catch (e) {
@@ -148,226 +273,210 @@ export function HomeView({
     }
   };
 
-  const handleSaveSchedule = async () => {
-    const target = applyClient();
-    if (!target) return;
-    setSavingSchedule(true);
-    setScheduleSaved(false);
+  const handleDelete = async () => {
+    if (!activeClient) return;
+    if (
+      !window.confirm(
+        `Delete client "${activeClient.name || activeClient.client_id}"? This permanently removes ALL of its profiles and incidents from the database.`,
+      )
+    ) {
+      return;
+    }
+    setDeleting(true);
     try {
-      await clientsApi.upsertClient({
-        client_id: target.id,
-        name: target.name,
-        keywords: chips,
-        cron: cron.trim() || null,
-      });
-      setScheduleSaved(true);
-      setTimeout(() => setScheduleSaved(false), 2000);
+      await clientsApi.deleteClient(activeClient.client_id);
+      setActiveClient(null);
+      clearForm();
+      onClient("", "");
+      refreshClients();
     } catch (e) {
       onError((e as Error).message);
     } finally {
-      setSavingSchedule(false);
+      setDeleting(false);
     }
   };
 
+  const isEditingSaved = mode === "select" && !!activeClient;
+
   return (
     <div className="home-container">
-      <div className="home-icon-badge">🛰️</div>
-      <h1 className="home-title">Brand Intelligence Suite</h1>
+      <div className="home-icon-badge">🏢</div>
+      <h1 className="home-title">Client Configuration</h1>
       <p className="home-sub">
-        Discover matching profiles across every platform with a ready session
-        in one sweep.
+        Create an organization or pick a saved one, then run a search — every field here is what gets stored and
+        reused for that client.
       </p>
 
       <div className="home-card">
-        <label className="field-label">1 · Client</label>
-        <div className="client-setup-box">
-          <input
-            value={idInput}
-            onChange={(e) => setIdInput(e.target.value)}
-            onBlur={applyClient}
-            placeholder="client_id (your own org/customer id)…"
-            style={{
-              flex: 1,
-              background: "var(--bg-inner)",
-              border: "1px solid var(--border-glow)",
-              borderRadius: "12px",
-              padding: "12px 14px",
-              color: "var(--text-main)",
-              fontSize: "13px",
-              outline: "none",
-            }}
-          />
-          <input
-            value={nameInput}
-            onChange={(e) => setNameInput(e.target.value)}
-            onBlur={applyClient}
-            placeholder="display name (defaults to client_id)…"
-            style={{
-              flex: 1,
-              background: "var(--bg-inner)",
-              border: "1px solid var(--border-glow)",
-              borderRadius: "12px",
-              padding: "12px 14px",
-              color: "var(--text-main)",
-              fontSize: "13px",
-              outline: "none",
-            }}
-          />
-        </div>
-
-        <label className="field-label" style={{ marginTop: "18px" }}>
-          2 · Enter Brand Keywords &amp; Search Terms
-        </label>
-        <div className="chips-input-container">
-          {chips.map((kw, i) => (
-            <span key={i} className="kw-chip">
-              {kw}
-              <span className="remove-chip" onClick={() => removeChip(i)}>
-                ✕
-              </span>
-            </span>
-          ))}
-          <input
-            value={kwInput}
-            onChange={(e) => setKwInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            onBlur={addChip}
-            placeholder="type keyword, press Enter or comma…"
-            className="chip-input"
-            disabled={busy}
-          />
-        </div>
-
-        <button
-          className="btn-cyber-primary"
-          disabled={busy || !idInput.trim() || !chips.length}
-          onClick={handleRunDiscovery}
-          title="Sweeps every platform with a ready session in one job -- this backend has no per-platform discovery targeting"
-        >
-          {busy
-            ? "⚡ Discovery Sweep Running…"
-            : "⚡ Run Discovery (all ready platforms)"}
-        </button>
-
-        <button
-          className="btn-cyber-primary"
-          style={{
-            marginTop: "10px",
-            background: "rgba(136,56,221,0.12)",
-            color: "var(--cyan-bright)",
-            border: "1px solid rgba(136,56,221,0.35)",
-          }}
-          disabled={analysisBusy || !idInput.trim()}
-          onClick={handleRunAnalysis}
-          title="Analyses every already-approved, not-yet-analysed profile for this client across every platform -- there is no per-url or per-platform manual analysis on this backend"
-        >
-          {analysisBusy
-            ? "🔬 Analysis Running…"
-            : "🔬 Analyse Approved Profiles (catch-up)"}
-        </button>
-
-        <div
-          style={{
-            marginTop: "18px",
-            paddingTop: "16px",
-            borderTop: "1px solid var(--border-subtle)",
-          }}
-        >
-          <label className="field-label">3 · Recurring Schedule (optional)</label>
-          <div style={{ display: "flex", gap: "8px", marginTop: "8px" }}>
-            <input
-              value={cron}
-              onChange={(e) => setCron(e.target.value)}
-              placeholder="cron expression, e.g. 0 2 * * * — blank disables"
-              style={{
-                flex: 1,
-                background: "var(--bg-inner)",
-                border: "1px solid var(--border-color)",
-                borderRadius: "10px",
-                padding: "10px 12px",
-                color: "var(--text-main)",
-                fontSize: "12px",
-                fontFamily: "var(--font-mono)",
-                outline: "none",
-              }}
-            />
-            <button
-              onClick={handleSaveSchedule}
-              disabled={savingSchedule || !idInput.trim() || !chips.length}
-              title="Saves this client's keywords + cron so it sweeps automatically -- see backend/services/scheduler_service.py"
-              style={{
-                padding: "10px 16px",
-                borderRadius: "10px",
-                fontSize: "12px",
-                fontWeight: 700,
-                cursor: "pointer",
-                background: "var(--bg-inner)",
-                color: "var(--text-main)",
-                border: "1px solid var(--border-color)",
-              }}
-            >
-              {savingSchedule ? "Saving…" : scheduleSaved ? "✓ Saved" : "Save Schedule"}
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div className="recent-searches-list">
-        <div
-          style={{
-            fontSize: "11px",
-            color: "var(--text-dim)",
-            textTransform: "uppercase",
-            letterSpacing: "1px",
-            fontWeight: 600,
-            marginBottom: "6px",
-          }}
-        >
-          Recent Discovery Runs ({clientId || "no client set"})
-        </div>
-        {!recentRuns.length && (
-          <div
-            style={{
-              fontSize: "12px",
-              color: "var(--text-dim)",
-              padding: "10px 2px",
-            }}
+        <div className="mode-tab-row">
+          <button className={`mode-tab-btn ${mode === "create" ? "active" : ""}`} onClick={switchToCreate}>
+            ➕ Create Client
+          </button>
+          <button
+            className={`mode-tab-btn ${mode === "select" ? "active" : ""}`}
+            onClick={() => setMode("select")}
           >
-            No sweeps yet -- launch one above and it'll show up here.
+            📂 Select Saved Client
+          </button>
+        </div>
+
+        {mode === "select" && (
+          <div style={{ marginTop: "16px" }}>
+            <label className="field-label">Saved Clients</label>
+            <select
+              className="client-select-input"
+              style={{ marginTop: "7px", width: "100%" }}
+              value={activeClient?.client_id || ""}
+              onChange={(e) => selectSavedClient(e.target.value)}
+              disabled={loadingClients}
+            >
+              <option value="">
+                {loadingClients ? "Loading clients…" : clients.length ? "— choose a client —" : "No saved clients yet"}
+              </option>
+              {clients.map((c) => (
+                <option key={c.client_id} value={c.client_id}>
+                  {(c.name || c.client_id) + ` (${c.client_id})`}
+                </option>
+              ))}
+            </select>
+            {!loadingClients && !clients.length && (
+              <div style={{ fontSize: "12px", color: "var(--text-dim)", marginTop: "8px" }}>
+                Nothing saved yet — switch to <strong>Create Client</strong> to add your first one.
+              </div>
+            )}
           </div>
         )}
-        {recentRuns.map((r, i) => (
-          <div
-            key={i}
-            className="recent-item-card"
-            onClick={() => setChips(r.keywords.split(", ").filter(Boolean))}
-          >
-            <span style={{ fontSize: "16px" }}>🔎</span>
-            <div style={{ flex: 1 }}>
-              <div
-                style={{
-                  fontSize: "13px",
-                  fontWeight: 600,
-                  color: "var(--text-main)",
-                }}
-              >
-                {r.keywords}
-              </div>
-              <div style={{ fontSize: "11px", color: "var(--text-dim)" }}>
-                {relativeTime(r.startedIso)}
+
+        {(mode === "create" || isEditingSaved) && (
+          <>
+            <div style={{ marginTop: "20px", paddingTop: "18px", borderTop: "1px solid var(--border-subtle)" }}>
+              <label className="field-label">{isEditingSaved ? `Editing "${activeClient!.name}"` : "New Client Details"}</label>
+              <div className="client-setup-box" style={{ flexWrap: "wrap" }}>
+                <input
+                  value={idInput}
+                  onChange={(e) => setIdInput(e.target.value)}
+                  placeholder="🆔 org id (unique, e.g. acme-corp)…"
+                  disabled={isEditingSaved}
+                  className="client-select-input"
+                  style={{ opacity: isEditingSaved ? 0.6 : 1 }}
+                />
+                <input
+                  value={nameInput}
+                  onChange={(e) => setNameInput(e.target.value)}
+                  placeholder="🏢 org / client name…"
+                  className="client-select-input"
+                />
+                <input
+                  value={domainInput}
+                  onChange={(e) => setDomainInput(e.target.value)}
+                  placeholder="🌐 domain, e.g. xyz.com…"
+                  className="client-select-input"
+                />
               </div>
             </div>
-            <span
+
+            <KeywordTabs
+              activeTab={activeTab}
+              onTab={setActiveTab}
+              nameKeywords={nameKeywords}
+              domainKeywords={domainKeywords}
+              onAddName={(v) => setNameKeywords((prev) => (prev.includes(v) ? prev : [...prev, v]))}
+              onRemoveName={(i) => setNameKeywords((prev) => prev.filter((_, idx) => idx !== i))}
+              onAddDomain={(v) => setDomainKeywords((prev) => (prev.includes(v) ? prev : [...prev, v]))}
+              onRemoveDomain={(i) => setDomainKeywords((prev) => prev.filter((_, idx) => idx !== i))}
+              disabled={busy}
+            />
+
+            <div style={{ marginTop: "18px" }}>
+              <label className="field-label">Recurring Schedule (optional)</label>
+              <input
+                value={cron}
+                onChange={(e) => setCron(e.target.value)}
+                placeholder="cron expression, e.g. 0 2 * * * — blank disables"
+                style={{
+                  marginTop: "7px",
+                  width: "100%",
+                  background: "var(--bg-inner)",
+                  border: "1px solid var(--border-color)",
+                  borderRadius: "10px",
+                  padding: "10px 12px",
+                  color: "var(--text-main)",
+                  fontSize: "12px",
+                  fontFamily: "var(--font-mono)",
+                  outline: "none",
+                }}
+              />
+            </div>
+
+            <button
+              onClick={saveConfig}
+              disabled={saving || !idInput.trim()}
+              className="btn-cyber-primary"
               style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: "12px",
-                color: "var(--cyan)",
+                marginTop: "16px",
+                background: "rgba(136,56,221,0.12)",
+                color: "var(--cyan-bright)",
+                border: "1px solid rgba(136,56,221,0.35)",
+                boxShadow: "none",
               }}
             >
-              Load Terms ⚡
-            </span>
+              {saving ? "Saving…" : saved ? "✓ Saved" : isEditingSaved ? "💾 Save Changes" : "💾 Create Client"}
+            </button>
+          </>
+        )}
+
+        {activeClient && (
+          <div className="active-client-panel">
+            <div className="active-client-banner">
+              <span className="client-avatar-sm">{(activeClient.name || activeClient.client_id).charAt(0).toUpperCase()}</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: "13px", fontWeight: 700 }}>{activeClient.name || activeClient.client_id}</div>
+                <div style={{ fontSize: "11px", color: "var(--text-dim)" }}>
+                  {activeClient.client_id}
+                  {activeClient.domain ? ` · ${activeClient.domain}` : ""} · {totalKeywords} keyword(s)
+                </div>
+              </div>
+              <span className="rail-pill" style={{ color: "var(--success)", fontWeight: 700 }}>
+                ● Active
+              </span>
+            </div>
+
+            <button
+              className="btn-cyber-primary"
+              disabled={busy || !totalKeywords || saving}
+              onClick={handleSearch}
+              title="Saves any pending edits, then sweeps every ready platform for this client's combined name + domain keywords"
+            >
+              {busy ? "⚡ Discovery Sweep Running…" : "🔍 Search This Client"}
+            </button>
+
+            <button
+              className="btn-cyber-primary"
+              style={{
+                marginTop: "10px",
+                background: "rgba(136,56,221,0.12)",
+                color: "var(--cyan-bright)",
+                border: "1px solid rgba(136,56,221,0.35)",
+              }}
+              disabled={analysisBusy}
+              onClick={handleRunAnalysis}
+              title="Analyses every already-approved, not-yet-analysed profile for this client across every platform"
+            >
+              {analysisBusy ? "🔬 Analysis Running…" : "🔬 Analyse Approved Profiles (catch-up)"}
+            </button>
+
+            <div style={{ marginTop: "14px", textAlign: "right" }}>
+              <button
+                onClick={handleDelete}
+                disabled={deleting}
+                title="Permanently deletes this client and cascades to all of its profiles + incidents"
+                className="danger-link-btn"
+              >
+                {deleting ? "Deleting…" : "🗑 Delete Client & All Its Data"}
+              </button>
+            </div>
           </div>
-        ))}
+        )}
       </div>
     </div>
   );

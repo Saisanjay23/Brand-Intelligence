@@ -582,6 +582,53 @@ export function ResultsGrid({
             })}
           </div>
 
+          {discoveryRunning && analysisRunning && (
+            <div
+              className="dashboard-card-box"
+              style={{
+                marginTop: "16px",
+                borderLeft: "4px solid var(--warn-yellow)",
+                background: "linear-gradient(90deg, rgba(0,229,255,0.05), rgba(136,56,221,0.05))",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
+                <span style={{ fontSize: "16px" }}>⚡</span>
+                <span style={{ fontWeight: 700, fontSize: "13px", color: "var(--text-main)" }}>
+                  Both Jobs Running — Live Split by Platform
+                </span>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                {platforms.map((p) => {
+                  const d = discoveryProgress[p.platform];
+                  const a = analysisProgress[p.platform];
+                  if (!d && !a) return null;
+                  return (
+                    <div
+                      key={p.platform}
+                      style={{
+                        display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap",
+                        background: "var(--bg-surface)", borderRadius: "10px", padding: "7px 12px",
+                        border: "1px solid var(--border-subtle)",
+                      }}
+                    >
+                      <PlatformIcon platform={p.platform} size={16} />
+                      <span style={{ fontSize: "12px", fontWeight: 700, textTransform: "capitalize", minWidth: "70px" }}>
+                        {p.name}
+                      </span>
+                      <span style={{ flex: 1 }} />
+                      <span style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "11px", color: d ? PLATFORM_STATUS_LOOK[d.status].color : "var(--text-dim)" }}>
+                        🔍 {d ? `${PLATFORM_STATUS_LOOK[d.status].icon} ${d.processed}/${d.total || "?"}${d.status === "running" && d.eta_seconds !== null ? ` · ${formatEta(d.eta_seconds)}` : ""}` : "idle"}
+                      </span>
+                      <span style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "11px", color: a ? PLATFORM_STATUS_LOOK[a.status].color : "var(--text-dim)" }}>
+                        📊 {a ? `${PLATFORM_STATUS_LOOK[a.status].icon} ${a.processed}/${a.total || "?"}${a.status === "running" && a.eta_seconds !== null ? ` · ${formatEta(a.eta_seconds)}` : ""}` : "idle"}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {(discoveryRunning || (phase === "discovery" && Object.keys(discoveryProgress).length > 0)) && (
             <div className="dashboard-card-box" style={{ marginTop: "16px", borderLeft: "4px solid var(--cyan)", background: "rgba(0, 229, 255, 0.04)" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px", flexWrap: "wrap", gap: "8px" }}>

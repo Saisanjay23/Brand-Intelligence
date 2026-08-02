@@ -8,7 +8,9 @@ from pydantic import BaseModel
 
 
 class ClientIn(BaseModel):
-    client_id: str
-    name: str
-    keywords: list[str] = []
+    client_id: str  # the org id
+    name: str  # the org/client display name
+    domain: str = ""  # e.g. "xyz.com" -- identifying metadata, not itself a search term
+    name_keywords: list[str] = []  # individual people to protect
+    domain_keywords: list[str] = []  # brand/domain keyword variants
     cron: Optional[str] = None

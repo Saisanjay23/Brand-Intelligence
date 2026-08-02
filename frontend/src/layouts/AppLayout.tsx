@@ -17,6 +17,7 @@ interface Props {
   activeJobsCount: number;
   readySessionsCount: number;
   platformCount: number;
+  liveResultsCount?: number;
   error: string;
   children: ReactNode;
 }

@@ -8,8 +8,7 @@ from pydantic import BaseModel
 
 
 class DiscoveryIn(BaseModel):
-    client_id: str
-    client_name: str
+    client_id: str  # must already exist -- see POST /clients
     keywords: list[str]
     tabs: list[str] = ["people", "pages"]
     max_results: int = 0

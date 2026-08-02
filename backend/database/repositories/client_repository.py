@@ -18,13 +18,23 @@ def _to_out(doc: dict) -> dict:
     return {
         "client_id": doc["_id"],
         "name": doc.get("name", ""),
-        "keywords": doc.get("keywords", []),
+        "domain": doc.get("domain", ""),
+        # two deliberately separate curated lists, not one merged bag --
+        # individual names (people to protect) and domain/brand keyword
+        # variants are different kinds of search terms an analyst tunes
+        # independently. Combined at search time, never merged in storage.
+        "name_keywords": doc.get("name_keywords", []),
+        "domain_keywords": doc.get("domain_keywords", []),
         "cron": doc.get("cron"),
         "created_at": doc.get("created_at"),
     }
 
 
-async def upsert(client_id: str, name: str, keywords: list[str], cron: Optional[str] = None) -> dict:
+async def upsert(
+    client_id: str, name: str, domain: str = "",
+    name_keywords: Optional[list[str]] = None, domain_keywords: Optional[list[str]] = None,
+    cron: Optional[str] = None,
+) -> dict:
     """`cron` is optional -- a client with keywords but no cron only ever
     gets swept when `POST /discovery` is called for it explicitly; setting
     cron additionally schedules an automatic recurring sweep (see
@@ -33,7 +43,11 @@ async def upsert(client_id: str, name: str, keywords: list[str], cron: Optional[
     await db()[CLIENTS].update_one(
         {"_id": client_id},
         {
-            "$set": {"name": name, "keywords": keywords, "cron": cron},
+            "$set": {
+                "name": name, "domain": domain,
+                "name_keywords": name_keywords or [], "domain_keywords": domain_keywords or [],
+                "cron": cron,
+            },
             "$setOnInsert": {"_id": client_id, "created_at": now},
         },
         upsert=True,

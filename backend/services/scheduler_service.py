@@ -74,7 +74,7 @@ async def _sync_jobs() -> None:
     added = 0
     for c in clients:
         cron = c.get("cron")
-        keywords = c.get("keywords") or []
+        keywords = (c.get("name_keywords") or []) + (c.get("domain_keywords") or [])
         if not cron or not keywords:
             continue
         try:
