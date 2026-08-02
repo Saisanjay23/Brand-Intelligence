@@ -279,7 +279,7 @@ a:hover {
     rgba(119, 39, 205, 0.12)
   );
   border-color: rgba(136, 56, 221, 0.28);
-  color: var(--cyan);
+  color: var(--text-main);
 }
 
 .top-nav-badge {
@@ -390,7 +390,7 @@ a:hover {
 
 .client-list-item.selected {
   background: rgba(136, 56, 221, 0.12);
-  color: var(--cyan);
+  color: var(--text-main);
   font-weight: 600;
 }
 
@@ -502,7 +502,7 @@ a:hover {
 
 .kw-chip {
   background: rgba(136, 56, 221, 0.12);
-  color: var(--cyan-bright);
+  color: var(--text-main);
   border: 1px solid rgba(136, 56, 221, 0.3);
   font-size: var(--xs-font-size);
   padding: 4px 10px;
@@ -640,7 +640,7 @@ a:hover {
 .mode-tab-btn.active {
   border-color: var(--cyan);
   background: linear-gradient(135deg, rgba(136, 56, 221, 0.16), rgba(0, 229, 255, 0.08));
-  color: var(--cyan-bright);
+  color: var(--text-main);
   transform: translateY(-1px);
 }
 
@@ -738,7 +738,7 @@ a:hover {
   padding: 5px 12px;
   font-size: 11px;
   font-weight: 700;
-  color: var(--cyan-bright);
+  color: var(--text-main);
   cursor: pointer;
   transition:
     border-color 0.15s ease,
@@ -753,7 +753,7 @@ a:hover {
   margin-top: 10px;
   width: 100%;
   background: rgba(136, 56, 221, 0.12);
-  color: var(--cyan-bright);
+  color: var(--text-main);
   border: 1px solid rgba(136, 56, 221, 0.35);
   border-radius: var(--border-radius-md);
   padding: 16px;
@@ -869,7 +869,7 @@ a:hover {
 .client-chip-btn.selected {
   border-color: var(--cyan);
   background: rgba(136, 56, 221, 0.12);
-  color: var(--cyan-bright);
+  color: var(--text-main);
 }
 
 /* Config-keywords tabs (individual names vs domain keywords) */
@@ -901,7 +901,7 @@ a:hover {
 .kw-tab-btn.active {
   border-color: var(--cyan);
   background: rgba(136, 56, 221, 0.1);
-  color: var(--cyan-bright);
+  color: var(--text-main);
 }
 .kw-tab-count {
   font-family: var(--font-mono);
@@ -909,7 +909,7 @@ a:hover {
   padding: 1px 6px;
   border-radius: 999px;
   background: rgba(136, 56, 221, 0.18);
-  color: var(--cyan-bright);
+  color: var(--text-main);
 }
 
 /* ──────────────── DASHBOARD VIEW ──────────────── */
@@ -1611,7 +1611,7 @@ a:hover {
 .status-chip b { margin-left: 5px; font-family: var(--font-mono); }
 .status-chip.on {
   background: rgba(136, 56, 221, 0.14); border-color: var(--cyan);
-  color: var(--cyan-bright);
+  color: var(--text-main);
 }
 
 /* ---- discovery / analysis phase tabs -- two separate engines, two separate
