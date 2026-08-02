@@ -846,6 +846,16 @@ a:hover {
   border-color: var(--cyan);
 }
 
+/* Facebook's row spans both columns -- it needs room for two inputs
+   (People + Pages) instead of the usual one. */
+.platform-limit-row-split {
+  grid-column: 1 / -1;
+}
+.platform-limit-split-inputs {
+  display: flex;
+  gap: 8px;
+}
+
 /* Client picker chips (HomeView) */
 .client-chip-btn {
   display: inline-flex;

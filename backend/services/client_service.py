@@ -15,9 +15,13 @@ from backend.database.repositories import profile_repository as profiles_db
 async def upsert(
     client_id: str, name: str, domain: str = "",
     name_keywords: Optional[list[str]] = None, domain_keywords: Optional[list[str]] = None,
-    platform_limits: Optional[dict[str, int]] = None, cron: Optional[str] = None,
+    platform_limits: Optional[dict[str, int]] = None,
+    platform_tab_limits: Optional[dict[str, dict[str, int]]] = None,
+    cron: Optional[str] = None,
 ) -> dict:
-    return await clients_db.upsert(client_id, name, domain, name_keywords, domain_keywords, platform_limits, cron)
+    return await clients_db.upsert(
+        client_id, name, domain, name_keywords, domain_keywords, platform_limits, platform_tab_limits, cron,
+    )
 
 
 async def get(client_id: str) -> dict:

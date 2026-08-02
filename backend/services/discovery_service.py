@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from typing import Optional
 
 from backend.database.repositories import profile_repository as profiles_db
 from backend.sessions import manager as sessions_engine
@@ -93,10 +94,12 @@ async def run_discovery(job: Job) -> None:
     if not ready:
         raise RuntimeError("no platform has a ready session to sweep")
 
-    # per-platform result caps saved on the client (see dto/client_dto.py);
-    # a platform missing here is uncapped -- "scrape all" for that platform.
+    # per-platform (and, for Facebook, per-tab) result caps saved on the
+    # client (see dto/client_dto.py); a platform/tab missing here is
+    # uncapped -- "scrape all".
     client = await clients_db.try_get(job.client_id)
     platform_limits = (client or {}).get("platform_limits") or {}
+    platform_tab_limits = (client or {}).get("platform_tab_limits") or {}
 
     await mgr.emit(job, "progress", f"sweeping {len(ready)} platform(s) for {len(keywords)} keyword(s)", total=len(ready))
 
@@ -114,7 +117,8 @@ async def run_discovery(job: Job) -> None:
         sweep_units = max(1, len(keywords) * len(platform_tabs))
         try:
             platform_params = {**p, "max_results": platform_limits.get(platform_id, p.get("max_results", 0))}
-            saved, new, note = await _sweep_platform(job, mgr, plat, keywords, platform_tabs, platform_params)
+            tab_limits = platform_tab_limits.get(platform_id) or {}
+            saved, new, note = await _sweep_platform(job, mgr, plat, keywords, platform_tabs, platform_params, tab_limits)
             await mgr.emit(job, "progress", platform=platform_id, platform_status="done", platform_processed=sweep_units)
             return platform_id, saved, new, note
         except Exception as e:
@@ -133,13 +137,20 @@ async def run_discovery(job: Job) -> None:
     job.message = f"{total_saved} stored, {total_new} new" + (f" -- {'; '.join(notes)}" if notes else "")
 
 
-async def _sweep_platform(job: Job, mgr, plat, keywords: list[str], tabs: list[str], params: dict) -> tuple[int, int, str]:
-    options = DiscoveryOptions(
-        concurrency=params.get("concurrency", settings.discovery_concurrency),
-        max_results=params.get("max_results", 0),
-        max_seconds=params.get("max_seconds", settings.discovery_max_seconds),
-        headful=not settings.headless,
-    )
+async def _sweep_platform(
+    job: Job, mgr, plat, keywords: list[str], tabs: list[str], params: dict,
+    tab_limits: Optional[dict[str, int]] = None,
+) -> tuple[int, int, str]:
+    tab_limits = tab_limits or {}
+    default_max_results = params.get("max_results", 0)
+
+    def _options_for(cap: int) -> DiscoveryOptions:
+        return DiscoveryOptions(
+            concurrency=params.get("concurrency", settings.discovery_concurrency),
+            max_results=cap,
+            max_seconds=params.get("max_seconds", settings.discovery_max_seconds),
+            headful=not settings.headless,
+        )
 
     saved = new = 0
     completed_units = 0
@@ -173,13 +184,24 @@ async def _sweep_platform(job: Job, mgr, plat, keywords: list[str], tabs: list[s
         completed_units += 1
         await mgr.emit(job, "progress", platform=plat.id, platform_status="running", platform_processed=completed_units)
 
+    # Group tabs by their resolved cap so a platform with per-tab limits
+    # (currently only Facebook: people vs pages) gets its own discoverer
+    # instance/options per distinct cap; every other platform (one shared
+    # cap across its single tab) takes exactly one group, same as before
+    # this per-tab support existed.
+    groups: dict[int, list[str]] = {}
+    for tab in tabs:
+        cap = tab_limits.get(tab, default_max_results)
+        groups.setdefault(cap, []).append(tab)
+
     plat_obj, session_item = await sessions_engine.session_for_job(plat.id)
     if not plat_obj.session_path:
-        discoverer = plat_obj.discoverer()(options, None)
-        await _run_incremental(discoverer, keywords, tabs, _on_sweep_done, _on_page_hits)
+        for cap, group_tabs in groups.items():
+            discoverer = plat_obj.discoverer()(_options_for(cap), None)
+            await _run_incremental(discoverer, keywords, group_tabs, _on_sweep_done, _on_page_hits)
     else:
         session = plat_obj.session_cls()(
-            options, session_item.get("cookies", []),
+            _options_for(default_max_results), session_item.get("cookies", []),
             session_id=session_item.get("id", ""), proxy=session_item.get("proxy"),
         )
         await session.start()
@@ -187,8 +209,9 @@ async def _sweep_platform(job: Job, mgr, plat, keywords: list[str], tabs: list[s
             if not await session.check_session():
                 await sessions_engine.mark_session_failed(plat.id, session_item.get("id", ""), "expired")
                 raise RuntimeError(f"session {session_item.get('identifier')} invalid or checkpointed")
-            discoverer = plat_obj.discoverer()(options, session.ctx)
-            await _run_incremental(discoverer, keywords, tabs, _on_sweep_done, _on_page_hits)
+            for cap, group_tabs in groups.items():
+                discoverer = plat_obj.discoverer()(_options_for(cap), session.ctx)
+                await _run_incremental(discoverer, keywords, group_tabs, _on_sweep_done, _on_page_hits)
         finally:
             await session.stop()
 

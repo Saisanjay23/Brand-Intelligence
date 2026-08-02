@@ -128,37 +128,73 @@ function PlatformLimitsEditor({
   platforms,
   limits,
   onChange,
+  facebookTabLimits,
+  onFacebookTabChange,
   disabled,
 }: {
   platforms: PlatformHealth[];
   limits: Record<string, string>;
   onChange: (platform: string, value: string) => void;
+  facebookTabLimits: { people: string; pages: string };
+  onFacebookTabChange: (tab: "people" | "pages", value: string) => void;
   disabled?: boolean;
 }) {
   return (
     <div style={{ marginTop: "20px" }}>
       <label className="field-label">🎯 Per-Platform Scrape Limits</label>
       <div style={{ fontSize: "11px", color: "var(--text-dim)", marginTop: "3px", marginBottom: "8px" }}>
-        Leave a platform blank to scrape everything found for it. Set a number to cap results per sweep.
+        Leave a platform (or Facebook's People/Pages) blank to scrape everything found for it. Set a number to cap
+        results per sweep.
       </div>
       <div className="platform-limits-grid">
-        {platforms.map((p) => (
-          <div key={p.platform} className="platform-limit-row">
-            <div className="platform-limit-label">
-              <PlatformIcon platform={p.platform} size={16} />
-              <span>{p.name}</span>
+        {platforms.map((p) =>
+          p.platform === "facebook" ? (
+            <div key={p.platform} className="platform-limit-row platform-limit-row-split">
+              <div className="platform-limit-label">
+                <PlatformIcon platform={p.platform} size={16} />
+                <span>{p.name}</span>
+              </div>
+              <div className="platform-limit-split-inputs">
+                <input
+                  type="number"
+                  min={0}
+                  value={facebookTabLimits.people}
+                  onChange={(e) => onFacebookTabChange("people", e.target.value)}
+                  placeholder="People: All"
+                  title="Cap for Facebook People results"
+                  disabled={disabled}
+                  className="platform-limit-input"
+                />
+                <input
+                  type="number"
+                  min={0}
+                  value={facebookTabLimits.pages}
+                  onChange={(e) => onFacebookTabChange("pages", e.target.value)}
+                  placeholder="Pages: All"
+                  title="Cap for Facebook Pages results"
+                  disabled={disabled}
+                  className="platform-limit-input"
+                />
+              </div>
             </div>
-            <input
-              type="number"
-              min={0}
-              value={limits[p.platform] ?? ""}
-              onChange={(e) => onChange(p.platform, e.target.value)}
-              placeholder="Scrape All"
-              disabled={disabled}
-              className="platform-limit-input"
-            />
-          </div>
-        ))}
+          ) : (
+            <div key={p.platform} className="platform-limit-row">
+              <div className="platform-limit-label">
+                <PlatformIcon platform={p.platform} size={16} />
+                <span>{p.name}</span>
+              </div>
+              <input
+                type="number"
+                min={0}
+                value={limits[p.platform] ?? ""}
+                onChange={(e) => onChange(p.platform, e.target.value)}
+                placeholder="Scrape All"
+                disabled={disabled}
+                className="platform-limit-input"
+              />
+            </div>
+          ),
+        )}
         {!platforms.length && (
           <div style={{ fontSize: "12px", color: "var(--text-dim)" }}>No platforms registered yet.</div>
         )}
@@ -183,6 +219,10 @@ export function HomeView({ clientId, platforms, onClient, busy, analysisBusy, on
   const [nameKeywords, setNameKeywords] = useState<string[]>(EMPTY_FORM.nameKw);
   const [domainKeywords, setDomainKeywords] = useState<string[]>(EMPTY_FORM.domainKw);
   const [platformLimits, setPlatformLimits] = useState<Record<string, string>>({});
+  const [facebookTabLimits, setFacebookTabLimits] = useState<{ people: string; pages: string }>({
+    people: "",
+    pages: "",
+  });
   const [cron, setCron] = useState(EMPTY_FORM.cron);
   const [activeTab, setActiveTab] = useState<KeywordTab>("names");
 
@@ -213,6 +253,11 @@ export function HomeView({ clientId, platforms, onClient, busy, analysisBusy, on
     setPlatformLimits(
       Object.fromEntries(Object.entries(c.platform_limits || {}).map(([k, v]) => [k, String(v)])),
     );
+    const fbTabs = c.platform_tab_limits?.facebook || {};
+    setFacebookTabLimits({
+      people: fbTabs.people !== undefined ? String(fbTabs.people) : "",
+      pages: fbTabs.pages !== undefined ? String(fbTabs.pages) : "",
+    });
     setCron(c.cron || "");
   };
 
@@ -223,6 +268,7 @@ export function HomeView({ clientId, platforms, onClient, busy, analysisBusy, on
     setNameKeywords(EMPTY_FORM.nameKw);
     setDomainKeywords(EMPTY_FORM.domainKw);
     setPlatformLimits({});
+    setFacebookTabLimits({ people: "", pages: "" });
     setCron(EMPTY_FORM.cron);
   };
 
@@ -291,6 +337,11 @@ export function HomeView({ clientId, platforms, onClient, busy, analysisBusy, on
         const n = Number(raw);
         if (raw.trim() && Number.isFinite(n) && n > 0) parsedLimits[platform] = Math.floor(n);
       }
+      const fbTabLimits: Record<string, number> = {};
+      for (const [tab, raw] of Object.entries(facebookTabLimits)) {
+        const n = Number(raw);
+        if (raw.trim() && Number.isFinite(n) && n > 0) fbTabLimits[tab] = Math.floor(n);
+      }
       const client = await clientsApi.upsertClient({
         client_id: id,
         name,
@@ -298,6 +349,7 @@ export function HomeView({ clientId, platforms, onClient, busy, analysisBusy, on
         name_keywords: nameKeywords,
         domain_keywords: domainKeywords,
         platform_limits: parsedLimits,
+        platform_tab_limits: Object.keys(fbTabLimits).length ? { facebook: fbTabLimits } : {},
         cron: cron.trim() || null,
       });
       setActiveClient(client);
@@ -527,6 +579,8 @@ export function HomeView({ clientId, platforms, onClient, busy, analysisBusy, on
               platforms={platforms}
               limits={platformLimits}
               onChange={(platform, value) => setPlatformLimits((prev) => ({ ...prev, [platform]: value }))}
+              facebookTabLimits={facebookTabLimits}
+              onFacebookTabChange={(tab, value) => setFacebookTabLimits((prev) => ({ ...prev, [tab]: value }))}
               disabled={busy}
             />
 

@@ -22,6 +22,10 @@ export interface Client {
   // platform id -> max results to scrape for this client. Missing (or 0)
   // means uncapped -- "scrape all" for that platform.
   platform_limits: Record<string, number>;
+  // platform id -> {tab: max results}, for platforms with more than one
+  // discovery tab -- currently only "facebook": {people, pages}. A tab
+  // missing here falls back to platform_limits[platform], then uncapped.
+  platform_tab_limits: Record<string, Record<string, number>>;
   cron?: string | null;
   created_at?: string;
 }
@@ -83,6 +87,10 @@ export interface Profile {
   priority?: Priority | null;
   comments?: string | null;
   followers?: number | null;
+  // "profile" | "page" -- only ever set on Facebook discovery rows (the
+  // one platform whose discovery distinguishes people from pages); blank
+  // everywhere else.
+  entity_type?: string;
   // every keyword sweep that has (re)found this profile -- discovery cards
   // only, see backend/services/profile_service.py::_to_card
   keywords?: string[];

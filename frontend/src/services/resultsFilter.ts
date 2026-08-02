@@ -93,6 +93,9 @@ export interface ExtraFilters {
   // fields above keep compiling unchanged. Threshold mirrors backend's
   // shared/models/scoring.py::NAME_THRESHOLD (80).
   matchLevel?: "" | "high" | "low";
+  // Facebook-discovery-only people/pages filter -- entity_type is blank
+  // on every other platform, so this is a no-op there.
+  entityType?: "" | "profile" | "page";
 }
 
 export type SortOrder = "recent" | "past";
@@ -192,6 +195,8 @@ export function filterResults(
       const level = score >= 80 ? "high" : "low";
       if (level !== extra.matchLevel) return false;
     }
+
+    if (extra.entityType && r.entity_type !== extra.entityType) return false;
 
     if (extra.searchQuery.trim()) {
       const q = extra.searchQuery.toLowerCase();

@@ -366,6 +366,7 @@ export function ResultsGrid({
   const [sortOrder, setSortOrder] = useState<"recent" | "past">("recent");
   const [keywordFilter, setKeywordFilter] = useState("");
   const [matchLevel, setMatchLevel] = useState<"" | "high" | "low">("");
+  const [entityType, setEntityType] = useState<"" | "profile" | "page">("");
   const [searchQuery, setSearchQuery] = useState("");
   const [offset, setOffset] = useState(0);
   const [viewMode, setViewMode] = useState<"grid" | "table">("grid");
@@ -442,12 +443,18 @@ export function ResultsGrid({
     return () => clearInterval(interval);
   }, [discoveryRunning, analysisRunning, load]);
 
+  const isFacebook = platform === "facebook";
   const filters: ResultFilters = { status: !isAnalysisView ? status : "", priority, phase };
-  const extra: ExtraFilters = { keywordFilter, searchQuery, matchLevel: !isAnalysisView ? matchLevel : "" };
+  const extra: ExtraFilters = {
+    keywordFilter,
+    searchQuery,
+    matchLevel: !isAnalysisView ? matchLevel : "",
+    entityType: !isAnalysisView && isFacebook ? entityType : "",
+  };
   const displayed = useMemo(
     () => sortResults(filterResults(profiles, filters, extra, platform), sortOrder, phase, keywordFilter),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [profiles, status, priority, phase, keywordFilter, matchLevel, searchQuery, sortOrder, platform],
+    [profiles, status, priority, phase, keywordFilter, matchLevel, entityType, searchQuery, sortOrder, platform],
   );
 
   const decide = async (id: string, next: Status) => {
@@ -915,6 +922,18 @@ export function ResultsGrid({
                 <option value="">All Match Levels</option>
                 <option value="high">🎯 High Match</option>
                 <option value="low">🎯 Low Match</option>
+              </select>
+            )}
+            {!isAnalysisView && isFacebook && (
+              <select
+                value={entityType}
+                onChange={(e) => setEntityType(e.target.value as "" | "profile" | "page")}
+                className="select-filter"
+                title="Facebook only distinguishes people profiles from Pages -- filter to just one"
+              >
+                <option value="">People + Pages</option>
+                <option value="profile">👤 People Only</option>
+                <option value="page">📄 Pages Only</option>
               </select>
             )}
             {isAnalysisView && (

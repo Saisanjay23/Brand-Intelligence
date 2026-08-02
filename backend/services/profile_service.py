@@ -38,6 +38,10 @@ def _to_card(doc: dict) -> dict:
         "priority": doc.get("priority"),
         "comments": doc.get("comments"),
         "followers": doc.get("followers"),
+        # "profile" | "page" -- only Facebook discovery distinguishes these
+        # (see PLATFORM_TABS in discovery_service.py); every other platform
+        # only ever sweeps one entity type, so this is blank there.
+        "entity_type": doc.get("entity_type", ""),
         # every keyword sweep that has ever (re)found this profile -- lets
         # the discovery filter narrow to "only what THIS keyword matched"
         "keywords": doc.get("keywords", []),
