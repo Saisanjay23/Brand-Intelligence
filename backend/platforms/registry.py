@@ -12,7 +12,6 @@ imports this registry to pick adapter classes, and `engine.sessions`
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from importlib import import_module
 from typing import Any
