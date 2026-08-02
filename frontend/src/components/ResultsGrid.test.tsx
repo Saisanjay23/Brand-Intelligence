@@ -143,6 +143,7 @@ describe("approve / reject -- optimistic update and rollback", () => {
     render(<ResultsGrid {...baseProps()} />);
 
     await screen.findByText("Test Channel");
+    await user.click(screen.getByTitle("Table view"));
     const row = (await screen.findByText("Test Channel")).closest("tr")!;
     await user.click(screen.getByRole("button", { name: /Approve/ }));
 
@@ -166,6 +167,8 @@ describe("approve / reject -- optimistic update and rollback", () => {
     const onError = vi.fn();
     render(<ResultsGrid {...baseProps({ onError })} />);
 
+    await screen.findByText("Test Channel");
+    await user.click(screen.getByTitle("Table view"));
     const row = (await screen.findByText("Test Channel")).closest("tr")!;
     await user.click(screen.getByRole("button", { name: /Approve/ }));
 
@@ -201,6 +204,7 @@ describe("phase toggle", () => {
     });
     render(<ResultsGrid {...baseProps()} />);
     await user.click(screen.getByText("Analysis"));
+    await user.click(screen.getByTitle("Table view"));
 
     expect(await screen.findByText("Risk")).toBeInTheDocument();
   });
