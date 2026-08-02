@@ -328,6 +328,7 @@ class Discovery:
                     url=u.url,
                     avatar=u.avatar,
                     has_custom_pic=u.has_custom_pic,
+                    verified=u.verified,
                     entity_type="profile",
                     keyword=keyword,
                     tab=tab,

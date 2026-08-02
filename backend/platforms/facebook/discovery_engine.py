@@ -179,6 +179,12 @@ class Hit:
     # placeholder/default avatar -- decided per-platform at the point avatar is
     # set (see each discovery module), never guessed from "an avatar URL exists"
     has_custom_pic: bool = False
+    # a real platform-issued verification badge (blue check / verified icon),
+    # read directly off that platform's own payload/DOM at scrape time --
+    # never inferred from anything else. Defaults False on platforms that
+    # don't parse a verification signal yet, which is correct: "unknown"
+    # must never render as "verified".
+    verified: bool = False
     entity_type: str = "profile"  # profile | page
     keyword: str = ""
     tab: str = ""
@@ -192,6 +198,7 @@ class Hit:
             "url": self.url,
             "avatar": self.avatar,
             "has_custom_pic": self.has_custom_pic,
+            "verified": self.verified,
             "entity_type": self.entity_type,
             "keyword": self.keyword,
             "tab": self.tab,

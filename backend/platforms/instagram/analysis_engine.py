@@ -406,6 +406,7 @@ class Scraper:
             row.posts_seen = "no"
             row.mark("last_post", "api-no-posts")
         if u.verified:
+            row.verified = True
             row.note("verified account")
         if u.private:
             row.note("private account -- posts not visible")
@@ -453,6 +454,7 @@ class Scraper:
             row.mark("logo", "dom-header")
 
         if dom.get("verified"):
+            row.verified = True
             row.note("verified account")
         if dom.get("isPrivate"):
             row.note("private account -- posts not visible")

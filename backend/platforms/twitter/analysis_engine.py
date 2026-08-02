@@ -233,6 +233,7 @@ class Scraper:
             row.has_custom_pic = u.has_custom_pic
             row.mark("logo", "graphql")
         if u.verified:
+            row.verified = True
             row.note("verified account")
         if u.protected:
             row.note("protected account -- posts not visible")

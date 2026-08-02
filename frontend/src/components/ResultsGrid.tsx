@@ -222,8 +222,8 @@ function ProfileCard({ r, isAnalysisView, savingId, onDecide, onPublish }: CardP
           <a href={r.url} target="_blank" rel="noreferrer" className="profile-display-name" style={{ color: "var(--text-main)" }}>
             {name}
           </a>
-          {r.has_logo && (
-            <span className="verified-check" title="Uses a logo/brand photo">
+          {r.verified && (
+            <span className="verified-check" title="Verified account on this platform">
               ✓
             </span>
           )}
@@ -916,6 +916,7 @@ export function ResultsGrid({
                         <a href={r.url} target="_blank" rel="noreferrer" style={{ color: "var(--text-main)" }}>
                           {r.profile_name || r.username || r.url}
                         </a>
+                        {r.verified && <span className="verified-check" title="Verified account on this platform"> ✓</span>}
                         {r.has_logo && <span title="Uses a logo/brand photo"> 🏷️</span>}
                       </td>
                       <td><PlatformIcon platform={r.platform} size={16} /></td>

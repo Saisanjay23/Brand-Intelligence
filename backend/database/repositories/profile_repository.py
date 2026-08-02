@@ -37,13 +37,13 @@ PHASE_ANALYSIS = "analysis"
 # fields discovery is allowed to write; everything else is analysis territory
 DISCOVERY_FIELDS = (
     "entity_id", "username", "display_name", "entity_type",
-    "discovery_source", "profile_image_url", "has_logo",
+    "discovery_source", "profile_image_url", "has_logo", "verified",
 )
 
 ANALYSIS_FIELDS = (
     "entity_id", "display_name", "entity_type", "target", "official_feed",
     "followers", "followers_exact", "friends", "location", "profile_image_url",
-    "has_logo", "is_active", "has_name_match", "name_score", "last_post_date",
+    "has_logo", "verified", "is_active", "has_name_match", "name_score", "last_post_date",
     "risk_score", "priority", "comments", "analysis_status", "sources",
 )
 

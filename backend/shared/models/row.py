@@ -35,6 +35,10 @@ class Row:
     posts_seen: str = ""  # yes | no | ""
     profile_pic_url: str = ""
     has_custom_pic: Optional[bool] = None
+    # a real platform-issued verification badge, read directly off the
+    # platform's own payload/DOM -- None means "this platform's analysis
+    # engine doesn't check for one", never "not verified".
+    verified: Optional[bool] = None
     screenshot: str = ""
     notes: str = ""
     name_score: int = 0

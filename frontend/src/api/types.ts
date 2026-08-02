@@ -75,6 +75,7 @@ export interface Profile {
   // card fields (discovery)
   profile_name?: string;
   profile_image_url?: string;
+  verified?: boolean;
   risk_score?: number | null;
   priority?: Priority | null;
   comments?: string | null;

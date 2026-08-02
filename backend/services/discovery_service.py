@@ -43,6 +43,7 @@ def _hit_to_fields(hit, platform: str) -> dict:
         "username": username, "display_name": hit.name, "entity_type": hit.entity_type,
         "discovery_source": hit.source, "profile_image_url": getattr(hit, "avatar", ""),
         "has_logo": bool(getattr(hit, "has_custom_pic", False)),
+        "verified": bool(getattr(hit, "verified", False)),
     }
 
 
