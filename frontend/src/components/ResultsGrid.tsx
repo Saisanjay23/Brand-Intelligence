@@ -606,6 +606,17 @@ export function ResultsGrid({
     setOffset(0);
   }, [clientId, platform, status, phase, keywordFilter]);
 
+  // Discovery has no "All Platforms" tab (see the platform rail below) --
+  // whenever discovery ends up with no platform selected (landing here
+  // fresh, or switching over from an analysis view left on "All
+  // Platforms"), fall back to the first platform rather than showing an
+  // unfiltered grid with no tab highlighted as active.
+  useEffect(() => {
+    if (phase === "discovery" && !platform && platforms.length > 0) {
+      setPlatform(platforms[0].platform);
+    }
+  }, [phase, platform, platforms]);
+
   useEffect(() => {
     load(true);
   }, [load]);
@@ -869,22 +880,31 @@ export function ResultsGrid({
 
           {/* Platform filter rail -- view-only. Discovery/analysis on this
               backend always run across every ready platform at once, so
-              there is nothing per-platform to launch from here anymore. */}
+              there is nothing per-platform to launch from here anymore.
+              "All Platforms" is analysis-only: that's the one place a
+              combined view earns its keep, since Publish All and the
+              CSV/JSON/Excel exports act on "whichever platform tab is
+              selected" -- for analysis that means one click covers every
+              platform, so removing it there would turn a single Publish
+              All into six. Discovery has no such bulk action tied to it,
+              so a combined tab there was armchair convenience only. */}
           <div className="platform-rail-grid">
-            <div
-              className={`platform-rail-item ${platform === "" ? "active" : ""}`}
-              onClick={() => setPlatform("")}
-            >
-              <div className="rail-card-head">
-                <span style={{ fontSize: "16px" }}>🌐</span>
-                <span style={{ fontSize: "12px", fontWeight: 500 }}>All Platforms</span>
+            {isAnalysisView && (
+              <div
+                className={`platform-rail-item ${platform === "" ? "active" : ""}`}
+                onClick={() => setPlatform("")}
+              >
+                <div className="rail-card-head">
+                  <span style={{ fontSize: "16px" }}>🌐</span>
+                  <span style={{ fontSize: "12px", fontWeight: 500 }}>All Platforms</span>
+                </div>
+                <div className="rail-card-foot">
+                  <span className="rail-pill" style={{ color: "var(--text-main)", fontWeight: 700 }}>
+                    {Object.values(counts.platforms).reduce((a, b) => a + b, 0)} results
+                  </span>
+                </div>
               </div>
-              <div className="rail-card-foot">
-                <span className="rail-pill" style={{ color: "var(--text-main)", fontWeight: 700 }}>
-                  {Object.values(counts.platforms).reduce((a, b) => a + b, 0)} results
-                </span>
-              </div>
-            </div>
+            )}
             {platforms.map((p) => {
               const count = counts.platforms[p.platform] || 0;
               return (
