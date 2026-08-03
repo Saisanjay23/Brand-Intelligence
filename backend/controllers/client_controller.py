@@ -15,6 +15,7 @@ async def upsert_client(body: ClientIn) -> dict:
     out = await client_service.upsert(
         body.client_id, body.name, body.domain, body.name_keywords, body.domain_keywords,
         body.platform_limits, body.platform_tab_limits, body.cron,
+        body.name_keyword_drk, body.domain_keyword_drk,
     )
     scheduler.sync()
     return out

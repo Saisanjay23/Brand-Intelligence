@@ -19,9 +19,12 @@ async def upsert(
     platform_limits: Optional[dict[str, int]] = None,
     platform_tab_limits: Optional[dict[str, dict[str, int]]] = None,
     cron: Optional[str] = None,
+    name_keyword_drk: Optional[dict[str, str]] = None,
+    domain_keyword_drk: Optional[dict[str, str]] = None,
 ) -> dict:
     return await clients_db.upsert(
         client_id, name, domain, name_keywords, domain_keywords, platform_limits, platform_tab_limits, cron,
+        name_keyword_drk, domain_keyword_drk,
     )
 
 

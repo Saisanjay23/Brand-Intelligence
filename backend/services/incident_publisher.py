@@ -75,12 +75,26 @@ def _category_and_asset_name(doc: dict, client: dict) -> tuple[str, str, str]:
     (the existing default), but the specific individual-name keyword that
     matched -- not the client's name -- for a person match: "adani" the
     company and "gautam adani" the person are different assets even
-    though they share one client record."""
+    though they share one client record.
+
+    Either default can be overridden per-keyword via the client's
+    name_keyword_drk/domain_keyword_drk maps ("Digital Risk Keyword" --
+    set when creating/editing a client, keyed by the literal keyword
+    string). A keyword with no entry there keeps the default above
+    exactly as before -- the override is opt-in, never required."""
     matched = doc.get("keywords", [])
     name_keywords = set(client.get("name_keywords", []))
-    hit = next((k for k in matched if k in name_keywords), None)
-    if hit:
-        return (*CATEGORY_PERSON, hit)
+    domain_keywords = set(client.get("domain_keywords", []))
+    name_drk = client.get("name_keyword_drk") or {}
+    domain_drk = client.get("domain_keyword_drk") or {}
+
+    name_hit = next((k for k in matched if k in name_keywords), None)
+    if name_hit:
+        return (*CATEGORY_PERSON, name_drk.get(name_hit) or name_hit)
+
+    domain_hit = next((k for k in matched if k in domain_keywords), None)
+    if domain_hit and domain_drk.get(domain_hit):
+        return (*CATEGORY_BRAND, domain_drk[domain_hit])
     return (*CATEGORY_BRAND, client.get("name", ""))
 
 
