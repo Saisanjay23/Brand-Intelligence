@@ -6,7 +6,7 @@ import { jobsApi } from "../api/jobsApi";
 import type { Client, Job, PlatformHealth } from "../api/types";
 import { PlatformIcon } from "../components/PlatformIcon";
 
-type KeywordTab = "names" | "domain";
+type KeywordTab = "names" | "domain" | "drk";
 type Mode = "create" | "select";
 
 interface Props {
@@ -128,41 +128,126 @@ function ChipInput({
   );
 }
 
-// One row per keyword, an optional "Digital Risk Keyword" override text
-// next to it -- if set, this becomes the assetName in the analysis
-// output's published-incident record for a profile matched under that
-// keyword; left blank, the tool keeps its own default (the matched name
-// keyword itself, or the client's own name for a domain keyword).
-function DrkEditor({
-  keywords,
-  drk,
-  onChange,
+// Its own tab, combining both keyword lists -- a Digital Risk Keyword is
+// an optional per-keyword "Asset Name" override for the analysis output's
+// published-incident record: set one and it replaces the default (the
+// matched name keyword itself, or the client's own name for a domain
+// keyword) for any profile matched under that specific keyword. Left
+// blank, nothing changes -- "whatever comes stays as-is."
+function DrkKeywordsPanel({
+  nameKeywords,
+  domainKeywords,
+  nameKeywordDrk,
+  domainKeywordDrk,
+  onNameDrkChange,
+  onDomainDrkChange,
   disabled,
 }: {
-  keywords: string[];
-  drk: Record<string, string>;
-  onChange: (keyword: string, value: string) => void;
+  nameKeywords: string[];
+  domainKeywords: string[];
+  nameKeywordDrk: Record<string, string>;
+  domainKeywordDrk: Record<string, string>;
+  onNameDrkChange: (keyword: string, value: string) => void;
+  onDomainDrkChange: (keyword: string, value: string) => void;
   disabled?: boolean;
 }) {
-  if (!keywords.length) return null;
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkText, setBulkText] = useState("");
+  const [skipped, setSkipped] = useState(0);
+
+  const rows = [
+    ...nameKeywords.map((kw) => ({ kw, type: "name" as const })),
+    ...domainKeywords.map((kw) => ({ kw, type: "domain" as const })),
+  ];
+
+  const applyBulk = () => {
+    let skippedCount = 0;
+    for (const rawLine of bulkText.split("\n")) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      const sep = line.search(/[:,]/);
+      const kw = sep === -1 ? "" : line.slice(0, sep).trim();
+      const val = sep === -1 ? "" : line.slice(sep + 1).trim();
+      if (!kw || !val) {
+        skippedCount++;
+      } else if (nameKeywords.includes(kw)) {
+        onNameDrkChange(kw, val);
+      } else if (domainKeywords.includes(kw)) {
+        onDomainDrkChange(kw, val);
+      } else {
+        skippedCount++;
+      }
+    }
+    setSkipped(skippedCount);
+    setBulkText("");
+    // stay open when something was skipped -- that message only means
+    // anything while the analyst can still see it
+    if (skippedCount === 0) setBulkOpen(false);
+  };
+
+  if (!rows.length) {
+    return (
+      <div style={{ marginTop: "12px", fontSize: "12px", color: "var(--text-dim)" }}>
+        Add some Individual Name or Domain keywords first -- a Digital Risk Keyword overrides an existing keyword, it
+        doesn't create a new one.
+      </div>
+    );
+  }
+
   return (
     <div style={{ marginTop: "12px" }}>
-      <label className="field-label" style={{ fontSize: "11px" }}>
-        🎯 Digital Risk Keyword (optional -- Asset Name override for analysis output; left blank, whatever comes stays as-is)
-      </label>
       <div className="drk-editor-list">
-        {keywords.map((kw) => (
-          <div key={kw} className="drk-editor-row">
-            <span className="drk-editor-kw">{kw}</span>
+        {rows.map(({ kw, type }) => (
+          <div key={`${type}-${kw}`} className="drk-editor-row">
+            <span className="drk-editor-kw" title={type === "name" ? "Individual name keyword" : "Domain keyword"}>
+              {type === "name" ? "👤" : "🏷️"} {kw}
+            </span>
             <input
-              value={drk[kw] ?? ""}
-              onChange={(e) => onChange(kw, e.target.value)}
+              value={(type === "name" ? nameKeywordDrk : domainKeywordDrk)[kw] ?? ""}
+              onChange={(e) => (type === "name" ? onNameDrkChange : onDomainDrkChange)(kw, e.target.value)}
               placeholder="Asset Name override…"
               disabled={disabled}
             />
           </div>
         ))}
       </div>
+      <button
+        type="button"
+        className="bulk-kw-toggle"
+        onClick={() => {
+          setSkipped(0);
+          setBulkOpen((v) => !v);
+        }}
+        disabled={disabled}
+      >
+        {bulkOpen ? "▾" : "▸"} 📋 Bulk add (one "keyword: override" per line)
+      </button>
+      {bulkOpen && (
+        <div className="bulk-kw-panel">
+          <textarea
+            value={bulkText}
+            onChange={(e) => setBulkText(e.target.value)}
+            placeholder={"gautam adani: Gautam S. Adani (Chairman)\nadanigroup.com: Adani Group Official"}
+            rows={4}
+            disabled={disabled}
+          />
+          <button
+            type="button"
+            className="btn-cyber-primary"
+            style={{ width: "auto", marginTop: "6px" }}
+            onClick={applyBulk}
+            disabled={disabled || !bulkText.trim()}
+          >
+            Apply All
+          </button>
+          {skipped > 0 && (
+            <div style={{ fontSize: "11px", color: "var(--text-dim)", marginTop: "4px" }}>
+              {skipped} line(s) skipped -- keyword not found among Individual Names/Domain Keywords, or not in
+              "keyword: override" / "keyword, override" format.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -208,29 +293,43 @@ function KeywordTabs({
           🏷️ Domain Keywords
           {domainKeywords.length > 0 && <span className="kw-tab-count">{domainKeywords.length}</span>}
         </button>
+        <button className={`kw-tab-btn ${activeTab === "drk" ? "active" : ""}`} onClick={() => onTab("drk")}>
+          🎯 DRK Keywords
+          {Object.keys(nameKeywordDrk).length + Object.keys(domainKeywordDrk).length > 0 && (
+            <span className="kw-tab-count">
+              {Object.keys(nameKeywordDrk).length + Object.keys(domainKeywordDrk).length}
+            </span>
+          )}
+        </button>
       </div>
-      {activeTab === "names" ? (
-        <>
-          <ChipInput
-            chips={nameKeywords}
-            onAdd={onAddName}
-            onRemove={onRemoveName}
-            placeholder="type a person's name, press Enter…"
-            disabled={disabled}
-          />
-          <DrkEditor keywords={nameKeywords} drk={nameKeywordDrk} onChange={onNameDrkChange} disabled={disabled} />
-        </>
-      ) : (
-        <>
-          <ChipInput
-            chips={domainKeywords}
-            onAdd={onAddDomain}
-            onRemove={onRemoveDomain}
-            placeholder="type a brand/domain keyword, press Enter…"
-            disabled={disabled}
-          />
-          <DrkEditor keywords={domainKeywords} drk={domainKeywordDrk} onChange={onDomainDrkChange} disabled={disabled} />
-        </>
+      {activeTab === "names" && (
+        <ChipInput
+          chips={nameKeywords}
+          onAdd={onAddName}
+          onRemove={onRemoveName}
+          placeholder="type a person's name, press Enter…"
+          disabled={disabled}
+        />
+      )}
+      {activeTab === "domain" && (
+        <ChipInput
+          chips={domainKeywords}
+          onAdd={onAddDomain}
+          onRemove={onRemoveDomain}
+          placeholder="type a brand/domain keyword, press Enter…"
+          disabled={disabled}
+        />
+      )}
+      {activeTab === "drk" && (
+        <DrkKeywordsPanel
+          nameKeywords={nameKeywords}
+          domainKeywords={domainKeywords}
+          nameKeywordDrk={nameKeywordDrk}
+          domainKeywordDrk={domainKeywordDrk}
+          onNameDrkChange={onNameDrkChange}
+          onDomainDrkChange={onDomainDrkChange}
+          disabled={disabled}
+        />
       )}
     </div>
   );
