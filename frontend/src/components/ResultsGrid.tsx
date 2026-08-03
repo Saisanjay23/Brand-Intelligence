@@ -1212,36 +1212,44 @@ export function ResultsGrid({
               className="input-filter"
               style={{ flex: 1, minWidth: "160px" }}
             />
-            <div style={{ display: "flex", gap: "6px" }}>
-              <button
-                onClick={() => setViewMode("grid")}
-                title="Card view"
-                style={{
-                  background: viewMode === "grid" ? "rgba(136, 56, 221,0.12)" : "var(--bg-surface)",
-                  border: `1px solid ${viewMode === "grid" ? "var(--cyan)" : "var(--border-color)"}`,
-                  color: viewMode === "grid" ? "var(--text-main)" : "var(--text-muted)",
-                  borderRadius: "8px",
-                  padding: "7px 10px",
-                  cursor: "pointer",
-                }}
-              >
-                📱 Cards
-              </button>
-              <button
-                onClick={() => setViewMode("table")}
-                title="Table view"
-                style={{
-                  background: viewMode === "table" ? "rgba(136, 56, 221,0.12)" : "var(--bg-surface)",
-                  border: `1px solid ${viewMode === "table" ? "var(--cyan)" : "var(--border-color)"}`,
-                  color: viewMode === "table" ? "var(--text-main)" : "var(--text-muted)",
-                  borderRadius: "8px",
-                  padding: "7px 10px",
-                  cursor: "pointer",
-                }}
-              >
-                📋 Table
-              </button>
-            </div>
+            {/* Card view is discovery-only -- an analysis card is the full
+                incident-edit panel (~15 fields) permanently expanded, which
+                makes a card grid unwieldy compared to the table's one-row-
+                per-profile density. Analysis always renders as a table;
+                the toggle itself is hidden there since there's nothing to
+                toggle to. */}
+            {!isAnalysisView && (
+              <div style={{ display: "flex", gap: "6px" }}>
+                <button
+                  onClick={() => setViewMode("grid")}
+                  title="Card view"
+                  style={{
+                    background: viewMode === "grid" ? "rgba(136, 56, 221,0.12)" : "var(--bg-surface)",
+                    border: `1px solid ${viewMode === "grid" ? "var(--cyan)" : "var(--border-color)"}`,
+                    color: viewMode === "grid" ? "var(--text-main)" : "var(--text-muted)",
+                    borderRadius: "8px",
+                    padding: "7px 10px",
+                    cursor: "pointer",
+                  }}
+                >
+                  📱 Cards
+                </button>
+                <button
+                  onClick={() => setViewMode("table")}
+                  title="Table view"
+                  style={{
+                    background: viewMode === "table" ? "rgba(136, 56, 221,0.12)" : "var(--bg-surface)",
+                    border: `1px solid ${viewMode === "table" ? "var(--cyan)" : "var(--border-color)"}`,
+                    color: viewMode === "table" ? "var(--text-main)" : "var(--text-muted)",
+                    borderRadius: "8px",
+                    padding: "7px 10px",
+                    cursor: "pointer",
+                  }}
+                >
+                  📋 Table
+                </button>
+              </div>
+            )}
             <button className="btn-cyber-primary" style={{ padding: "7px 11px", fontSize: "11px", marginTop: 0, width: "auto" }} onClick={() => handleExport("csv")} disabled={exporting || !clientId}>
               {exporting ? "…" : "CSV"}
             </button>
@@ -1296,7 +1304,7 @@ export function ResultsGrid({
             </div>
           )}
 
-          {!loading && displayed.length > 0 && viewMode === "grid" && (
+          {!loading && displayed.length > 0 && !isAnalysisView && viewMode === "grid" && (
             <div className="profile-grid-container" style={{ marginTop: "12px" }}>
               {displayed.map((r) => (
                 <ProfileCard
@@ -1308,7 +1316,7 @@ export function ResultsGrid({
             </div>
           )}
 
-          {!loading && displayed.length > 0 && viewMode === "table" && (
+          {!loading && displayed.length > 0 && (isAnalysisView || viewMode === "table") && (
             <div style={{ overflowX: "auto", marginTop: "12px" }}>
               <table className="core_table">
                 <thead>

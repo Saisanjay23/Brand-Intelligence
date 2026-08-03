@@ -208,7 +208,7 @@ describe("phase toggle", () => {
     });
     render(<ResultsGrid {...baseProps()} />);
     await user.click(screen.getByText("Analysis"));
-    await user.click(screen.getByTitle("Table view"));
+    // analysis has no card/table toggle -- it's table-only (see ResultsGrid.tsx)
 
     expect(await screen.findByText("RiskScore")).toBeInTheDocument();
   });
