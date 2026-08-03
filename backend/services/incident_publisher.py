@@ -10,6 +10,14 @@ or the bulk "Publish All"), never by analysis finishing on its own -- the
 publish-hold review step (ADR 0007) stays meaningful, and this is exactly
 the moment a result actually leaves the tool for a client to see.
 
+`build_incident_doc` is also called to render a live PREVIEW of this same
+shape on every analysis-phase GET (see profile_service._to_full), so an
+analyst can review/correct it before publishing -- `doc["incident_overrides"]`
+holds whatever fields an analyst has hand-edited (flat dotted keys, e.g.
+"socialProfileInfo.location"), applied on top of the computed defaults
+here, so an override always wins and survives a rediscovery/re-analysis
+recomputing everything else.
+
 `created_iso` (account creation date) is captured by some platform
 engines' Row but is not one of ANALYSIS_FIELDS persisted on a Profile
 document (see profile_repository.py), so "isActive" here can only be
@@ -20,7 +28,7 @@ because creation date is never stored.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from backend.database.repositories import published_incident_repository as incidents_db
 from backend.platforms.registry import PLATFORMS
@@ -62,10 +70,35 @@ def _is_active(doc: dict) -> bool:
     return _is_recent(doc.get("last_post_date"), days=ACTIVE_WINDOW_DAYS)
 
 
-def _category(doc: dict, client: dict) -> tuple[str, str]:
-    matched = set(doc.get("keywords", []))
+def _category_and_asset_name(doc: dict, client: dict) -> tuple[str, str, str]:
+    """assetName is the client's own name for a domain/brand-keyword match
+    (the existing default), but the specific individual-name keyword that
+    matched -- not the client's name -- for a person match: "adani" the
+    company and "gautam adani" the person are different assets even
+    though they share one client record."""
+    matched = doc.get("keywords", [])
     name_keywords = set(client.get("name_keywords", []))
-    return CATEGORY_PERSON if matched & name_keywords else CATEGORY_BRAND
+    hit = next((k for k in matched if k in name_keywords), None)
+    if hit:
+        return (*CATEGORY_PERSON, hit)
+    return (*CATEGORY_BRAND, client.get("name", ""))
+
+
+def _apply_overrides(incident: dict, overrides: dict[str, Any]) -> dict:
+    """`overrides` is flat: {"title": "...", "socialProfileInfo.location": "..."}
+    -- each key a dotted path into `incident`, at most one level of nesting
+    (the only nested object in this shape is socialProfileInfo)."""
+    if not overrides:
+        return incident
+    out = {**incident, "socialProfileInfo": dict(incident.get("socialProfileInfo", {}))}
+    for path, value in overrides.items():
+        if "." in path:
+            parent, child = path.split(".", 1)
+            if isinstance(out.get(parent), dict):
+                out[parent][child] = value
+        else:
+            out[path] = value
+    return out
 
 
 def build_incident_doc(doc: dict, client: dict) -> dict:
@@ -73,7 +106,7 @@ def build_incident_doc(doc: dict, client: dict) -> dict:
     name = _display_name(doc)
     src_url = doc.get("url", "")
     asset_type = _asset_type(platform)
-    category, sub_category = _category(doc, client)
+    category, sub_category, asset_name = _category_and_asset_name(doc, client)
     logo_match = bool(doc.get("logo_match"))
     username_match = bool(doc.get("username_match"))
     followers = doc.get("followers")
@@ -86,7 +119,7 @@ def build_incident_doc(doc: dict, client: dict) -> dict:
         location=location, last_post_iso=last_post, is_active=active,
     )
 
-    return {
+    incident = {
         "title": f"Similar {asset_type} Account {name} Found",
         "category": category,
         "subCategory": sub_category,
@@ -98,7 +131,7 @@ def build_incident_doc(doc: dict, client: dict) -> dict:
         "domain": client.get("domain", ""),
         "orgId": client.get("client_id", ""),
         "assetCategory": asset_type,
-        "assetName": client.get("name", ""),
+        "assetName": asset_name,
         "socialProfileInfo": {
             "isActive": active,
             "isSimilarName": username_match,
@@ -111,6 +144,7 @@ def build_incident_doc(doc: dict, client: dict) -> dict:
             "posts": None,
         },
     }
+    return _apply_overrides(incident, doc.get("incident_overrides") or {})
 
 
 async def publish_incident(doc: dict, client: dict) -> dict:

@@ -59,6 +59,12 @@ EDITABLE = {
     # never scored automatically; set via the discovery card's Validate action
     # and carried through to the analysis-phase record unchanged.
     "logo_match", "username_match",
+    # an analyst's hand-edits to the computed published-incident preview
+    # (see services/incident_publisher.py) -- flat dotted-path keys, merged
+    # into whatever's already stored rather than replacing it wholesale
+    # (see the special-casing in patch() below), so editing one field never
+    # clobbers another already-saved override.
+    "incident_overrides",
 }
 
 # fields a rediscovery can actually observe that matter for reconsidering a
@@ -348,6 +354,15 @@ async def patch(doc_id: str, fields: dict) -> dict:
             safe["followers"] = None if safe["followers"] in (None, "") else int(safe["followers"])
         except (TypeError, ValueError):
             raise ValidationError("followers must be a number")
+    overrides = safe.pop("incident_overrides", None)
+    if overrides:
+        if not isinstance(overrides, dict):
+            raise ValidationError("incident_overrides must be an object of {field: value}")
+        # dotted-path expansion, not a bare $set of the whole sub-document --
+        # editing one field (e.g. "title") must never wipe out overrides a
+        # previous edit already saved for a different field.
+        for path, value in overrides.items():
+            safe[f"incident_overrides.{path}"] = value
     if not safe:
         raise ValidationError("nothing updatable in that payload")
 

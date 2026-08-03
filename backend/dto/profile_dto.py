@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel
 
@@ -23,6 +23,10 @@ class ProfilePatch(BaseModel):
     followers: Optional[int] = None
     location: Optional[str] = None
     last_post_date: Optional[str] = None
+    # analyst hand-edits to the published-incident preview -- flat dotted
+    # keys, e.g. {"title": "...", "socialProfileInfo.location": "..."};
+    # see profile_repository.patch()'s dotted-path expansion.
+    incident_overrides: Optional[dict[str, Any]] = None
 
 
 class PublishAllRequest(BaseModel):

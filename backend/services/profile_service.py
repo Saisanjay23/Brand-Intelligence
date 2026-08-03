@@ -57,9 +57,10 @@ def _to_card(doc: dict) -> dict:
     }
 
 
-def _to_full(doc: dict, client_name: str) -> dict:
+def _to_full(doc: dict, client: Optional[dict]) -> dict:
     return {
-        "id": doc["id"], "client_id": doc.get("client_id", ""), "client_name": client_name,
+        "id": doc["id"], "client_id": doc.get("client_id", ""),
+        "client_name": client["name"] if client else "",
         "keyword": ", ".join(doc.get("keywords", [])),
         "platform": doc.get("platform", ""), "url": doc.get("url", ""),
         "username": doc.get("username") or doc.get("display_name") or "",
@@ -81,6 +82,12 @@ def _to_full(doc: dict, client_name: str) -> dict:
         # analysis-phase record too
         "logo_match": doc.get("logo_match"),
         "username_match": doc.get("username_match"),
+        # a live preview of the exact record Publish will write to
+        # published_incidents -- editable via PATCH's incident_overrides
+        # (see profile_repository.EDITABLE) before the analyst actually
+        # publishes. None when the client record is gone (nothing to
+        # compute domain/orgId/assetName from).
+        "incident": incident_publisher.build_incident_doc(doc, client) if client else None,
     }
 
 
@@ -95,7 +102,7 @@ async def list_profiles(
     )
     if phase == profiles_db.PHASE_ANALYSIS:
         client = await clients_db.try_get(client_id)
-        items = [_to_full(d, client["name"] if client else "") for d in docs]
+        items = [_to_full(d, client) for d in docs]
     else:
         items = [_to_card(d) for d in docs]
     return {"items": items, "total": total, "counts": counts}
@@ -106,7 +113,7 @@ async def get_profile(profile_id: str) -> dict:
     if doc is None:
         raise NotFoundError(f"profile {profile_id!r} not found")
     client = await clients_db.try_get(doc.get("client_id", ""))
-    return _to_full(doc, client["name"] if client else "")
+    return _to_full(doc, client)
 
 
 async def patch_profile(profile_id: str, body_fields: dict) -> dict:
