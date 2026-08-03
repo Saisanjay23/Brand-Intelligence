@@ -418,6 +418,48 @@ class Sweep:
 RESOLVE_MAX = 60
 RESOLVE_CONCURRENCY = 3
 
+# Chrome/placeholder strings that are never a real profile's own name --
+# a login wall, checkpoint, or "Facebook" itself leaking through a loosely
+# matched dict would otherwise read as a plausible (wrong) name. Mirrors
+# analysis_engine.py's own GENERIC_NAMES guard; kept as a separate local
+# copy rather than an import to avoid the circular dependency (see
+# _extract_entity's docstring).
+GENERIC_NAMES = {"facebook", "notifications", "log in to facebook"}
+
+
+def _extract_entity(blobs: list[Any], eid: str) -> tuple[str, str, bool]:
+    """The (name, avatar, has_custom_pic) for entity `eid` found across a
+    profile page's own embedded/XHR JSON payloads -- scoped by exact id
+    match only, the same "an unverifiable id scopes to nothing" rule
+    analysis_engine.py's Harvest.scoped() uses, so a page carrying other
+    entities (suggested friends, sidebar widgets, sponsored content)
+    can't leak a wrong name/photo onto this candidate: blank beats wrong,
+    every time, because a wrong name here would surface as a false-
+    positive impersonation match (a bogus high name-score badge) rather
+    than the honest "no name available" it actually is.
+
+    Pure and synchronous on purpose -- exercised directly in
+    test_facebook_discovery.py against fixture payloads, no browser
+    needed to catch a scoping regression.
+    """
+    name, avatar, has_custom = "", "", False
+    for blob in blobs:
+        for d in iter_dicts(blob):
+            if d.get("id") != eid:
+                continue
+            n = d.get("name")
+            if not name and isinstance(n, str) and n.strip() and n.strip().lower() not in GENERIC_NAMES:
+                name = n.strip()
+            pic = d.get("profile_picture")
+            if not avatar and isinstance(pic, dict):
+                raw_uri = pic.get("uri", "")
+                if raw_uri and not RE_DEFAULT_PIC.search(raw_uri):
+                    avatar = hd_picture_url(raw_uri)
+                    has_custom = True
+        if name and avatar:
+            break
+    return name, avatar, has_custom
+
 
 class Discovery:
     """Runs keyword sweeps on an already-started browser session."""
@@ -430,7 +472,9 @@ class Discovery:
         """Best-effort name/avatar backfill for ids that reached `sweep()`'s
         reconciliation step with no edge to read a name/photo from -- one
         visit to the profile's own page per id, reading whichever embedded
-        payload on THAT page mentions the id's own name/profile_picture.
+        payload on THAT page mentions the id's own name/profile_picture
+        (see _extract_entity for the id-scoping that keeps this from ever
+        attaching the wrong profile's identity to a candidate).
 
         Deliberately not the full multi-fallback cascade
         analysis_engine.py's read_name()/read_pic() use (DOM header,
@@ -466,6 +510,7 @@ class Discovery:
                                 pass
 
                 page.on("response", lambda r: asyncio.create_task(on_response(r)))
+                blocked = False
                 try:
                     await page.goto(
                         profile_url_for(eid), wait_until="domcontentloaded",
@@ -475,12 +520,23 @@ class Discovery:
                         await page.wait_for_timeout(1200)
                     except Exception:
                         pass
-                    for t in await page.evaluate(JS_EMBEDDED):
-                        if isinstance(t, str) and t.strip().startswith("{"):
-                            try:
-                                blobs.append(json.loads(t))
-                            except (json.JSONDecodeError, ValueError):
-                                pass
+                    # a login wall / checkpoint / "content isn't available"
+                    # page is never a source of THIS profile's real identity
+                    # -- skip extraction entirely rather than risk reading
+                    # Facebook's own chrome text as if it were the profile
+                    try:
+                        body_text = await page.inner_text("body")
+                    except Exception:
+                        body_text = ""
+                    if RE_LOGIN.search(body_text) or RE_CHECKPOINT.search(body_text) or RE_GONE.search(body_text):
+                        blocked = True
+                    else:
+                        for t in await page.evaluate(JS_EMBEDDED):
+                            if isinstance(t, str) and t.strip().startswith("{"):
+                                try:
+                                    blobs.append(json.loads(t))
+                                except (json.JSONDecodeError, ValueError):
+                                    pass
                 except Exception:
                     pass
                 finally:
@@ -489,23 +545,7 @@ class Discovery:
                     except Exception:
                         pass
 
-                name, avatar, has_custom = "", "", False
-                for blob in blobs:
-                    for d in iter_dicts(blob):
-                        if d.get("id") != eid:
-                            continue
-                        n = d.get("name")
-                        if not name and isinstance(n, str) and n.strip():
-                            name = n.strip()
-                        pic = d.get("profile_picture")
-                        if not avatar and isinstance(pic, dict):
-                            raw_uri = pic.get("uri", "")
-                            if raw_uri and not RE_DEFAULT_PIC.search(raw_uri):
-                                avatar = hd_picture_url(raw_uri)
-                                has_custom = True
-                    if name and avatar:
-                        break
-
+                name, avatar, has_custom = ("", "", False) if blocked else _extract_entity(blobs, eid)
                 out[eid] = Hit(
                     entity_id=eid, name=name, url=profile_url_for(eid),
                     avatar=avatar, has_custom_pic=has_custom, entity_type=kind,
