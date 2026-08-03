@@ -117,7 +117,7 @@ export function DashboardView({ clientId, activeJobsCount, platforms, sessions, 
 
         <div className="stat-tile" style={{ background: "linear-gradient(135deg, #12B76A, #00C14D)", boxShadow: "0 8px 30px rgba(0, 193, 77, 0.25)" }}>
           <div className="stat-tile-num">{stats.approved}</div>
-          <div className="stat-tile-label">Validated / Approved</div>
+          <div className="stat-tile-label">Validated</div>
         </div>
 
         <div className="stat-tile" style={{ background: "linear-gradient(135deg, #FF8000, #FDB71B)", boxShadow: "0 8px 30px rgba(255, 128, 0, 0.25)" }}>

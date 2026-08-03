@@ -1477,6 +1477,66 @@ a:hover {
   cursor: pointer;
 }
 
+/* ---- published-incident preview/edit panel (analysis cards only) ---- */
+.incident-panel {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--border-radius-md);
+  margin-bottom: 10px;
+  background: var(--bg-inner);
+}
+.incident-panel-toggle {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text-main);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+.incident-panel-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 4px 10px 10px;
+}
+.incident-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 10px;
+}
+.incident-field-label {
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+.incident-field input {
+  font-size: 11px;
+  padding: 4px 6px;
+}
+.incident-field-checks {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 14px;
+  margin-top: 2px;
+}
+.incident-field-check {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.incident-field-check input {
+  accent-color: var(--success);
+  cursor: pointer;
+}
+
 .btn-accept {
   flex: 1;
   background: rgba(0, 193, 77, 0.1);

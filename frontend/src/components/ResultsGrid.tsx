@@ -216,6 +216,119 @@ function PageJumpInput({ currentPage, pageCount, onJump }: { currentPage: number
   );
 }
 
+// One inline-editable text/number field bound to one dotted path in a
+// profile's incident_overrides (see backend/services/incident_publisher.py
+// -- build_incident_doc merges these onto the computed preview, and
+// Publish writes the merged result). Uncontrolled + onBlur, same pattern
+// as the table view's saveField inputs, so a keystroke doesn't PATCH.
+function IncidentField({
+  label, value, path, onSave, type = "text",
+}: {
+  label: string; value: string | number | null | undefined; path: string;
+  onSave: (path: string, value: string) => void; type?: "text" | "number";
+}) {
+  return (
+    <label className="incident-field">
+      <span className="incident-field-label">{label}</span>
+      <input
+        type={type}
+        defaultValue={value ?? ""}
+        className="input-filter"
+        onBlur={(e) => {
+          if (e.target.value !== String(value ?? "")) onSave(path, e.target.value);
+        }}
+      />
+    </label>
+  );
+}
+
+function IncidentCheckField({
+  label, value, path, onSave,
+}: {
+  label: string; value: boolean | null | undefined; path: string;
+  onSave: (path: string, value: string) => void;
+}) {
+  const [checked, setChecked] = useState(!!value);
+  useEffect(() => setChecked(!!value), [value]);
+  return (
+    <label className="incident-field-check">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => {
+          setChecked(e.target.checked);
+          onSave(path, String(e.target.checked));
+        }}
+      />
+      {label}
+    </label>
+  );
+}
+
+// The full client-facing published-incident record, editable before the
+// analyst hits Publish (single or All) -- collapsed by default since it's
+// ~15 fields, most of which an analyst never needs to touch.
+function IncidentEditPanel({ r, onSave }: { r: Profile; onSave: (path: string, value: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const inc = r.incident;
+  if (!inc) return null;
+  return (
+    <div className="incident-panel">
+      <button type="button" className="incident-panel-toggle" onClick={() => setOpen((v) => !v)}>
+        {open ? "▾" : "▸"} Incident Details (Risk {inc.riskRating})
+      </button>
+      {open && (
+        <div className="incident-panel-body">
+          <IncidentField label="Title" value={inc.title} path="title" onSave={onSave} />
+          <IncidentField label="Description" value={inc.description} path="description" onSave={onSave} />
+          <IncidentField label="Category" value={inc.category} path="category" onSave={onSave} />
+          <IncidentField label="Sub-Category" value={inc.subCategory} path="subCategory" onSave={onSave} />
+          <IncidentField label="Asset Type" value={inc.assetType} path="assetType" onSave={onSave} />
+          <IncidentField label="Asset Category" value={inc.assetCategory} path="assetCategory" onSave={onSave} />
+          <IncidentField label="Asset Name" value={inc.assetName} path="assetName" onSave={onSave} />
+          <IncidentField label="Domain" value={inc.domain} path="domain" onSave={onSave} />
+          <IncidentField label="Org ID" value={inc.orgId} path="orgId" onSave={onSave} />
+          <IncidentField label="Risk Rating" value={inc.riskRating} path="riskRating" onSave={onSave} />
+          <IncidentField
+            label="Followers" type="number" value={inc.socialProfileInfo.numberOfFollowers}
+            path="socialProfileInfo.numberOfFollowers" onSave={onSave}
+          />
+          <IncidentField
+            label="Location" value={inc.socialProfileInfo.location}
+            path="socialProfileInfo.location" onSave={onSave}
+          />
+          <IncidentField
+            label="Last Post Date" value={inc.socialProfileInfo.lastPostDate}
+            path="socialProfileInfo.lastPostDate" onSave={onSave}
+          />
+          <IncidentField
+            label="Profile Name" value={inc.socialProfileInfo.profileName}
+            path="socialProfileInfo.profileName" onSave={onSave}
+          />
+          <IncidentField
+            label="Profile Image URL" value={inc.socialProfileInfo.profileImage}
+            path="socialProfileInfo.profileImage" onSave={onSave}
+          />
+          <div className="incident-field-checks">
+            <IncidentCheckField
+              label="Active" value={inc.socialProfileInfo.isActive}
+              path="socialProfileInfo.isActive" onSave={onSave}
+            />
+            <IncidentCheckField
+              label="Similar Name" value={inc.socialProfileInfo.isSimilarName}
+              path="socialProfileInfo.isSimilarName" onSave={onSave}
+            />
+            <IncidentCheckField
+              label="Similar Logo" value={inc.socialProfileInfo.isSimilarLogo}
+              path="socialProfileInfo.isSimilarLogo" onSave={onSave}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface CardProps {
   r: Profile;
   isAnalysisView: boolean;
@@ -223,12 +336,13 @@ interface CardProps {
   onDecide: (id: string, next: Status) => void;
   onPublish: (id: string) => void;
   onValidate: (id: string, logoMatch: boolean, usernameMatch: boolean) => void;
+  onSaveIncidentField: (id: string, path: string, value: string) => void;
 }
 
 // Mirrors backend shared/models/scoring.py::NAME_THRESHOLD.
 const MATCH_HIGH_THRESHOLD = 80;
 
-function ProfileCard({ r, isAnalysisView, savingId, onDecide, onPublish, onValidate }: CardProps) {
+function ProfileCard({ r, isAnalysisView, savingId, onDecide, onPublish, onValidate, onSaveIncidentField }: CardProps) {
   const name = r.profile_name || r.username || r.url;
   const isHeld = isAnalysisView && r.published === false;
   const isDiscovery = !isAnalysisView;
@@ -350,24 +464,29 @@ function ProfileCard({ r, isAnalysisView, savingId, onDecide, onPublish, onValid
           </div>
         )}
 
+        {isAnalysisView && (
+          <IncidentEditPanel r={r} onSave={(path, value) => onSaveIncidentField(r.id, path, value)} />
+        )}
+
         <div className="card-actions-row">
           {isDiscovery && r.status !== "approved" && (
             <button
               className="btn-accept"
               disabled={savingId === r.id}
               onClick={() => onValidate(r.id, logoMatch, usernameMatch)}
-              title="Approves this profile and records the logo/username match confirmation, carried through to analysis"
+              title="Validates this profile and records the logo/username match confirmation, carried through to analysis"
             >
               ✅ Validate
             </button>
           )}
-          {/* Discovery cards use Validate (above) instead of a plain Approve
-              -- it captures the logo/username match confirmation the same
-              action would otherwise skip. Analysis cards have no Validate
-              alternative, so they keep the plain Approve. */}
+          {/* Discovery cards use the checkbox Validate (above), which also
+              captures the logo/username match confirmation. An analysis
+              card that's been rejected back into review has no checkboxes
+              to fill in again, so it gets the same "Validate" label on a
+              plain re-approve instead. */}
           {!isDiscovery && r.status !== "approved" && (
             <button className="btn-accept" disabled={savingId === r.id} onClick={() => onDecide(r.id, "approved")}>
-              ✓ Approve
+              ✅ Validate
             </button>
           )}
           {r.status !== "rejected" && (
@@ -533,10 +652,10 @@ export function ResultsGrid({
     }
   };
 
-  // Approves the profile the same way `decide` does, but also records the
-  // analyst's own visual confirmation of a logo/username impersonation
-  // match -- saved to the DB and carried through unchanged onto the
-  // analysis-phase record (see backend/services/profile_service.py).
+  // Validates the profile the same way `decide(id, "approved")` does, but
+  // also records the analyst's own visual confirmation of a logo/username
+  // impersonation match -- saved to the DB and carried through unchanged
+  // onto the analysis-phase record (see backend/services/profile_service.py).
   const validate = async (id: string, logoMatch: boolean, usernameMatch: boolean) => {
     const prev = profiles.find((r) => r.id === id);
     setProfiles((rows) => {
@@ -601,10 +720,40 @@ export function ResultsGrid({
     }
   };
 
+  // Applies a dotted-path edit (e.g. "socialProfileInfo.location") to a
+  // profile's own `incident` preview object, immutably -- the same shape
+  // profile_repository.patch() expands `incident_overrides` into server-side.
+  const withIncidentPath = (r: Profile, path: string, value: unknown): Profile => {
+    if (!r.incident) return r;
+    if (!path.includes(".")) return { ...r, incident: { ...r.incident, [path]: value } };
+    const [parent, child] = path.split(".", 2);
+    return {
+      ...r,
+      incident: { ...r.incident, [parent]: { ...(r.incident as unknown as Record<string, object>)[parent], [child]: value } },
+    };
+  };
+
+  const saveIncidentField = async (id: string, path: string, rawValue: string) => {
+    const prev = profiles.find((r) => r.id === id);
+    // booleans/numbers travel through the DOM as strings -- coerce back
+    // before both the optimistic update and the PATCH payload
+    const value: unknown =
+      rawValue === "true" || rawValue === "false" ? rawValue === "true"
+      : path === "socialProfileInfo.numberOfFollowers" ? (rawValue === "" ? null : Number(rawValue))
+      : rawValue;
+    setProfiles((rows) => rows.map((r) => (r.id === id ? withIncidentPath(r, path, value) : r)));
+    try {
+      await profilesApi.patchProfile(id, { incident_overrides: { [path]: value } });
+    } catch (e) {
+      if (prev) setProfiles((rows) => rows.map((r) => (r.id === id ? prev : r)));
+      onError?.((e as Error).message);
+    }
+  };
+
   const handleCopyUrls = async () => {
     const approved = displayed.filter((r) => r.status === "approved");
     if (!approved.length) {
-      onError?.("No approved profiles on this page to copy.");
+      onError?.("No validated profiles on this page to copy.");
       return;
     }
     try {
@@ -1073,7 +1222,7 @@ export function ResultsGrid({
                 color: "var(--success)", border: "1px solid var(--success)",
               }}
               onClick={handleCopyUrls}
-              title="Copy this page's approved profile URLs to clipboard"
+              title="Copy this page's validated profile URLs to clipboard"
             >
               {copyUrlState === "copied" ? "✓ Copied" : copyUrlState === "failed" ? "✕ Failed" : "📋 Copy URLs"}
             </button>
@@ -1107,7 +1256,11 @@ export function ResultsGrid({
           {!loading && displayed.length > 0 && viewMode === "grid" && (
             <div className="profile-grid-container" style={{ marginTop: "12px" }}>
               {displayed.map((r) => (
-                <ProfileCard key={r.id} r={r} isAnalysisView={isAnalysisView} savingId={savingId} onDecide={decide} onPublish={publish} onValidate={validate} />
+                <ProfileCard
+                  key={r.id} r={r} isAnalysisView={isAnalysisView} savingId={savingId}
+                  onDecide={decide} onPublish={publish} onValidate={validate}
+                  onSaveIncidentField={saveIncidentField}
+                />
               ))}
             </div>
           )}
@@ -1236,7 +1389,7 @@ export function ResultsGrid({
                             onClick={() => decide(r.id, "approved")}
                             style={{ marginRight: "4px", background: "rgba(0,193,77,0.12)", color: "var(--success)", border: "1px solid rgba(0,193,77,0.3)", borderRadius: "6px", padding: "4px 8px", cursor: "pointer" }}
                           >
-                            ✓ Approve
+                            ✅ Validate
                           </button>
                         )}
                         {r.status !== "rejected" && (

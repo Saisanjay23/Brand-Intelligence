@@ -113,6 +113,42 @@ export interface Profile {
   // existed) should be treated as already published.
   published?: boolean;
   publish_hold_until?: string | null;
+  // live preview of the exact record Publish writes to published_incidents
+  // (see backend/services/incident_publisher.py) -- analysis phase only,
+  // null when the client record is gone. Editable pre-publish via
+  // ProfilePatch.incident_overrides.
+  incident?: PublishedIncidentPreview | null;
+}
+
+export interface PublishedIncidentSocialProfileInfo {
+  isActive: boolean;
+  isSimilarName: boolean;
+  isSimilarLogo: boolean;
+  numberOfFollowers: number | null;
+  profileName: string | null;
+  location: string | null;
+  profileImage: string | null;
+  lastPostDate: string | null;
+  posts: number | null;
+}
+
+// Not to be confused with `Incident` above (that's the unrelated
+// job-failure diagnostic log) -- this is the client-facing finding this
+// tool hands off on Publish.
+export interface PublishedIncidentPreview {
+  title: string;
+  category: string;
+  subCategory: string;
+  assetType: string;
+  source: string;
+  date: string | null;
+  description: string;
+  riskRating: string;
+  domain: string;
+  orgId: string;
+  assetCategory: string;
+  assetName: string;
+  socialProfileInfo: PublishedIncidentSocialProfileInfo;
 }
 
 export interface ProfilePatch {
@@ -125,6 +161,10 @@ export interface ProfilePatch {
   location?: string;
   last_post_date?: string;
   display_name?: string;
+  // flat dotted-path edits merged into the profile's own incident_overrides
+  // (see ProfilePatch in backend/dto/profile_dto.py), e.g.
+  // {"title": "..."} or {"socialProfileInfo.location": "..."}
+  incident_overrides?: Record<string, unknown>;
 }
 
 export interface SessionItem {

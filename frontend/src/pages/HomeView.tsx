@@ -519,9 +519,9 @@ export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, 
               className="btn-secondary-action"
               disabled={analysisBusy}
               onClick={handleRunAnalysis}
-              title="Analyses every already-approved, not-yet-analysed profile for this client across every platform"
+              title="Analyses every already-validated, not-yet-analysed profile for this client across every platform"
             >
-              {analysisBusy ? "🧪 Analysis Running…" : "🧪 Analyse Approved Profiles (catch-up)"}
+              {analysisBusy ? "🧪 Analysis Running…" : "🧪 Analyse Validated Profiles (catch-up)"}
             </button>
 
             <div style={{ marginTop: "14px", textAlign: "right" }}>

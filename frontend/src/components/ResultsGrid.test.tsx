@@ -110,7 +110,7 @@ describe("fetching", () => {
 });
 
 describe("card view", () => {
-  it("renders a profile-card per row, with an Approve action, when Cards is selected", async () => {
+  it("renders a profile-card per row, with a Validate action, when Cards is selected", async () => {
     const user = userEvent.setup();
     vi.mocked(api.profiles).mockResolvedValue({ items: [makeProfile()], total: 1 });
     render(<ResultsGrid {...baseProps()} />);
@@ -127,7 +127,7 @@ describe("card view", () => {
   });
 });
 
-describe("approve / reject -- optimistic update and rollback", () => {
+describe("validate / reject -- optimistic update and rollback", () => {
   it("updates status immediately and PATCHes the profile", async () => {
     const user = userEvent.setup();
     vi.mocked(api.profiles).mockResolvedValue({
@@ -145,7 +145,9 @@ describe("approve / reject -- optimistic update and rollback", () => {
     await screen.findByText("Test Channel");
     await user.click(screen.getByTitle("Table view"));
     const row = (await screen.findByText("Test Channel")).closest("tr")!;
-    await user.click(screen.getByRole("button", { name: /Approve/ }));
+    // scoped to the row -- the status filter chips above the table also
+    // render a "✅ Validated" button and would otherwise match /Validate/ too
+    await user.click(within(row).getByRole("button", { name: /Validate/ }));
 
     // optimistic: the row's own status cell already reads "approved" before
     // the PATCH resolves -- scoped to the row, since the status filter chips
@@ -170,7 +172,9 @@ describe("approve / reject -- optimistic update and rollback", () => {
     await screen.findByText("Test Channel");
     await user.click(screen.getByTitle("Table view"));
     const row = (await screen.findByText("Test Channel")).closest("tr")!;
-    await user.click(screen.getByRole("button", { name: /Approve/ }));
+    // scoped to the row -- the status filter chips above the table also
+    // render a "✅ Validated" button and would otherwise match /Validate/ too
+    await user.click(within(row).getByRole("button", { name: /Validate/ }));
 
     await waitFor(() => expect(within(row).getByText("pending")).toBeInTheDocument());
     expect(onError).toHaveBeenCalledWith("network down");
