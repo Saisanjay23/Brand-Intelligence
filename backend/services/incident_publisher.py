@@ -132,6 +132,10 @@ def build_incident_doc(doc: dict, client: dict) -> dict:
         "orgId": client.get("client_id", ""),
         "assetCategory": asset_type,
         "assetName": asset_name,
+        # no auto-detection signal for this exists anywhere in the tool --
+        # purely an analyst call, defaulted off and only ever changed via
+        # incident_overrides (the export's "ThirdParty YES/NO" column)
+        "thirdParty": False,
         "socialProfileInfo": {
             "isActive": active,
             "isSimilarName": username_match,
