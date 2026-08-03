@@ -3,13 +3,13 @@ import { profilesApi } from "../api/profilesApi";
 import type { JobEvent, PlatformHealth, PlatformProgress, Profile, Status } from "../api/types";
 import { PlatformIcon } from "./PlatformIcon";
 import {
-  emptyLabel,
   filterResults,
   sortResults,
   type ExtraFilters,
   type ResultFilters,
 } from "../services/resultsFilter";
-import { download } from "../utils/download";
+import { toIncidentExportRows } from "../services/incidentExport";
+import { download, rowsToCsv, rowsToExcelHtml } from "../utils/download";
 
 interface Props {
   clientId: string;
@@ -129,20 +129,6 @@ function holdRemainingLabel(publishHoldUntil?: string | null): string {
   if (remainingMs <= 0) return "publishing…";
   const mins = Math.ceil(remainingMs / 60000);
   return mins <= 1 ? "~1m left" : `~${mins}m left`;
-}
-
-function toCsv(rows: Profile[]): string {
-  const cols = [
-    "id", "platform", "status", "phase", "url", "profile_name", "username",
-    "risk_score", "priority", "followers", "location", "last_post_date", "keyword", "comments",
-  ] as const;
-  const esc = (v: unknown) => {
-    const s = v === null || v === undefined ? "" : String(v);
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  };
-  const lines = [cols.join(",")];
-  for (const r of rows) lines.push(cols.map((c) => esc(r[c])).join(","));
-  return lines.join("\n");
 }
 
 function ProfileAvatar({ r, size }: { r: Profile; size?: number }) {
@@ -265,66 +251,65 @@ function IncidentCheckField({
   );
 }
 
-// The full client-facing published-incident record, editable before the
-// analyst hits Publish (single or All) -- collapsed by default since it's
-// ~15 fields, most of which an analyst never needs to touch.
+// The full client-facing published-incident record -- this IS the analysis
+// view's field set now (the old profile_name/username/followers/location/
+// last_post_date/risk_score/priority/comments fields are gone from this
+// view entirely, replaced by this exact shape). Always expanded: these
+// aren't extra detail, they're the primary content of an analysis card.
 function IncidentEditPanel({ r, onSave }: { r: Profile; onSave: (path: string, value: string) => void }) {
-  const [open, setOpen] = useState(false);
   const inc = r.incident;
   if (!inc) return null;
   return (
     <div className="incident-panel">
-      <button type="button" className="incident-panel-toggle" onClick={() => setOpen((v) => !v)}>
-        {open ? "▾" : "▸"} Incident Details (Risk {inc.riskRating})
-      </button>
-      {open && (
-        <div className="incident-panel-body">
-          <IncidentField label="Title" value={inc.title} path="title" onSave={onSave} />
-          <IncidentField label="Description" value={inc.description} path="description" onSave={onSave} />
-          <IncidentField label="Category" value={inc.category} path="category" onSave={onSave} />
-          <IncidentField label="Sub-Category" value={inc.subCategory} path="subCategory" onSave={onSave} />
-          <IncidentField label="Asset Type" value={inc.assetType} path="assetType" onSave={onSave} />
-          <IncidentField label="Asset Category" value={inc.assetCategory} path="assetCategory" onSave={onSave} />
-          <IncidentField label="Asset Name" value={inc.assetName} path="assetName" onSave={onSave} />
-          <IncidentField label="Domain" value={inc.domain} path="domain" onSave={onSave} />
-          <IncidentField label="Org ID" value={inc.orgId} path="orgId" onSave={onSave} />
-          <IncidentField label="Risk Rating" value={inc.riskRating} path="riskRating" onSave={onSave} />
-          <IncidentField
-            label="Followers" type="number" value={inc.socialProfileInfo.numberOfFollowers}
-            path="socialProfileInfo.numberOfFollowers" onSave={onSave}
+      <div className="incident-panel-body">
+        <IncidentField label="Title" value={inc.title} path="title" onSave={onSave} />
+        <IncidentField label="Description" value={inc.description} path="description" onSave={onSave} />
+        <IncidentField label="Category" value={inc.category} path="category" onSave={onSave} />
+        <IncidentField label="Sub-Category" value={inc.subCategory} path="subCategory" onSave={onSave} />
+        <IncidentField label="Asset Type" value={inc.assetType} path="assetType" onSave={onSave} />
+        <IncidentField label="Asset Category" value={inc.assetCategory} path="assetCategory" onSave={onSave} />
+        <IncidentField label="Asset Name" value={inc.assetName} path="assetName" onSave={onSave} />
+        <IncidentField label="Domain" value={inc.domain} path="domain" onSave={onSave} />
+        <IncidentField label="Org ID" value={inc.orgId} path="orgId" onSave={onSave} />
+        <IncidentField label="Risk Score" value={inc.riskRating} path="riskRating" onSave={onSave} />
+        <IncidentField label="Date" value={inc.date} path="date" onSave={onSave} />
+        <IncidentField label="Source" value={inc.source} path="source" onSave={onSave} />
+        <IncidentField
+          label="Followers" type="number" value={inc.socialProfileInfo.numberOfFollowers}
+          path="socialProfileInfo.numberOfFollowers" onSave={onSave}
+        />
+        <IncidentField
+          label="Location" value={inc.socialProfileInfo.location}
+          path="socialProfileInfo.location" onSave={onSave}
+        />
+        <IncidentField
+          label="Last Post Date" value={inc.socialProfileInfo.lastPostDate}
+          path="socialProfileInfo.lastPostDate" onSave={onSave}
+        />
+        <IncidentField
+          label="Profile Name" value={inc.socialProfileInfo.profileName}
+          path="socialProfileInfo.profileName" onSave={onSave}
+        />
+        <IncidentField
+          label="Profile Image URL" value={inc.socialProfileInfo.profileImage}
+          path="socialProfileInfo.profileImage" onSave={onSave}
+        />
+        <div className="incident-field-checks">
+          <IncidentCheckField
+            label="Active" value={inc.socialProfileInfo.isActive}
+            path="socialProfileInfo.isActive" onSave={onSave}
           />
-          <IncidentField
-            label="Location" value={inc.socialProfileInfo.location}
-            path="socialProfileInfo.location" onSave={onSave}
+          <IncidentCheckField
+            label="Similar Name" value={inc.socialProfileInfo.isSimilarName}
+            path="socialProfileInfo.isSimilarName" onSave={onSave}
           />
-          <IncidentField
-            label="Last Post Date" value={inc.socialProfileInfo.lastPostDate}
-            path="socialProfileInfo.lastPostDate" onSave={onSave}
+          <IncidentCheckField
+            label="Similar Logo" value={inc.socialProfileInfo.isSimilarLogo}
+            path="socialProfileInfo.isSimilarLogo" onSave={onSave}
           />
-          <IncidentField
-            label="Profile Name" value={inc.socialProfileInfo.profileName}
-            path="socialProfileInfo.profileName" onSave={onSave}
-          />
-          <IncidentField
-            label="Profile Image URL" value={inc.socialProfileInfo.profileImage}
-            path="socialProfileInfo.profileImage" onSave={onSave}
-          />
-          <div className="incident-field-checks">
-            <IncidentCheckField
-              label="Active" value={inc.socialProfileInfo.isActive}
-              path="socialProfileInfo.isActive" onSave={onSave}
-            />
-            <IncidentCheckField
-              label="Similar Name" value={inc.socialProfileInfo.isSimilarName}
-              path="socialProfileInfo.isSimilarName" onSave={onSave}
-            />
-            <IncidentCheckField
-              label="Similar Logo" value={inc.socialProfileInfo.isSimilarLogo}
-              path="socialProfileInfo.isSimilarLogo" onSave={onSave}
-            />
-          </div>
+          <IncidentCheckField label="Third Party" value={inc.thirdParty} path="thirdParty" onSave={onSave} />
         </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -342,8 +327,22 @@ interface CardProps {
 // Mirrors backend shared/models/scoring.py::NAME_THRESHOLD.
 const MATCH_HIGH_THRESHOLD = 80;
 
+// Risk-tier colour bands for the analysis card's Risk badge -- same three
+// bands as the old High/Medium/Low priority badge it replaces, just keyed
+// off the numeric riskRating (backend/shared/models/incident_scoring.py)
+// instead of the tool's own internal priority field.
+function riskBadgeColor(riskRating: string): string {
+  const n = Number(riskRating);
+  if (!Number.isFinite(n)) return "rgba(102,112,133,0.85)";
+  if (n >= 7) return "rgba(233,80,83,0.85)";
+  if (n >= 4) return "rgba(255,128,0,0.85)";
+  return "rgba(102,112,133,0.85)";
+}
+
 function ProfileCard({ r, isAnalysisView, savingId, onDecide, onPublish, onValidate, onSaveIncidentField }: CardProps) {
-  const name = r.profile_name || r.username || r.url;
+  const inc = r.incident;
+  const name = isAnalysisView && inc ? inc.title : r.profile_name || r.username || r.url;
+  const linkUrl = isAnalysisView && inc ? inc.source : r.url;
   const isHeld = isAnalysisView && r.published === false;
   const isDiscovery = !isAnalysisView;
   const [logoMatch, setLogoMatch] = useState(r.logo_match ?? false);
@@ -367,15 +366,12 @@ function ProfileCard({ r, isAnalysisView, savingId, onDecide, onPublish, onValid
         >
           {r.status}
         </span>
-        {isAnalysisView && r.priority && (
+        {isAnalysisView && inc && (
           <span
             className="card-badge-top-right"
-            style={{
-              background: r.priority === "High" ? "rgba(233,80,83,0.85)" : r.priority === "Medium" ? "rgba(255,128,0,0.85)" : "rgba(102,112,133,0.85)",
-              color: "#fff",
-            }}
+            style={{ background: riskBadgeColor(inc.riskRating), color: "#fff" }}
           >
-            {r.priority}
+            Risk {inc.riskRating}
           </span>
         )}
         {isDiscovery && r.name_score !== null && r.name_score !== undefined && (
@@ -397,7 +393,7 @@ function ProfileCard({ r, isAnalysisView, savingId, onDecide, onPublish, onValid
       </div>
       <div className="profile-card-body">
         <div className="profile-name-row">
-          <a href={r.url} target="_blank" rel="noreferrer" className="profile-display-name" style={{ color: "var(--text-main)" }}>
+          <a href={linkUrl} target="_blank" rel="noreferrer" className="profile-display-name" style={{ color: "var(--text-main)" }}>
             {name}
           </a>
           {r.verified && (
@@ -406,7 +402,7 @@ function ProfileCard({ r, isAnalysisView, savingId, onDecide, onPublish, onValid
             </span>
           )}
         </div>
-        {isAnalysisView && r.username && <div className="profile-handle">@{r.username}</div>}
+        {isAnalysisView && inc && <div className="profile-handle">{inc.category} · {inc.subCategory}</div>}
         {isDiscovery && !!r.keywords?.length && (
           <div className="card-keyword-tags">
             {r.keywords.map((kw) => (
@@ -430,14 +426,6 @@ function ProfileCard({ r, isAnalysisView, savingId, onDecide, onPublish, onValid
           </div>
         )}
 
-        {isAnalysisView && (
-          <div className="card-detail-row">
-            <span>👥 {r.followers ?? emptyLabel(r, r.platform, "followers")}</span>
-            <span>📍 {r.location || emptyLabel(r, r.platform, "location")}</span>
-            <span>🕐 {r.last_post_date || emptyLabel(r, r.platform, "last_post_date")}</span>
-          </div>
-        )}
-
         {(r.logo_match || r.username_match) && (
           <div className="card-detail-row">
             {r.logo_match && <span>🖼️ Logo match</span>}
@@ -445,11 +433,11 @@ function ProfileCard({ r, isAnalysisView, savingId, onDecide, onPublish, onValid
           </div>
         )}
 
-        <div className="card-meta-row">
-          <span style={{ fontSize: "11px", color: "var(--text-dim)" }}>
-            {isAnalysisView ? `Risk ${r.risk_score ?? "—"}` : r.comments || ""}
-          </span>
-        </div>
+        {isDiscovery && (
+          <div className="card-meta-row">
+            <span style={{ fontSize: "11px", color: "var(--text-dim)" }}>{r.comments || ""}</span>
+          </div>
+        )}
 
         {isDiscovery && r.status !== "approved" && r.status !== "rejected" && (
           <div className="card-validate-row" title="Tick what you visually confirmed matches the brand, then Validate">
@@ -705,21 +693,6 @@ export function ResultsGrid({
     }
   };
 
-  const saveField = async (
-    id: string,
-    field: "priority" | "comments" | "followers" | "location" | "last_post_date",
-    value: string | number,
-  ) => {
-    const prev = profiles.find((r) => r.id === id);
-    setProfiles((rows) => rows.map((r) => (r.id === id ? { ...r, [field]: value } : r)));
-    try {
-      await profilesApi.patchProfile(id, { [field]: value } as Record<string, unknown>);
-    } catch (e) {
-      if (prev) setProfiles((rows) => rows.map((r) => (r.id === id ? prev : r)));
-      onError?.((e as Error).message);
-    }
-  };
-
   // Applies a dotted-path edit (e.g. "socialProfileInfo.location") to a
   // profile's own `incident` preview object, immutably -- the same shape
   // profile_repository.patch() expands `incident_overrides` into server-side.
@@ -769,7 +742,16 @@ export function ResultsGrid({
   // Fetches everything matching the current filters (not just this page) for
   // export -- this backend has no export endpoint, so the conversion happens
   // entirely client-side.
-  const handleExport = async (fmt: "csv" | "json") => {
+  // Discovery-phase export keeps the old raw-Profile field set (there's no
+  // incident record before analysis); analysis-phase export always goes
+  // through the same incident-row shaping as the published-incident record
+  // itself (services/incidentExport.ts), so CSV/JSON/Excel and what
+  // Publish actually writes never drift apart.
+  const DISCOVERY_EXPORT_COLS = [
+    "id", "platform", "status", "phase", "url", "profile_name", "username", "keyword",
+  ] as const;
+
+  const handleExport = async (fmt: "csv" | "json" | "xlsx") => {
     if (!clientId) return;
     setExporting(true);
     try {
@@ -783,14 +765,15 @@ export function ResultsGrid({
       });
       const filtered = filterResults(res.items, filters, extra, platform);
       const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+      const rows: Record<string, unknown>[] = isAnalysisView
+        ? toIncidentExportRows(filtered)
+        : filtered.map((r) => Object.fromEntries(DISCOVERY_EXPORT_COLS.map((c) => [c, r[c]])));
       if (fmt === "csv") {
-        download(`${clientId}-${phase}-${stamp}.csv`, toCsv(filtered), "text/csv");
+        download(`${clientId}-${phase}-${stamp}.csv`, rowsToCsv(rows), "text/csv");
+      } else if (fmt === "xlsx") {
+        download(`${clientId}-${phase}-${stamp}.xls`, rowsToExcelHtml(rows), "application/vnd.ms-excel");
       } else {
-        download(
-          `${clientId}-${phase}-${stamp}.json`,
-          JSON.stringify(filtered, null, 2),
-          "application/json",
-        );
+        download(`${clientId}-${phase}-${stamp}.json`, JSON.stringify(rows, null, 2), "application/json");
       }
     } catch (e) {
       onError?.((e as Error).message);
@@ -1216,6 +1199,15 @@ export function ResultsGrid({
             </button>
             <button
               className="btn-cyber-primary"
+              style={{ padding: "7px 11px", fontSize: "11px", marginTop: 0, width: "auto" }}
+              onClick={() => handleExport("xlsx")}
+              disabled={exporting || !clientId}
+              title={isAnalysisView ? "Export the takedown-report column layout" : "Export as an Excel-compatible spreadsheet"}
+            >
+              {exporting ? "…" : "Excel"}
+            </button>
+            <button
+              className="btn-cyber-primary"
               style={{
                 padding: "7px 11px", fontSize: "11px", marginTop: 0, width: "auto",
                 background: copyUrlState === "copied" ? "var(--success)" : copyUrlState === "failed" ? "var(--danger)" : "rgba(0, 193, 77, 0.15)",
@@ -1273,13 +1265,20 @@ export function ResultsGrid({
                     <th></th>
                     <th>Name</th>
                     <th>Platform</th>
-                    {isAnalysisView && <th>Username</th>}
-                    {isAnalysisView && <th>Followers</th>}
+                    {isAnalysisView && <th>OrgId</th>}
+                    {isAnalysisView && <th>Domain</th>}
+                    {isAnalysisView && <th>AssetType</th>}
+                    {isAnalysisView && <th>AssetName</th>}
+                    {isAnalysisView && <th>RiskScore</th>}
+                    {isAnalysisView && <th>ThirdParty</th>}
+                    {isAnalysisView && <th>Date</th>}
+                    {isAnalysisView && <th>Description</th>}
+                    {isAnalysisView && <th>Active</th>}
+                    {isAnalysisView && <th>Name Match</th>}
+                    {isAnalysisView && <th>Logo Match</th>}
                     {isAnalysisView && <th>Location</th>}
+                    {isAnalysisView && <th>Followers</th>}
                     {isAnalysisView && <th>Last Post</th>}
-                    {isAnalysisView && <th>Risk</th>}
-                    {isAnalysisView && <th>Priority</th>}
-                    {isAnalysisView && <th>Comments</th>}
                     <th>Status</th>
                     <th>Actions</th>
                   </tr>
@@ -1287,85 +1286,155 @@ export function ResultsGrid({
                 <tbody>
                   {displayed.map((r) => {
                     const isHeld = isAnalysisView && r.published === false;
+                    const inc = r.incident;
                     return (
                     <tr key={r.id}>
                       <td>
                         <ProfileAvatar r={r} size={28} />
                       </td>
                       <td>
-                        <a href={r.url} target="_blank" rel="noreferrer" style={{ color: "var(--text-main)" }}>
-                          {r.profile_name || r.username || r.url}
+                        <a
+                          href={isAnalysisView && inc ? inc.source : r.url}
+                          target="_blank" rel="noreferrer" style={{ color: "var(--text-main)" }}
+                        >
+                          {isAnalysisView && inc ? inc.title : r.profile_name || r.username || r.url}
                         </a>
                         {r.verified && <span className="verified-check" title="Verified account on this platform"> ✓</span>}
                         {r.has_logo && <span title="Uses a logo/brand photo"> 🏷️</span>}
                       </td>
                       <td><PlatformIcon platform={r.platform} size={16} /></td>
-                      {isAnalysisView && <td>{r.username || "—"}</td>}
+                      {isAnalysisView && (
+                        <td>
+                          <input
+                            defaultValue={inc?.orgId ?? ""}
+                            onBlur={(e) => { if (inc && e.target.value !== inc.orgId) saveIncidentField(r.id, "orgId", e.target.value); }}
+                            style={{ width: "70px" }} className="input-filter"
+                          />
+                        </td>
+                      )}
+                      {isAnalysisView && (
+                        <td>
+                          <input
+                            defaultValue={inc?.domain ?? ""}
+                            onBlur={(e) => { if (inc && e.target.value !== inc.domain) saveIncidentField(r.id, "domain", e.target.value); }}
+                            style={{ width: "100px" }} className="input-filter"
+                          />
+                        </td>
+                      )}
+                      {isAnalysisView && (
+                        <td>
+                          <input
+                            defaultValue={inc?.assetType ?? ""}
+                            onBlur={(e) => { if (inc && e.target.value !== inc.assetType) saveIncidentField(r.id, "assetType", e.target.value); }}
+                            style={{ width: "90px" }} className="input-filter"
+                          />
+                        </td>
+                      )}
+                      {isAnalysisView && (
+                        <td>
+                          <input
+                            defaultValue={inc?.assetName ?? ""}
+                            onBlur={(e) => { if (inc && e.target.value !== inc.assetName) saveIncidentField(r.id, "assetName", e.target.value); }}
+                            style={{ width: "110px" }} className="input-filter"
+                          />
+                        </td>
+                      )}
+                      {isAnalysisView && (
+                        <td>
+                          <input
+                            defaultValue={inc?.riskRating ?? ""}
+                            onBlur={(e) => { if (inc && e.target.value !== inc.riskRating) saveIncidentField(r.id, "riskRating", e.target.value); }}
+                            style={{ width: "50px" }} className="input-filter"
+                          />
+                        </td>
+                      )}
+                      {isAnalysisView && (
+                        <td>
+                          <input
+                            type="checkbox"
+                            defaultChecked={!!inc?.thirdParty}
+                            onChange={(e) => saveIncidentField(r.id, "thirdParty", String(e.target.checked))}
+                          />
+                        </td>
+                      )}
+                      {isAnalysisView && (
+                        <td>
+                          <input
+                            defaultValue={inc?.date ?? ""}
+                            onBlur={(e) => { if (inc && e.target.value !== (inc.date ?? "")) saveIncidentField(r.id, "date", e.target.value); }}
+                            style={{ width: "100px" }} className="input-filter"
+                          />
+                        </td>
+                      )}
+                      {isAnalysisView && (
+                        <td>
+                          <input
+                            defaultValue={inc?.description ?? ""}
+                            onBlur={(e) => { if (inc && e.target.value !== inc.description) saveIncidentField(r.id, "description", e.target.value); }}
+                            style={{ width: "160px" }} className="input-filter"
+                          />
+                        </td>
+                      )}
+                      {isAnalysisView && (
+                        <td>
+                          <input
+                            type="checkbox"
+                            defaultChecked={!!inc?.socialProfileInfo.isActive}
+                            onChange={(e) => saveIncidentField(r.id, "socialProfileInfo.isActive", String(e.target.checked))}
+                          />
+                        </td>
+                      )}
+                      {isAnalysisView && (
+                        <td>
+                          <input
+                            type="checkbox"
+                            defaultChecked={!!inc?.socialProfileInfo.isSimilarName}
+                            onChange={(e) => saveIncidentField(r.id, "socialProfileInfo.isSimilarName", String(e.target.checked))}
+                          />
+                        </td>
+                      )}
+                      {isAnalysisView && (
+                        <td>
+                          <input
+                            type="checkbox"
+                            defaultChecked={!!inc?.socialProfileInfo.isSimilarLogo}
+                            onChange={(e) => saveIncidentField(r.id, "socialProfileInfo.isSimilarLogo", String(e.target.checked))}
+                          />
+                        </td>
+                      )}
+                      {isAnalysisView && (
+                        <td>
+                          <input
+                            defaultValue={inc?.socialProfileInfo.location ?? ""}
+                            onBlur={(e) => { if (inc && e.target.value !== (inc.socialProfileInfo.location ?? "")) saveIncidentField(r.id, "socialProfileInfo.location", e.target.value); }}
+                            style={{ width: "100px" }} className="input-filter"
+                          />
+                        </td>
+                      )}
                       {isAnalysisView && (
                         <td>
                           <input
                             type="number"
-                            defaultValue={r.followers ?? ""}
-                            placeholder={emptyLabel(r, r.platform, "followers")}
+                            defaultValue={inc?.socialProfileInfo.numberOfFollowers ?? ""}
                             onBlur={(e) => {
-                              const v = Number(e.target.value);
-                              if (!Number.isNaN(v) && v !== r.followers) saveField(r.id, "followers", v);
+                              if (inc && e.target.value !== String(inc.socialProfileInfo.numberOfFollowers ?? "")) {
+                                saveIncidentField(r.id, "socialProfileInfo.numberOfFollowers", e.target.value);
+                              }
                             }}
-                            style={{ width: "90px" }}
-                            className="input-filter"
+                            style={{ width: "90px" }} className="input-filter"
                           />
                         </td>
                       )}
                       {isAnalysisView && (
                         <td>
                           <input
-                            defaultValue={r.location ?? ""}
-                            placeholder={emptyLabel(r, r.platform, "location")}
+                            defaultValue={inc?.socialProfileInfo.lastPostDate ?? ""}
                             onBlur={(e) => {
-                              if (e.target.value !== (r.location ?? "")) saveField(r.id, "location", e.target.value);
+                              if (inc && e.target.value !== (inc.socialProfileInfo.lastPostDate ?? "")) {
+                                saveIncidentField(r.id, "socialProfileInfo.lastPostDate", e.target.value);
+                              }
                             }}
-                            style={{ width: "100px" }}
-                            className="input-filter"
-                          />
-                        </td>
-                      )}
-                      {isAnalysisView && (
-                        <td>
-                          <input
-                            defaultValue={r.last_post_date ?? ""}
-                            placeholder={emptyLabel(r, r.platform, "last_post_date")}
-                            onBlur={(e) => {
-                              if (e.target.value !== (r.last_post_date ?? "")) saveField(r.id, "last_post_date", e.target.value);
-                            }}
-                            style={{ width: "100px" }}
-                            className="input-filter"
-                          />
-                        </td>
-                      )}
-                      {isAnalysisView && <td>{r.risk_score ?? "—"}</td>}
-                      {isAnalysisView && (
-                        <td>
-                          <select
-                            value={r.priority ?? ""}
-                            onChange={(e) => saveField(r.id, "priority", e.target.value)}
-                            className="select-filter"
-                          >
-                            <option value="">—</option>
-                            <option value="High">High</option>
-                            <option value="Medium">Medium</option>
-                            <option value="Low">Low</option>
-                          </select>
-                        </td>
-                      )}
-                      {isAnalysisView && (
-                        <td>
-                          <input
-                            defaultValue={r.comments ?? ""}
-                            onBlur={(e) => {
-                              if (e.target.value !== (r.comments ?? "")) saveField(r.id, "comments", e.target.value);
-                            }}
-                            style={{ width: "140px" }}
-                            className="input-filter"
+                            style={{ width: "100px" }} className="input-filter"
                           />
                         </td>
                       )}

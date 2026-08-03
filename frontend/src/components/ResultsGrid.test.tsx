@@ -200,7 +200,7 @@ describe("phase toggle", () => {
     );
   });
 
-  it("shows the Risk column only in the analysis view", async () => {
+  it("shows the RiskScore column only in the analysis view", async () => {
     const user = userEvent.setup();
     vi.mocked(api.profiles).mockResolvedValue({
       items: [makeProfile({ phase: "analysis", username: "testchannel" })],
@@ -210,6 +210,6 @@ describe("phase toggle", () => {
     await user.click(screen.getByText("Analysis"));
     await user.click(screen.getByTitle("Table view"));
 
-    expect(await screen.findByText("Risk")).toBeInTheDocument();
+    expect(await screen.findByText("RiskScore")).toBeInTheDocument();
   });
 });

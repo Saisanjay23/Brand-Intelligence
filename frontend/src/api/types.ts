@@ -148,6 +148,7 @@ export interface PublishedIncidentPreview {
   orgId: string;
   assetCategory: string;
   assetName: string;
+  thirdParty: boolean;
   socialProfileInfo: PublishedIncidentSocialProfileInfo;
 }
 
