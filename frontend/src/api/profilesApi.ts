@@ -40,4 +40,10 @@ export const profilesApi = {
     }).then(json<Profile>),
   publishProfile: (id: string) =>
     fetch(url(`/profiles/${id}/publish`), { method: "POST" }).then(json<Profile>),
+  publishAllProfiles: (client_id: string, platform?: string) =>
+    fetch(url("/profiles/publish-all"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ client_id, platform: platform || null }),
+    }).then(json<{ published: number }>),
 };

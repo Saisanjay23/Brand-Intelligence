@@ -571,6 +571,21 @@ export function ResultsGrid({
     }
   };
 
+  const [publishingAll, setPublishingAll] = useState(false);
+
+  const publishAll = async () => {
+    if (!clientId) return;
+    setPublishingAll(true);
+    try {
+      await profilesApi.publishAllProfiles(clientId, platform || undefined);
+      await load(false);
+    } catch (e) {
+      onError?.((e as Error).message);
+    } finally {
+      setPublishingAll(false);
+    }
+  };
+
   const saveField = async (
     id: string,
     field: "priority" | "comments" | "followers" | "location" | "last_post_date",
@@ -1062,6 +1077,17 @@ export function ResultsGrid({
             >
               {copyUrlState === "copied" ? "✓ Copied" : copyUrlState === "failed" ? "✕ Failed" : "📋 Copy URLs"}
             </button>
+            {isAnalysisView && (
+              <button
+                className="btn-cyber-primary"
+                style={{ padding: "7px 11px", fontSize: "11px", marginTop: 0, width: "auto" }}
+                onClick={publishAll}
+                disabled={publishingAll || !clientId}
+                title="Publish every held analysis result matching the current platform view"
+              >
+                {publishingAll ? "Publishing…" : "📢 Publish All"}
+              </button>
+            )}
           </div>
 
           {loading && <div style={{ padding: "24px", textAlign: "center", color: "var(--text-dim)" }}>Loading…</div>}
