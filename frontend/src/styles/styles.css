@@ -5,19 +5,22 @@
 :root {
   /* ─── DeCYFIR dark theme -- exact tokens, pulled from the live app ─── */
 
-  /* ---- Surfaces (three stacked greys) ---- */
-  --bg-app: #101828; /* topnav, sidebar, inner-content, active card */
-  --bg-deep: #101828;
+  /* ---- Surfaces (four stacked greys, darkest to lightest) ---- */
+  --bg-outermost: #080f1e; /* the page's own base layer, behind the app shell -- darkest */
+  --bg-app: #101828; /* main content area: topnav, sidebar, inner-content, active card */
+  --bg-deep: #080f1e; /* alias of --bg-outermost -- kept for existing call sites */
   --bg-main: #101828;
-  --bg-surface: #1d2939; /* count cards, content shell, table rows, row hover */
-  --bg-card: #1d2939;
-  --bg-inner: #1d2939;
-  --bg-elevated: #1d2939;
+  --bg-surface: #1e2837; /* card/box background -- used most widely for panels/cards */
+  --bg-card: #1e2837;
+  --bg-inner: #1e2837;
+  --bg-elevated: #1e2837;
+  --bg-surface-alt: #1d2939; /* alt card background, for a panel that needs to read as one step lighter/darker than a neighboring --bg-surface card */
   --bg-surface-3: #344054; /* counter pills, card border */
   --bg-hover: #344054;
   --bg-avatar: #344054;
   --bg-elevated-grad: linear-gradient(45deg, #101828, #293546);
   --bg-light: #ffffff; /* active tab pill, light theme bg */
+  --bg-nav-active: #475467; /* active sidebar/nav item background */
 
   /* ---- Text ---- */
   --text-primary: #ffffff;
@@ -27,6 +30,7 @@
   --text-tertiary: #8fadcc;
   --text-muted: #98a2b3;
   --text-dim: #98a2b3;
+  --text-inverse: #222426; /* dark text for a light/white background, e.g. an active white tab */
 
   /* ---- Brand / accent (purple) ---- */
   --cyan: #8838dd; /* = --primary: active tab text, active card border, active row bar */
@@ -49,7 +53,7 @@
   --border-table: #525556; /* th/td row separators */
   --border-grey: #667085;
   --border-separator: #4c525e;
-  --surface: #1d2939;
+  --surface: #1e2837;
 
   /* ---- Status / severity ---- */
   --success: #00c14d;
