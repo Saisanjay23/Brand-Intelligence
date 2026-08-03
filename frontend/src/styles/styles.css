@@ -540,6 +540,47 @@ a:hover {
   outline: none;
 }
 
+/* ---- per-keyword Digital Risk Keyword (asset-name override) rows ---- */
+.drk-editor-list {
+  margin-top: 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.drk-editor-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-inner);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--border-radius-sm);
+  padding: 6px 10px;
+}
+.drk-editor-kw {
+  font-size: var(--xs-font-size);
+  color: var(--text-muted);
+  font-weight: 600;
+  white-space: nowrap;
+  min-width: 90px;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.drk-editor-row input {
+  flex: 1;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--border-radius-sm);
+  color: var(--text-main);
+  font-size: 12px;
+  padding: 5px 8px;
+  font-family: inherit;
+}
+.drk-editor-row input:focus {
+  outline: none;
+  border-color: var(--cyan);
+}
+
 /* Platform Checklist Selector */
 .platform-checklist {
   display: grid;

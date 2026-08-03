@@ -12,6 +12,8 @@ export const clientsApi = {
     domain?: string;
     name_keywords?: string[];
     domain_keywords?: string[];
+    name_keyword_drk?: Record<string, string>;
+    domain_keyword_drk?: Record<string, string>;
     platform_limits?: Record<string, number>;
     platform_tab_limits?: Record<string, Record<string, number>>;
     cron?: string | null;
@@ -20,6 +22,8 @@ export const clientsApi = {
       domain: "",
       name_keywords: [],
       domain_keywords: [],
+      name_keyword_drk: {},
+      domain_keyword_drk: {},
       platform_limits: {},
       platform_tab_limits: {},
       ...body,

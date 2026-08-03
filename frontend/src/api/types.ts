@@ -19,6 +19,13 @@ export interface Client {
   domain: string;
   name_keywords: string[];
   domain_keywords: string[];
+  // optional per-keyword "Digital Risk Keyword" display-name override,
+  // keyed by the literal keyword string -- if set, this is what shows as
+  // the published incident's assetName for a profile matched under that
+  // keyword; a keyword absent here keeps the default (the matched name
+  // keyword itself, or the client's own name for a domain keyword).
+  name_keyword_drk?: Record<string, string>;
+  domain_keyword_drk?: Record<string, string>;
   // platform id -> max results to scrape for this client. Missing (or 0)
   // means uncapped -- "scrape all" for that platform.
   platform_limits: Record<string, number>;

@@ -73,6 +73,45 @@ function ChipInput({
   );
 }
 
+// One row per keyword, an optional "Digital Risk Keyword" override text
+// next to it -- if set, this becomes the assetName in the analysis
+// output's published-incident record for a profile matched under that
+// keyword; left blank, the tool keeps its own default (the matched name
+// keyword itself, or the client's own name for a domain keyword).
+function DrkEditor({
+  keywords,
+  drk,
+  onChange,
+  disabled,
+}: {
+  keywords: string[];
+  drk: Record<string, string>;
+  onChange: (keyword: string, value: string) => void;
+  disabled?: boolean;
+}) {
+  if (!keywords.length) return null;
+  return (
+    <div style={{ marginTop: "12px" }}>
+      <label className="field-label" style={{ fontSize: "11px" }}>
+        🎯 Digital Risk Keyword (optional -- Asset Name override for analysis output; left blank, whatever comes stays as-is)
+      </label>
+      <div className="drk-editor-list">
+        {keywords.map((kw) => (
+          <div key={kw} className="drk-editor-row">
+            <span className="drk-editor-kw">{kw}</span>
+            <input
+              value={drk[kw] ?? ""}
+              onChange={(e) => onChange(kw, e.target.value)}
+              placeholder="Asset Name override…"
+              disabled={disabled}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function KeywordTabs({
   activeTab,
   onTab,
@@ -82,6 +121,10 @@ function KeywordTabs({
   onRemoveName,
   onAddDomain,
   onRemoveDomain,
+  nameKeywordDrk,
+  domainKeywordDrk,
+  onNameDrkChange,
+  onDomainDrkChange,
   disabled,
 }: {
   activeTab: KeywordTab;
@@ -92,6 +135,10 @@ function KeywordTabs({
   onRemoveName: (i: number) => void;
   onAddDomain: (v: string) => void;
   onRemoveDomain: (i: number) => void;
+  nameKeywordDrk: Record<string, string>;
+  domainKeywordDrk: Record<string, string>;
+  onNameDrkChange: (keyword: string, value: string) => void;
+  onDomainDrkChange: (keyword: string, value: string) => void;
   disabled?: boolean;
 }) {
   return (
@@ -108,21 +155,27 @@ function KeywordTabs({
         </button>
       </div>
       {activeTab === "names" ? (
-        <ChipInput
-          chips={nameKeywords}
-          onAdd={onAddName}
-          onRemove={onRemoveName}
-          placeholder="type a person's name, press Enter…"
-          disabled={disabled}
-        />
+        <>
+          <ChipInput
+            chips={nameKeywords}
+            onAdd={onAddName}
+            onRemove={onRemoveName}
+            placeholder="type a person's name, press Enter…"
+            disabled={disabled}
+          />
+          <DrkEditor keywords={nameKeywords} drk={nameKeywordDrk} onChange={onNameDrkChange} disabled={disabled} />
+        </>
       ) : (
-        <ChipInput
-          chips={domainKeywords}
-          onAdd={onAddDomain}
-          onRemove={onRemoveDomain}
-          placeholder="type a brand/domain keyword, press Enter…"
-          disabled={disabled}
-        />
+        <>
+          <ChipInput
+            chips={domainKeywords}
+            onAdd={onAddDomain}
+            onRemove={onRemoveDomain}
+            placeholder="type a brand/domain keyword, press Enter…"
+            disabled={disabled}
+          />
+          <DrkEditor keywords={domainKeywords} drk={domainKeywordDrk} onChange={onDomainDrkChange} disabled={disabled} />
+        </>
       )}
     </div>
   );
@@ -222,6 +275,8 @@ export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, 
   const [domainInput, setDomainInput] = useState(EMPTY_FORM.domain);
   const [nameKeywords, setNameKeywords] = useState<string[]>(EMPTY_FORM.nameKw);
   const [domainKeywords, setDomainKeywords] = useState<string[]>(EMPTY_FORM.domainKw);
+  const [nameKeywordDrk, setNameKeywordDrk] = useState<Record<string, string>>({});
+  const [domainKeywordDrk, setDomainKeywordDrk] = useState<Record<string, string>>({});
   const [platformLimits, setPlatformLimits] = useState<Record<string, string>>({});
   const [facebookTabLimits, setFacebookTabLimits] = useState<{ people: string; pages: string }>({
     people: "",
@@ -254,6 +309,8 @@ export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, 
     setDomainInput(c.domain || "");
     setNameKeywords(c.name_keywords || []);
     setDomainKeywords(c.domain_keywords || []);
+    setNameKeywordDrk(c.name_keyword_drk || {});
+    setDomainKeywordDrk(c.domain_keyword_drk || {});
     setPlatformLimits(
       Object.fromEntries(Object.entries(c.platform_limits || {}).map(([k, v]) => [k, String(v)])),
     );
@@ -271,6 +328,8 @@ export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, 
     setDomainInput(EMPTY_FORM.domain);
     setNameKeywords(EMPTY_FORM.nameKw);
     setDomainKeywords(EMPTY_FORM.domainKw);
+    setNameKeywordDrk({});
+    setDomainKeywordDrk({});
     setPlatformLimits({});
     setFacebookTabLimits({ people: "", pages: "" });
     setCron(EMPTY_FORM.cron);
@@ -346,12 +405,24 @@ export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, 
         const n = Number(raw);
         if (raw.trim() && Number.isFinite(n) && n > 0) fbTabLimits[tab] = Math.floor(n);
       }
+      // only keep DRK overrides for keywords that still exist, with
+      // non-blank text -- a blank override is the same as no override
+      const cleanDrk = (drk: Record<string, string>, keywords: string[]): Record<string, string> => {
+        const kws = new Set(keywords);
+        const out: Record<string, string> = {};
+        for (const [kw, v] of Object.entries(drk)) {
+          if (kws.has(kw) && v.trim()) out[kw] = v.trim();
+        }
+        return out;
+      };
       const client = await clientsApi.upsertClient({
         client_id: id,
         name,
         domain: domainInput.trim(),
         name_keywords: nameKeywords,
         domain_keywords: domainKeywords,
+        name_keyword_drk: cleanDrk(nameKeywordDrk, nameKeywords),
+        domain_keyword_drk: cleanDrk(domainKeywordDrk, domainKeywords),
         platform_limits: parsedLimits,
         platform_tab_limits: Object.keys(fbTabLimits).length ? { facebook: fbTabLimits } : {},
         cron: cron.trim() || null,
@@ -566,9 +637,33 @@ export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, 
               nameKeywords={nameKeywords}
               domainKeywords={domainKeywords}
               onAddName={(v) => setNameKeywords((prev) => (prev.includes(v) ? prev : [...prev, v]))}
-              onRemoveName={(i) => setNameKeywords((prev) => prev.filter((_, idx) => idx !== i))}
+              onRemoveName={(i) =>
+                setNameKeywords((prev) => {
+                  const removed = prev[i];
+                  setNameKeywordDrk((drk) => {
+                    if (!(removed in drk)) return drk;
+                    const { [removed]: _drop, ...rest } = drk;
+                    return rest;
+                  });
+                  return prev.filter((_, idx) => idx !== i);
+                })
+              }
               onAddDomain={(v) => setDomainKeywords((prev) => (prev.includes(v) ? prev : [...prev, v]))}
-              onRemoveDomain={(i) => setDomainKeywords((prev) => prev.filter((_, idx) => idx !== i))}
+              onRemoveDomain={(i) =>
+                setDomainKeywords((prev) => {
+                  const removed = prev[i];
+                  setDomainKeywordDrk((drk) => {
+                    if (!(removed in drk)) return drk;
+                    const { [removed]: _drop, ...rest } = drk;
+                    return rest;
+                  });
+                  return prev.filter((_, idx) => idx !== i);
+                })
+              }
+              nameKeywordDrk={nameKeywordDrk}
+              domainKeywordDrk={domainKeywordDrk}
+              onNameDrkChange={(kw, v) => setNameKeywordDrk((prev) => ({ ...prev, [kw]: v }))}
+              onDomainDrkChange={(kw, v) => setDomainKeywordDrk((prev) => ({ ...prev, [kw]: v }))}
               disabled={busy}
             />
 
