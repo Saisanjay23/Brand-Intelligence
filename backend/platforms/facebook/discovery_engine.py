@@ -411,12 +411,108 @@ class Sweep:
         return note
 
 
+# ids Facebook's search connection matched but never rendered as a full
+# edge (see `missing`/`unshown` in sweep()) get one cheap profile-page
+# visit each to recover a name/photo -- capped so a sweep with an unusually
+# large reconciliation gap can't balloon its own runtime.
+RESOLVE_MAX = 60
+RESOLVE_CONCURRENCY = 3
+
+
 class Discovery:
     """Runs keyword sweeps on an already-started browser session."""
 
     def __init__(self, args, ctx):
         self.a = args
         self.ctx = ctx
+
+    async def _resolve_missing(self, ids: list[str], kind: str) -> dict[str, Hit]:
+        """Best-effort name/avatar backfill for ids that reached `sweep()`'s
+        reconciliation step with no edge to read a name/photo from -- one
+        visit to the profile's own page per id, reading whichever embedded
+        payload on THAT page mentions the id's own name/profile_picture.
+
+        Deliberately not the full multi-fallback cascade
+        analysis_engine.py's read_name()/read_pic() use (DOM header,
+        og:title, gql_strs, ...) -- importing from analysis_engine here
+        would be circular (it already imports FROM this module), and this
+        only needs to be good enough to stop a discovery card reading as a
+        bare numeric id when the profile plainly has a name and photo. A
+        profile this can't resolve (deleted, checkpointed, genuinely
+        nameless) still gets its blank-name Hit from the caller -- nothing
+        here demotes a candidate, it only enriches one.
+        """
+        out: dict[str, Hit] = {}
+        sem = asyncio.Semaphore(RESOLVE_CONCURRENCY)
+
+        async def one(eid: str) -> None:
+            async with sem:
+                page = await self.ctx.new_page()
+                blobs: list[Any] = []
+
+                async def on_response(resp):
+                    try:
+                        if "/api/graphql" not in resp.url:
+                            return
+                        text = await resp.text()
+                    except Exception:
+                        return
+                    for line in text.splitlines():
+                        line = line.strip()
+                        if line.startswith("{"):
+                            try:
+                                blobs.append(json.loads(line))
+                            except (json.JSONDecodeError, ValueError):
+                                pass
+
+                page.on("response", lambda r: asyncio.create_task(on_response(r)))
+                try:
+                    await page.goto(
+                        profile_url_for(eid), wait_until="domcontentloaded",
+                        timeout=self.a.timeout * 1000,
+                    )
+                    try:
+                        await page.wait_for_timeout(1200)
+                    except Exception:
+                        pass
+                    for t in await page.evaluate(JS_EMBEDDED):
+                        if isinstance(t, str) and t.strip().startswith("{"):
+                            try:
+                                blobs.append(json.loads(t))
+                            except (json.JSONDecodeError, ValueError):
+                                pass
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        await page.close()
+                    except Exception:
+                        pass
+
+                name, avatar, has_custom = "", "", False
+                for blob in blobs:
+                    for d in iter_dicts(blob):
+                        if d.get("id") != eid:
+                            continue
+                        n = d.get("name")
+                        if not name and isinstance(n, str) and n.strip():
+                            name = n.strip()
+                        pic = d.get("profile_picture")
+                        if not avatar and isinstance(pic, dict):
+                            raw_uri = pic.get("uri", "")
+                            if raw_uri and not RE_DEFAULT_PIC.search(raw_uri):
+                                avatar = hd_picture_url(raw_uri)
+                                has_custom = True
+                    if name and avatar:
+                        break
+
+                out[eid] = Hit(
+                    entity_id=eid, name=name, url=profile_url_for(eid),
+                    avatar=avatar, has_custom_pic=has_custom, entity_type=kind,
+                )
+
+        await asyncio.gather(*(one(eid) for eid in ids[:RESOLVE_MAX]))
+        return out
 
     async def sweep(self, keyword: str, tab: str, on_progress=None) -> Sweep:
         out = Sweep(keyword=keyword, tab=tab)
@@ -555,15 +651,36 @@ class Discovery:
             # anything Facebook rendered but we never parsed as an edge: a
             # layout change would show up here rather than as silent data loss
             missing = rendered_ids - by_id.keys()
+            # matched by the backend but never rendered -- kept because a
+            # profile Facebook declined to show is still a candidate
+            unshown = processed_ids - by_id.keys()
+
+            # one cheap profile-page visit per reconciled id to recover a
+            # name/photo -- see _resolve_missing's docstring for why this
+            # doesn't reuse analysis_engine.py's full extraction cascade.
+            # Best-effort: an id this can't resolve still gets tracked with
+            # a blank name below, exactly as it always has.
+            resolved: dict[str, Hit] = {}
+            to_resolve = sorted(missing | unshown)
+            if to_resolve:
+                try:
+                    resolved = await self._resolve_missing(to_resolve, kind)
+                except Exception:
+                    resolved = {}
+
             for eid in sorted(missing):
+                r = resolved.get(eid)
                 by_id[eid] = Hit(
                     entity_id=eid,
-                    # blank, not a "fb:{id}" placeholder string -- the UI's
-                    # own display_name -> username -> entity_id -> "Unnamed
-                    # Profile" fallback already renders this sensibly, and
-                    # nothing downstream keys off the old "fb:" prefix anymore
-                    name="",
+                    # blank when unresolved, not a "fb:{id}" placeholder
+                    # string -- the UI's own display_name -> username ->
+                    # entity_id -> "Unnamed Profile" fallback already
+                    # renders this sensibly, and nothing downstream keys
+                    # off the old "fb:" prefix anymore
+                    name=r.name if r else "",
                     url=profile_url_for(eid),
+                    avatar=r.avatar if r else "",
+                    has_custom_pic=r.has_custom_pic if r else False,
                     entity_type=kind,
                     keyword=keyword,
                     tab=tab,
@@ -571,18 +688,14 @@ class Discovery:
                 )
             out.backfilled = len(missing)
 
-            # matched by the backend but never rendered -- kept because a
-            # profile Facebook declined to show is still a candidate
-            unshown = processed_ids - by_id.keys()
             for eid in sorted(unshown):
+                r = resolved.get(eid)
                 by_id[eid] = Hit(
                     entity_id=eid,
-                    # blank, not a "fb:{id}" placeholder string -- the UI's
-                    # own display_name -> username -> entity_id -> "Unnamed
-                    # Profile" fallback already renders this sensibly, and
-                    # nothing downstream keys off the old "fb:" prefix anymore
-                    name="",
+                    name=r.name if r else "",
                     url=profile_url_for(eid),
+                    avatar=r.avatar if r else "",
+                    has_custom_pic=r.has_custom_pic if r else False,
                     entity_type=kind,
                     keyword=keyword,
                     tab=tab,
