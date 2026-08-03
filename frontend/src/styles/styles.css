@@ -540,6 +540,39 @@ a:hover {
   outline: none;
 }
 
+/* ---- bulk keyword add (comma or line separated paste/typing) ---- */
+.bulk-kw-toggle {
+  margin-top: 6px;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 0;
+}
+.bulk-kw-toggle:hover {
+  color: var(--text-main);
+}
+.bulk-kw-panel {
+  margin-top: 6px;
+}
+.bulk-kw-panel textarea {
+  width: 100%;
+  background: var(--bg-inner);
+  border: 1px solid var(--border-glow);
+  border-radius: var(--border-radius-md);
+  color: var(--text-main);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 10px;
+  resize: vertical;
+}
+.bulk-kw-panel textarea:focus {
+  outline: none;
+  border-color: var(--cyan);
+}
+
 /* ---- per-keyword Digital Risk Keyword (asset-name override) rows ---- */
 .drk-editor-list {
   margin-top: 7px;

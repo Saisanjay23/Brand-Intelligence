@@ -24,6 +24,17 @@ interface Props {
   onError: (m: string) => void;
 }
 
+// Splits on commas AND newlines (an analyst pasting a list from a
+// spreadsheet or doc could use either, or both at once), trims each
+// piece, and drops anything blank -- shared by the single-line input's
+// paste handler and the bulk-add textarea below.
+function splitKeywordList(raw: string): string[] {
+  return raw
+    .split(/[,\n]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 function ChipInput({
   chips,
   onAdd,
@@ -38,6 +49,9 @@ function ChipInput({
   disabled?: boolean;
 }) {
   const [input, setInput] = useState("");
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkText, setBulkText] = useState("");
+
   const commit = () => {
     const trimmed = input.trim();
     if (trimmed) {
@@ -45,30 +59,71 @@ function ChipInput({
       setInput("");
     }
   };
+
+  const commitBulk = () => {
+    for (const kw of splitKeywordList(bulkText)) onAdd(kw);
+    setBulkText("");
+    setBulkOpen(false);
+  };
+
   return (
-    <div className="chips-input-container">
-      {chips.map((kw, i) => (
-        <span key={i} className="kw-chip">
-          {kw}
-          <span className="remove-chip" onClick={() => onRemove(i)}>
-            ✕
+    <div>
+      <div className="chips-input-container">
+        {chips.map((kw, i) => (
+          <span key={i} className="kw-chip">
+            {kw}
+            <span className="remove-chip" onClick={() => onRemove(i)}>
+              ✕
+            </span>
           </span>
-        </span>
-      ))}
-      <input
-        value={input}
-        onChange={(e) => setInput(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === ",") {
-            e.preventDefault();
-            commit();
-          }
-        }}
-        onBlur={commit}
-        placeholder={placeholder}
-        className="chip-input"
+        ))}
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === ",") {
+              e.preventDefault();
+              commit();
+            }
+          }}
+          onPaste={(e) => {
+            const text = e.clipboardData.getData("text");
+            // only intercept a paste that actually looks like a list --
+            // a single word/name should still land in the input normally,
+            // editable before Enter, not get auto-committed
+            if (/[,\n]/.test(text)) {
+              e.preventDefault();
+              for (const kw of splitKeywordList(text)) onAdd(kw);
+            }
+          }}
+          onBlur={commit}
+          placeholder={placeholder}
+          className="chip-input"
+          disabled={disabled}
+        />
+      </div>
+      <button
+        type="button"
+        className="bulk-kw-toggle"
+        onClick={() => setBulkOpen((v) => !v)}
         disabled={disabled}
-      />
+      >
+        {bulkOpen ? "▾" : "▸"} 📋 Bulk add (comma or line separated)
+      </button>
+      {bulkOpen && (
+        <div className="bulk-kw-panel">
+          <textarea
+            value={bulkText}
+            onChange={(e) => setBulkText(e.target.value)}
+            placeholder={"one per line, or comma-separated -- e.g.\ngautam adani\nkaran adani, jeet adani"}
+            rows={4}
+            disabled={disabled}
+          />
+          <button type="button" className="btn-cyber-primary" style={{ width: "auto", marginTop: "6px" }} onClick={commitBulk} disabled={disabled || !bulkText.trim()}>
+            Add All
+          </button>
+        </div>
+      )}
     </div>
   );
 }
