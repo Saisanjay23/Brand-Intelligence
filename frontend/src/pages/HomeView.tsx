@@ -429,13 +429,6 @@ export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, 
 
   return (
     <div className="home-container">
-      <div className="home-icon-badge">🛡️</div>
-      <h1 className="home-title">Client Configuration</h1>
-      <p className="home-sub">
-        Create an organization or pick a saved one, then run a search — every field here is what gets stored and
-        reused for that client.
-      </p>
-
       <div className="home-card">
         <div className="mode-tab-row">
           <button className={`mode-tab-btn ${mode === "create" ? "active" : ""}`} onClick={switchToCreate}>
