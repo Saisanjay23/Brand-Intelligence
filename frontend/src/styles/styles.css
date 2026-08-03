@@ -1460,21 +1460,38 @@ a:hover {
 
 .card-validate-row {
   display: flex;
-  gap: 14px;
+  gap: 8px;
   margin-bottom: 8px;
+  flex-wrap: wrap;
 }
-.card-validate-check {
+/* Big tap-target toggle "chips" for Logo/Username match -- replaced tiny
+   native checkboxes, which were the actual friction on a fast/mobile
+   click (this is pure local state, no network wait involved either way).
+   touch-action: manipulation drops the ~300ms tap-delay some mobile
+   browsers still apply to plain clickable elements. */
+.match-toggle {
   display: flex;
   align-items: center;
-  gap: 5px;
-  font-size: 11px;
-  font-weight: 600;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
   color: var(--text-muted);
+  background: var(--bg-inner);
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  padding: 8px 14px;
   cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  transition: background 0.1s ease, border-color 0.1s ease, color 0.1s ease;
 }
-.card-validate-check input {
-  accent-color: var(--success);
-  cursor: pointer;
+.match-toggle:active {
+  transform: scale(0.97);
+}
+.match-toggle.on {
+  background: rgba(0, 193, 77, 0.14);
+  border-color: var(--success);
+  color: var(--success);
 }
 
 /* ---- published-incident preview/edit panel (analysis cards only) ---- */

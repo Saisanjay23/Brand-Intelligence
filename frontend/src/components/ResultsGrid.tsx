@@ -440,15 +440,27 @@ function ProfileCard({ r, isAnalysisView, savingId, onDecide, onPublish, onValid
         )}
 
         {isDiscovery && r.status !== "approved" && r.status !== "rejected" && (
-          <div className="card-validate-row" title="Tick what you visually confirmed matches the brand, then Validate">
-            <label className="card-validate-check">
-              <input type="checkbox" checked={logoMatch} onChange={(e) => setLogoMatch(e.target.checked)} />
-              Logo match
-            </label>
-            <label className="card-validate-check">
-              <input type="checkbox" checked={usernameMatch} onChange={(e) => setUsernameMatch(e.target.checked)} />
-              Username match
-            </label>
+          <div className="card-validate-row" title="Tap what you visually confirmed matches the brand, then Validate">
+            {/* Big tap-target toggle buttons, not tiny native checkboxes --
+                this is pure local state (no network round trip), so the
+                only thing standing between a fast click and it registering
+                was ever the hit target itself. touch-action: manipulation
+                (see styles.css) drops the mobile browser's ~300ms tap
+                delay on top of that. */}
+            <button
+              type="button"
+              className={`match-toggle${logoMatch ? " on" : ""}`}
+              onClick={() => setLogoMatch((v) => !v)}
+            >
+              {logoMatch ? "✅" : "⬜"} Logo match
+            </button>
+            <button
+              type="button"
+              className={`match-toggle${usernameMatch ? " on" : ""}`}
+              onClick={() => setUsernameMatch((v) => !v)}
+            >
+              {usernameMatch ? "✅" : "⬜"} Username match
+            </button>
           </div>
         )}
 
@@ -706,7 +718,16 @@ export function ResultsGrid({
     };
   };
 
-  const saveIncidentField = async (id: string, path: string, rawValue: string) => {
+  // Export re-fetches from the server rather than exporting local state
+  // (see handleExport below), so it's only "immediate" if every edit the
+  // analyst just made has actually landed in Mongo before that fetch
+  // fires -- a save is only a fire-and-forget onBlur/onChange, so a very
+  // fast "edit a field, then immediately click Excel" could otherwise
+  // race ahead of its own PATCH. This set tracks every in-flight
+  // incident-field save; handleExport awaits all of them first.
+  const pendingIncidentSaves = useRef<Set<Promise<void>>>(new Set());
+
+  const saveIncidentField = (id: string, path: string, rawValue: string): void => {
     const prev = profiles.find((r) => r.id === id);
     // booleans/numbers travel through the DOM as strings -- coerce back
     // before both the optimistic update and the PATCH payload
@@ -715,12 +736,16 @@ export function ResultsGrid({
       : path === "socialProfileInfo.numberOfFollowers" ? (rawValue === "" ? null : Number(rawValue))
       : rawValue;
     setProfiles((rows) => rows.map((r) => (r.id === id ? withIncidentPath(r, path, value) : r)));
-    try {
-      await profilesApi.patchProfile(id, { incident_overrides: { [path]: value } });
-    } catch (e) {
-      if (prev) setProfiles((rows) => rows.map((r) => (r.id === id ? prev : r)));
-      onError?.((e as Error).message);
-    }
+    const task = (async () => {
+      try {
+        await profilesApi.patchProfile(id, { incident_overrides: { [path]: value } });
+      } catch (e) {
+        if (prev) setProfiles((rows) => rows.map((r) => (r.id === id ? prev : r)));
+        onError?.((e as Error).message);
+      }
+    })();
+    pendingIncidentSaves.current.add(task);
+    task.finally(() => pendingIncidentSaves.current.delete(task));
   };
 
   const handleCopyUrls = async () => {
@@ -755,6 +780,12 @@ export function ResultsGrid({
     if (!clientId) return;
     setExporting(true);
     try {
+      // let every incident-field edit already in flight land before
+      // fetching -- otherwise a save fired moments ago could still be
+      // mid-PATCH when this export's own fetch races past it
+      if (pendingIncidentSaves.current.size) {
+        await Promise.all(pendingIncidentSaves.current);
+      }
       const res = await profilesApi.profiles({
         client_id: clientId,
         platform: platform || undefined,
