@@ -20,6 +20,7 @@ from typing import Optional
 
 from backend.database.repositories import client_repository as clients_db
 from backend.database.repositories import profile_repository as profiles_db
+from backend.services import incident_publisher
 from backend.services.job_service import ANALYSIS, job_manager
 from backend.shared.errors import NotFoundError
 from backend.validators.profile_validator import validate_patch_fields
@@ -118,5 +119,28 @@ async def patch_profile(profile_id: str, body_fields: dict) -> dict:
 
 async def publish_profile(profile_id: str) -> dict:
     """An analyst confirming a held analysis result before its hold clears
-    on its own -- see ADR 0007."""
-    return await profiles_db.publish(profile_id)
+    on its own -- see ADR 0007. Publishing is also the one moment this
+    tool builds/upserts the client-facing incident record for the profile
+    (see services/incident_publisher.py) -- never at analysis time, so the
+    hold review stays meaningful."""
+    updated = await profiles_db.publish(profile_id)
+    client = await clients_db.try_get(updated.get("client_id", ""))
+    if client:
+        await incident_publisher.publish_incident(updated, client)
+    return updated
+
+
+async def publish_all_profiles(client_id: str, platform: Optional[str] = None) -> dict:
+    """Publishes every analysis-phase profile for this client (optionally
+    scoped to one platform) that isn't already published -- the bulk
+    counterpart to publish_profile, same incident-record side effect per
+    profile."""
+    ids = await profiles_db.list_unpublished_ids(client_id, platform)
+    client = await clients_db.try_get(client_id)
+    published = 0
+    for profile_id in ids:
+        updated = await profiles_db.publish(profile_id)
+        if client:
+            await incident_publisher.publish_incident(updated, client)
+        published += 1
+    return {"published": published}

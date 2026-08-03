@@ -30,6 +30,7 @@ from backend.api.session_routes import router as sessions_router
 from backend.database.repositories import client_repository as clients_db
 from backend.database.repositories import incident_repository as incidents_db
 from backend.database.repositories import profile_repository as profiles_db
+from backend.database.repositories import published_incident_repository as published_incidents_db
 from backend.database.repositories import session_repository as sessions_db
 from backend.services import scheduler_service as scheduler
 from backend.sessions import manager as sessions_engine
@@ -50,6 +51,7 @@ async def lifespan(app: FastAPI):
         await profiles_db.ensure_indexes()
         await sessions_db.ensure_indexes()
         await incidents_db.ensure_indexes()
+        await published_incidents_db.ensure_indexes()
         log.info("startup: mongo reachable, indexes ensured")
         from backend.platforms import registry
         for p in registry.PLATFORMS.values():

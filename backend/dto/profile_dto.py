@@ -23,3 +23,8 @@ class ProfilePatch(BaseModel):
     followers: Optional[int] = None
     location: Optional[str] = None
     last_post_date: Optional[str] = None
+
+
+class PublishAllRequest(BaseModel):
+    client_id: str
+    platform: Optional[str] = None

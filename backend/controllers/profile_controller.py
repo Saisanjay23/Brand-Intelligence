@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from backend.dto.profile_dto import ProfilePatch
+from backend.dto.profile_dto import ProfilePatch, PublishAllRequest
 from backend.services import profile_service
 
 
@@ -33,3 +33,7 @@ async def patch_profile(profile_id: str, body: ProfilePatch) -> dict:
 
 async def publish_profile(profile_id: str) -> dict:
     return await profile_service.publish_profile(profile_id)
+
+
+async def publish_all_profiles(body: PublishAllRequest) -> dict:
+    return await profile_service.publish_all_profiles(body.client_id, body.platform)

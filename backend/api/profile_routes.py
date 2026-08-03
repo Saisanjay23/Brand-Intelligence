@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import APIRouter
 
 from backend.controllers import profile_controller
-from backend.dto.profile_dto import ProfilePatch
+from backend.dto.profile_dto import ProfilePatch, PublishAllRequest
 
 router = APIRouter(tags=["profiles"])
 
@@ -66,3 +66,8 @@ async def patch_profile(profile_id: str, body: ProfilePatch) -> dict:
 @router.post("/profiles/{profile_id}/publish")
 async def publish_profile(profile_id: str) -> dict:
     return await profile_controller.publish_profile(profile_id)
+
+
+@router.post("/profiles/publish-all")
+async def publish_all_profiles(body: PublishAllRequest) -> dict:
+    return await profile_controller.publish_all_profiles(body)

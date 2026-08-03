@@ -401,6 +401,16 @@ async def publish(doc_id: str) -> dict:
     return updated or {}
 
 
+async def list_unpublished_ids(client_id: str, platform: Optional[str] = None) -> list[str]:
+    """Every analysis-phase profile for this client not yet flagged
+    `published` -- what a "Publish All" action iterates over, regardless
+    of whether each row's own publish hold has already cleared."""
+    q: dict[str, Any] = {"client_id": client_id, "phase": PHASE_ANALYSIS, "published": {"$ne": True}}
+    if platform:
+        q["platform"] = platform
+    return [str(d["_id"]) async for d in db()[PROFILES].find(q, {"_id": 1})]
+
+
 async def stats(client_id: str, platform: Optional[str] = None) -> dict:
     import asyncio
 
