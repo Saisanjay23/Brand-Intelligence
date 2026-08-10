@@ -989,6 +989,30 @@ class Scraper:
             read_profile(row, hs)
             await self.screenshot(page, row)
 
+            # Payload timestamps first (read_profile -> read_last_post,
+            # above); the rendered page second. Only runs when the payload
+            # carried no usable post time, so a normal visit costs nothing
+            # extra -- and it reads an exact absolute timestamp out of the
+            # permalink's aria-label rather than doing arithmetic on the "3d"
+            # a human sees.
+            #
+            # Deliberately BEFORE the About-tab visits below, not after:
+            # confirmed live this used to be dead code in production
+            # (ScanOptions.about defaults False, but the two About-tab page
+            # visits happen unconditionally regardless -- only the FIELD
+            # READ off them is opt-in). By the time this used to run at the
+            # end of process(), page.url had already moved to
+            # ".../about" -- a page with no post permalinks at all, so this
+            # fallback always found nothing and never actually fell back to
+            # anything. Running it here, while the page is still the
+            # timeline that was just visited, is what makes it work.
+            if not row.last_post_iso and row.posts_seen != "no":
+                iso = await dom_last_post(page)
+                if iso:
+                    row.last_post_iso = iso
+                    row.posts_seen = "yes"
+                    row.mark("last_post", "dom-aria")
+
             # The main profile page rarely carries a location -- Facebook Pages
             # put their city/country on the About tab instead, so this visit
             # happens unconditionally: accuracy on a field the report actually
@@ -1011,18 +1035,6 @@ class Scraper:
                 row.note("join date not attempted (pass --about)")
 
             read_location(row, h.scoped(pid))
-
-            # Payload timestamps first (read_profile -> read_last_post, above);
-            # the rendered page second. Only runs when the payload carried no
-            # usable post time, so a normal visit costs nothing extra -- and
-            # it reads an exact absolute timestamp out of the permalink's
-            # aria-label rather than doing arithmetic on the "3d" a human sees.
-            if not row.last_post_iso and row.posts_seen != "no":
-                iso = await dom_last_post(page)
-                if iso:
-                    row.last_post_iso = iso
-                    row.posts_seen = "yes"
-                    row.mark("last_post", "dom-aria")
 
             row.status = "OK" if row.profile_name else "PARTIAL"
             return row
