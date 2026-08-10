@@ -244,6 +244,16 @@ class Discovery:
             out.stopped, out.error = "error", f"{type(e).__name__}: {e}"
         finally:
             out.hits = list(by_id.values())
+            if self.a.max_results:
+                # Same bug class confirmed live on Twitter's identical
+                # pattern: the loop-break check above (`len(by_id) >=
+                # max_results`) only fires at the top of the NEXT
+                # iteration, after a whole search.list page has already
+                # been absorbed into by_id -- so a configured cap of 5
+                # still returned however many channels came back in that
+                # page (YouTube's API commonly pages 50 at a time), with
+                # nothing here to trim it back down.
+                out.hits = out.hits[: self.a.max_results]
             out.seconds = time.time() - started
         return out
 

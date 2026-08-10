@@ -118,26 +118,7 @@ EDITABLE = {
     "incident_overrides",
 }
 
-# fields a rediscovery can actually observe that matter for reconsidering a
-# REJECTED decision -- name or photo, the two things that would make an
-# analyst want another look at something they already dismissed.
-#
-# Deliberately NOT `profile_image_url`: on Facebook/Instagram/Twitter/
-# YouTube that's a signed, tokenized CDN link straight from the platform's
-# own API/page response (Facebook's own analysis_engine.py comments this --
-# "fbcdn signs the whole crop range up to cstp's bound") that typically
-# re-signs on every single fetch REGARDLESS of whether the underlying photo
-# changed. Comparing it as-is would flip nearly every rejected profile on
-# those platforms back to "pending" on every re-sweep, not just the ones
-# that actually changed -- eroding an analyst's trust in the queue ("I
-# reject this every day and it keeps coming back"). `has_logo` is the
-# reliable photo-change proxy instead: it's a derived boolean from a
-# deterministic default-avatar/silhouette pattern match (see e.g.
-# platforms/facebook/discovery_engine.py), not a raw volatile URL.
-# True pixel-level "did the actual photo change" would need downloading and
-# perceptually hashing every image on every sweep -- a real feature, but a
-# meaningfully bigger and costlier one than this fix; not implemented here.
-RECONSIDER_FIELDS = ("display_name", "has_logo")
+
 
 # each of these carries a `sources.<key>` provenance tag under a DIFFERENT
 # key than the document field -- a manual edit must relabel the matching key
@@ -223,8 +204,7 @@ async def save(
     keys.append({"urls": url})
     existing = await coll.find_one(
         {**match, "$or": keys},
-        {"_id": 1, "url": 1, "status": 1, "entity_id": 1, "analysis_attempts": 1,
-         **{f: 1 for f in RECONSIDER_FIELDS}},
+        {"_id": 1, "url": 1, "status": 1, "entity_id": 1, "analysis_attempts": 1}
     )
 
     owned = ANALYSIS_FIELDS if phase == PHASE_ANALYSIS else DISCOVERY_FIELDS
@@ -269,21 +249,7 @@ async def save(
         # with a slug does to the next sweep's dedup.
         if eid and _is_identity_upgrade(existing.get("entity_id") or "", eid):
             update["$set"]["entity_id"] = eid
-        if existing.get("status") == "rejected":
-            changed = {
-                f: {"old": existing.get(f), "new": fields[f]}
-                for f in RECONSIDER_FIELDS
-                if fields.get(f) not in (None, "", {}) and fields.get(f) != existing.get(f)
-            }
-            if changed:
-                update["$set"]["status"] = "pending"
-                update["$set"]["changes"] = changed
-                update["$set"]["changed_at"] = datetime.now(timezone.utc)
-                log.info(
-                    f"{platform}/{client_id}: {url} rejected profile changed "
-                    f"({', '.join(changed)}) -- back to pending"
-                )
-        elif initial_status != "pending" and existing.get("status") == "pending":
+        if initial_status != "pending" and existing.get("status") == "pending":
             update["$set"]["status"] = initial_status
         await coll.update_one({"_id": existing["_id"]}, update)
         return False
@@ -403,10 +369,21 @@ async def find(
     if priority:
         q["priority"] = priority
     if match_level:
-        # mirrors shared/models/scoring.py::NAME_THRESHOLD -- a row with no
-        # name_score at all is neither High nor Low and matches neither.
-        q["name_score"] = ({"$gte": NAME_THRESHOLD} if match_level == "high"
-                           else {"$lt": NAME_THRESHOLD, "$exists": True, "$ne": None})
+        # "high" used to require name_score >= 100 -- effectively unreachable
+        # for real fuzzy-matched names (token_set_ratio rarely lands on a
+        # perfect 100 unless the name is byte-identical to the keyword after
+        # normalization). Live-checked against real data: 97 profiles scored
+        # 80-99 -- genuinely strong matches by the SAME bar this backend
+        # already uses everywhere else (NAME_THRESHOLD, scoring.py) to decide
+        # "does the name match" -- were being silently bucketed into
+        # "Medium" instead, which is what made "High Match" look broken for
+        # any keyword whose best hits happened to land in that range.
+        if match_level == "high":
+            q["name_score"] = {"$gte": NAME_THRESHOLD}
+        elif match_level == "medium":
+            q["name_score"] = {"$gte": 50, "$lt": NAME_THRESHOLD}
+        else:
+            q["name_score"] = {"$lt": 50, "$exists": True, "$ne": None}
     if keyword_match_type and client_keywords is not None:
         # "was this found under one of the client's INDIVIDUAL-name keywords
         # or one of its DOMAIN/brand keywords" -- the same classification

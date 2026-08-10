@@ -557,6 +557,16 @@ class Discovery:
                 for i, u in enumerate(out.users)
                 if u.url
             ]
+            if self.a.max_results:
+                # Confirmed live: the loop-break check above
+                # (`len(by_id) >= max_results`) only fires at the TOP of the
+                # next iteration, after a whole response page has already
+                # been absorbed into by_id -- X returns ~20 users per
+                # response, so a configured cap of 5 still returned 20 hits
+                # with nothing here to trim it back down. The break check
+                # bounds how much MORE gets fetched; it was never what
+                # bounds what gets reported.
+                out.hits = out.hits[: self.a.max_results]
         except Exception as e:
             out.stopped, out.error = "error", f"{type(e).__name__}: {e}"
         finally:
@@ -586,10 +596,3 @@ class Discovery:
         pairs = await asyncio.gather(*(one(i, k) for i, k in enumerate(keywords)))
         return [s for _, s in sorted(pairs, key=lambda p: p[0])]
 
-
-def merge(sweeps: list[Sweep]) -> list[Hit]:
-    seen: dict[str, Hit] = {}
-    for s in sweeps:
-        for h in s.hits:
-            seen.setdefault(h.entity_id or h.url, h)
-    return list(seen.values())

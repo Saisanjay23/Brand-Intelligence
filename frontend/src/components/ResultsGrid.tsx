@@ -524,8 +524,11 @@ interface CardProps {
   dragHandlers?: { onMouseDown: (e: ReactMouseEvent) => void; onMouseEnter: () => void };
 }
 
-// Mirrors backend shared/models/scoring.py::NAME_THRESHOLD.
-const MATCH_EXACT_THRESHOLD = 100;
+// Mirrors backend shared/models/scoring.py::NAME_THRESHOLD (80) -- this used
+// to be 100, which only a byte-perfect name match could ever reach, so the
+// "High Match" badge/filter silently excluded every genuinely strong fuzzy
+// match (confirmed live: profiles scoring 80-99 against their keyword).
+const MATCH_EXACT_THRESHOLD = 80;
 const MATCH_MEDIUM_THRESHOLD = 50;
 
 // Risk-tier colour bands for the analysis card's Risk badge -- same three
@@ -812,11 +815,7 @@ export function ResultsGrid({
   const [manualUrlsText, setManualUrlsText] = useState("");
   const [manualUrlsBusy, setManualUrlsBusy] = useState(false);
 
-  // the brand's own real logo, shown next to a discovered profile's avatar
-  // during analysis triage so "is this an impersonation" doesn't require a
-  // separate tab to find the real logo to compare against. Optional --
-  // clients with none set just don't get the comparison strip.
-  const [clientLogoUrl, setClientLogoUrl] = useState("");
+
   // The client's own configured keyword lists + standalone DRK asset-name
   // options -- fetched once per client, used for the individual/domain
   // match filter (resultsFilter.ts's keywordMatchType) and the Asset Name
@@ -826,7 +825,7 @@ export function ResultsGrid({
   const [drkOptions, setDrkOptions] = useState<string[]>([]);
   useEffect(() => {
     if (!clientId) {
-      setClientLogoUrl("");
+
       setClientNameKeywords([]);
       setClientDomainKeywords([]);
       setDrkOptions([]);
@@ -837,7 +836,7 @@ export function ResultsGrid({
       .getClient(clientId)
       .then((c) => {
         if (cancelled) return;
-        setClientLogoUrl(c.logo_url || "");
+
         setClientNameKeywords(c.name_keywords || []);
         setClientDomainKeywords(c.domain_keywords || []);
         setDrkOptions([
@@ -847,7 +846,7 @@ export function ResultsGrid({
       })
       .catch(() => {
         if (cancelled) return;
-        setClientLogoUrl("");
+
         setClientNameKeywords([]);
         setClientDomainKeywords([]);
         setDrkOptions([]);
@@ -1177,7 +1176,20 @@ export function ResultsGrid({
       rawValue === "true" || rawValue === "false" ? rawValue === "true"
       : path === "socialProfileInfo.numberOfFollowers" ? (rawValue === "" ? null : Number(rawValue))
       : rawValue;
-    setProfiles((rows) => rows.map((r) => (r.id === id ? withIncidentPath(r, path, value) : r)));
+    setProfiles((rows) => rows.map((r) => {
+      if (r.id !== id) return r;
+      const updatedR = withIncidentPath(r, path, value);
+      const inc = updatedR.incident?.socialProfileInfo;
+      const previewScore = computeIncidentRiskScorePreview({
+        logoMatch: !!(inc?.isSimilarLogo ?? r.logo_match),
+        usernameMatch: !!(inc?.isSimilarName ?? r.username_match),
+        followers: inc?.numberOfFollowers ?? r.followers,
+        location: inc?.location ?? r.location,
+        lastPostDate: inc?.lastPostDate ?? r.last_post_date,
+        isActive: inc?.isActive ?? r.is_active,
+      });
+      return withIncidentPath(updatedR, "riskRating", String(previewScore));
+    }));
     const task = (async () => {
       try {
         await profilesApi.patchProfile(id, { incident_overrides: { [path]: value } });
@@ -1201,10 +1213,16 @@ export function ResultsGrid({
   const saveProfileField = async (id: string, field: "username_match" | "logo_match", value: boolean): Promise<void> => {
     const prev = profiles.find((r) => r.id === id);
     if (!prev) return;
-    const logoMatch = field === "logo_match" ? value : !!prev.logo_match;
-    const usernameMatch = field === "username_match" ? value : !!prev.username_match;
+    const inc = prev.incident?.socialProfileInfo;
+    const logoMatch = field === "logo_match" ? value : !!(inc?.isSimilarLogo ?? prev.logo_match);
+    const usernameMatch = field === "username_match" ? value : !!(inc?.isSimilarName ?? prev.username_match);
+    const followers = inc?.numberOfFollowers ?? prev.followers;
+    const location = inc?.location ?? prev.location;
+    const lastPostDate = inc?.lastPostDate ?? prev.last_post_date;
+    const isActive = inc?.isActive ?? prev.is_active;
+
     const previewScore = computeIncidentRiskScorePreview({
-      logoMatch, usernameMatch, followers: prev.followers, location: prev.location, lastPostDate: prev.last_post_date,
+      logoMatch, usernameMatch, followers, location, lastPostDate, isActive,
     });
     setProfiles((rows) =>
       rows.map((r) => {
@@ -2389,22 +2407,7 @@ export function ResultsGrid({
                             size={isAnalysisView ? 52 : 28}
                             style={isAnalysisView ? { border: "2px solid rgba(0, 229, 255, 0.35)", boxShadow: "0 2px 10px rgba(0, 229, 255, 0.15)" } : undefined}
                           />
-                          {/* Side-by-side against the brand's own real logo
-                              (set on the client config form) -- previously
-                              the analyst had to open a separate tab to find
-                              the real logo to compare against. */}
-                          {isAnalysisView && clientLogoUrl && (
-                            <>
-                              <span style={{ fontSize: "11px", fontWeight: "bold", color: "var(--text-dim)" }}>vs</span>
-                              <img
-                                src={clientLogoUrl}
-                                alt="Reference brand logo"
-                                title="This client's real logo, for comparison"
-                                style={{ width: 52, height: 52, borderRadius: "50%", objectFit: "cover", flexShrink: 0, border: "2px solid rgba(136, 56, 221, 0.4)", boxShadow: "0 2px 10px rgba(136, 56, 221, 0.15)" }}
-                                onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                              />
-                            </>
-                          )}
+
                         </div>
                       </td>
                       <td style={{ maxWidth: "220px" }}>

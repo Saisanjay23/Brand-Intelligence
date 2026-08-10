@@ -61,6 +61,46 @@ describe("filterResults", () => {
     expect(out[0].priority).toBe("High");
   });
 
+  it("High Match includes a strong fuzzy match, not only a byte-perfect 100", () => {
+    // Confirmed live against real data: this used to require name_score
+    // >= 100 -- reachable only by a literal name match -- so genuinely
+    // strong matches (token_set_ratio in the 80s/90s) were silently
+    // bucketed into "Medium" instead. 80 mirrors backend's own
+    // NAME_THRESHOLD, the same bar used everywhere else to decide "does
+    // this name match".
+    const rows = [
+      makeProfile({ name_score: 100 }),
+      makeProfile({ name_score: 92 }),
+      makeProfile({ name_score: 80 }),
+      makeProfile({ name_score: 79 }), // just below the line -> Medium
+    ];
+    const out = filterResults(rows, NO_FILTERS, { ...NO_EXTRA, matchLevel: "high" });
+    expect(out.map((r) => r.name_score).sort((a, b) => (b ?? 0) - (a ?? 0))).toEqual([100, 92, 80]);
+  });
+
+  it("Medium Match covers 50-79, not swallowing the 80-99 range anymore", () => {
+    const rows = [
+      makeProfile({ name_score: 79 }),
+      makeProfile({ name_score: 50 }),
+      makeProfile({ name_score: 80 }), // now High, must NOT appear here
+      makeProfile({ name_score: 49 }), // now Low, must NOT appear here
+    ];
+    const out = filterResults(rows, NO_FILTERS, { ...NO_EXTRA, matchLevel: "medium" });
+    expect(out.map((r) => r.name_score).sort((a, b) => (b ?? 0) - (a ?? 0))).toEqual([79, 50]);
+  });
+
+  it("Low Match is unchanged: below 50", () => {
+    const rows = [makeProfile({ name_score: 49 }), makeProfile({ name_score: 0 }), makeProfile({ name_score: 50 })];
+    const out = filterResults(rows, NO_FILTERS, { ...NO_EXTRA, matchLevel: "low" });
+    expect(out.map((r) => r.name_score).sort((a, b) => (a ?? 0) - (b ?? 0))).toEqual([0, 49]);
+  });
+
+  it("a row with no name_score is excluded from every match level, not just shown under Low", () => {
+    const rows = [makeProfile({ name_score: null }), makeProfile({ name_score: undefined })];
+    expect(filterResults(rows, NO_FILTERS, { ...NO_EXTRA, matchLevel: "low" })).toHaveLength(0);
+    expect(filterResults(rows, NO_FILTERS, { ...NO_EXTRA, matchLevel: "high" })).toHaveLength(0);
+  });
+
   it("filters by phase -- the discovery/analysis tab split", () => {
     const rows = [
       makeProfile({ phase: "discovery" }),

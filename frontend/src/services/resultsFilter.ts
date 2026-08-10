@@ -92,7 +92,7 @@ export interface ExtraFilters {
   // filter -- optional so existing callers/tests that only set the two
   // fields above keep compiling unchanged. Threshold mirrors backend's
   // shared/models/scoring.py::NAME_THRESHOLD (80).
-  matchLevel?: "" | "high" | "low";
+  matchLevel?: "" | "high" | "medium" | "low";
   // Facebook-discovery-only people/pages filter -- entity_type is blank
   // on every other platform, so this is a no-op there.
   entityType?: "" | "profile" | "page";
@@ -228,7 +228,11 @@ export function filterResults(
     if (extra.matchLevel) {
       const score = r.name_score;
       if (score === null || score === undefined) return false;
-      const level = score >= 80 ? "high" : "low";
+      // 80, not 100 -- mirrors backend/shared/models/scoring.py::NAME_THRESHOLD,
+      // the same bar the backend's own match_level query uses (profile_repository.py::find).
+      // >=100 required a byte-perfect name match to ever count as "High",
+      // which fuzzy token-set scoring almost never produces.
+      const level = score >= 80 ? "high" : score >= 50 ? "medium" : "low";
       if (level !== extra.matchLevel) return false;
     }
 
@@ -332,8 +336,9 @@ export function computeIncidentRiskScorePreview(input: {
   followers: number | null | undefined;
   location: string | null | undefined;
   lastPostDate: string | null | undefined;
+  isActive?: boolean | null | undefined;
 }): number {
-  const isActive = isRecentIso(input.lastPostDate, ACTIVE_WINDOW_DAYS);
+  const isActive = input.isActive !== undefined && input.isActive !== null ? input.isActive : isRecentIso(input.lastPostDate, ACTIVE_WINDOW_DAYS);
 
   // 1. Active account with both Logo and Username match -> 9
   if (isActive && input.logoMatch && input.usernameMatch) {
