@@ -548,13 +548,21 @@ def read_last_post(row: Row, h: Harvest) -> None:
 # That is a precise absolute timestamp, not the "3d" relative text a person
 # sees -- so it needs no arithmetic against "now" and cannot drift.
 #
-# `/reel/` is in the selector because it was live-confirmed to be a real,
-# separate content type this was originally missing: a Page's newest post
-# was a Reel (`permalink_url: ".../reel/1711498136706603/"`, confirmed
-# authored by the page itself via its `actors` field), which this DOM
-# fallback silently skipped -- not wrong, just an incomplete result, and
-# the kind of gap that's easy to miss without checking the exact content
-# type Facebook actually served.
+# `/reel/` is in the selector for a Page's own Reel posts, matched the same
+# way as a regular post -- confirmed live via a genuine case
+# (`permalink_url: ".../reel/1711498136706603/"`, authored by the page
+# itself per its `actors` field). It does NOT make this fallback see every
+# Reel, though: confirmed live on that same profile, Facebook does not
+# render Reels inline in the default chronological timeline at all -- the
+# only `/reel/` link on that view was the nav shortcut to the separate
+# Reels tab (`href="/reel/?s=tab"`, aria-label "Reels", which fails
+# parse_aria_date below harmlessly). Reaching an out-of-timeline Reel would
+# need a second page visit to that tab, which this fallback does not do.
+# That gap is acceptable here because it is the least-trusted of three
+# tiers: read_last_post()'s payload-based extraction runs first and is
+# confirmed to capture Reel timestamps correctly (it reads structured data,
+# not the rendered page) -- this DOM path only ever fires when that has
+# already returned nothing.
 JS_POST_TIMES = """
 () => {
   const out = [];
