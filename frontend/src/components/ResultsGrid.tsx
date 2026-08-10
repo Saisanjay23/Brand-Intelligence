@@ -663,12 +663,6 @@ function ProfileCard({
           </div>
         )}
 
-        {isDiscovery && (
-          <div className="card-meta-row">
-            <span style={{ fontSize: "11px", color: "var(--text-dim)" }}>{r.comments || ""}</span>
-          </div>
-        )}
-
         {isDiscovery && r.status !== "approved" && r.status !== "rejected" && (
           <div className="card-validate-row" title="Tap what you visually confirmed matches the brand, then Validate">
             {/* Big tap-target toggle buttons, not tiny native checkboxes --
