@@ -14,13 +14,14 @@ import asyncio
 import json
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from backend.shared.models.row import Row
-from backend.shared.text import (epoch_to_dt, find_ints, fmt_created, is_place,
-                               iter_dicts, iter_kv, name_score, parse_count,
-                               parse_joined)
+from backend.shared.text import (MONTHS, epoch_to_dt, find_ints, fmt_created,
+                               is_place, iter_dicts, iter_kv, name_score,
+                               parse_count, parse_joined)
 from backend.platforms.facebook.discovery_engine import (RE_CHECKPOINT,
                                                           RE_DEFAULT_PIC,
                                                           RE_GONE, RE_LOGIN,
@@ -463,6 +464,75 @@ def read_last_post(row: Row, h: Harvest) -> None:
         row.mark("last_post", "no-posts-notice")
 
 
+# ── DOM last-post fallback ────────────────────────────────────────────
+# read_last_post above works from payload timestamps. When Facebook does not
+# ship those for a given profile, the date is still right there on screen:
+# every post's permalink carries the exact publish time in its aria-label,
+# put there for screen readers. Captured live:
+#
+#     <a href=".../posts/pfbid032..." aria-label="Friday 7 August 2026 at 14:14">3d</a>
+#
+# That is a precise absolute timestamp, not the "3d" relative text a person
+# sees -- so it needs no arithmetic against "now" and cannot drift.
+JS_POST_TIMES = """
+() => {
+  const out = [];
+  const sel = 'a[href*="/posts/"], a[href*="story_fbid"], a[href*="/videos/"], a[href*="permalink"]';
+  for (const a of document.querySelectorAll(sel)) {
+    const al = a.getAttribute('aria-label') || a.getAttribute('title') || '';
+    if (al) out.push(al);
+    const inner = a.querySelector('[aria-label]');
+    if (inner) {
+      const t = inner.getAttribute('aria-label') || '';
+      if (t) out.push(t);
+    }
+  }
+  return out.slice(0, 60);
+}
+"""
+
+_MONTHS = {m.lower(): i for i, m in enumerate(MONTHS, start=1)}
+# "Friday 7 August 2026 at 14:14" / "7 August 2026" / "August 7, 2026"
+RE_ARIA_DMY = re.compile(r"\b(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})\b")
+RE_ARIA_MDY = re.compile(r"\b([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})\b")
+
+
+def parse_aria_date(label: str) -> Optional[str]:
+    """An aria-label timestamp -> 'YYYY-MM-DD', or None if it isn't one."""
+    for rx, order in ((RE_ARIA_DMY, "dmy"), (RE_ARIA_MDY, "mdy")):
+        if m := rx.search(label or ""):
+            day, mon, year = (m.group(1), m.group(2), m.group(3)) if order == "dmy" \
+                else (m.group(2), m.group(1), m.group(3))
+            month = _MONTHS.get(mon.lower()[:3]) or _MONTHS.get(mon.lower())
+            if not month:
+                # try full-name match (MONTHS holds full names)
+                month = next((i for i, name in enumerate(MONTHS, 1)
+                              if name.lower().startswith(mon.lower()[:3])), None)
+            if not month:
+                continue
+            try:
+                dt = datetime(int(year), int(month), int(day), tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            # a post cannot be in the future; a stamp before Facebook existed
+            # is not a post date either
+            now = datetime.now(timezone.utc)
+            if 2004 <= dt.year and dt <= now:
+                return dt.date().isoformat()
+    return None
+
+
+async def dom_last_post(page) -> str:
+    """Newest post date read off post-permalink aria-labels. '' when the
+    page shows no dated post."""
+    try:
+        labels = await page.evaluate(JS_POST_TIMES)
+    except Exception:
+        return ""
+    dates = [d for d in (parse_aria_date(x) for x in labels or []) if d]
+    return max(dates) if dates else ""
+
+
 def read_location(row: Row, h: Harvest) -> None:
     for v in h.ent_strs(K_LOCATION):
         if is_place(v):
@@ -852,6 +922,18 @@ class Scraper:
                 row.note("join date not attempted (pass --about)")
 
             read_location(row, h.scoped(pid))
+
+            # Payload timestamps first (read_profile -> read_last_post, above);
+            # the rendered page second. Only runs when the payload carried no
+            # usable post time, so a normal visit costs nothing extra -- and
+            # it reads an exact absolute timestamp out of the permalink's
+            # aria-label rather than doing arithmetic on the "3d" a human sees.
+            if not row.last_post_iso and row.posts_seen != "no":
+                iso = await dom_last_post(page)
+                if iso:
+                    row.last_post_iso = iso
+                    row.posts_seen = "yes"
+                    row.mark("last_post", "dom-aria")
 
             row.status = "OK" if row.profile_name else "PARTIAL"
             return row
