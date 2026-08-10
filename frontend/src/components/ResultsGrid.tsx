@@ -736,7 +736,7 @@ export function ResultsGrid({
 }: Props) {
   const [platform, setPlatform] = useState(platforms[0]?.platform ?? "");
   const [phase, setPhase] = useState<"discovery" | "analysis">("discovery");
-  const [status, setStatus] = useState("");
+  const [status, setStatus] = useState("pending");
   const [priority, setPriority] = useState("");
   const [sortOrder, setSortOrder] = useState<"recent" | "past">("recent");
   const [keywordFilter, setKeywordFilter] = useState("");
@@ -764,13 +764,6 @@ export function ResultsGrid({
     statuses: {},
     keywords: {},
   });
-  // Client-wide status totals (all platforms, all phases) -- the same
-  // unscoped /profiles/stats call DashboardView.tsx uses. counts.statuses
-  // above is scoped to the active platform+phase tab and is correct for
-  // "how many match this view," but using it for the headline Pending/
-  // Validated/Rejected chips made them look like the client's real totals
-  // when they were really just this tab's totals.
-  const [clientStats, setClientStats] = useState<{ pending: number; approved: number; rejected: number } | null>(null);
   const [loading, setLoading] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -882,7 +875,6 @@ export function ResultsGrid({
         setProfiles([]);
         setTotal(0);
         setCounts({ platforms: {}, statuses: {}, keywords: {} });
-        setClientStats(null);
         return;
       }
       if (showLoading) setLoading(true);
@@ -925,9 +917,6 @@ export function ResultsGrid({
             keywords: res.counts.keywords || {},
           });
         }
-        profilesApi.stats(clientId).then((s) => {
-          if (seq === requestSeq.current) setClientStats({ pending: s.pending, approved: s.approved, rejected: s.rejected });
-        }).catch(() => {});
       } catch (e) {
         if (seq === requestSeq.current) onError?.((e as Error).message);
       } finally {
@@ -1649,7 +1638,7 @@ export function ResultsGrid({
                       {p.session_state}
                     </span>
                     <span className="rail-pill" style={{ color: count > 0 ? "var(--text-main)" : "var(--text-dim)", fontWeight: count > 0 ? 700 : 400 }}>
-                      {count} {!isAnalysisView && status ? (status === "approved" ? "validated" : status) : "total"}
+                      {count} {count === 1 ? "result" : "results"}
                     </span>
                   </div>
                   {(discoveryRunning || phase === "discovery") && discoveryProgress[p.platform] && (
@@ -1817,15 +1806,9 @@ export function ResultsGrid({
           {analysisRunning && analysisLog.length > 0 && <LiveFeed title="Analysis Feed" log={analysisLog} />}
 
           {!isAnalysisView && (
-            <div style={{ marginTop: "16px" }}>
-              <div style={{ fontSize: "11px", color: "var(--text-dim)", marginBottom: "6px" }}>
-                Totals across all platforms — click a status to filter the list below to the current platform
-              </div>
-              <div className="status-summary-row" style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+            <div className="status-summary-row" style={{ marginTop: "16px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
               {(["pending", "approved", "rejected"] as const).map((s) => {
-                // client-wide total when available, falling back to this
-                // tab's scoped count while /profiles/stats is still loading
-                const count = clientStats ? clientStats[s] : counts.statuses[s] ?? 0;
+                const count = counts.statuses[s] ?? 0;
                 const look = {
                   pending: { label: "⏳ Pending", color: "var(--purple)", text: "var(--text-main)" },
                   approved: { label: "✅ Validated", color: "var(--cyan-bright)", text: "var(--cyan-bright)" },
@@ -1867,7 +1850,6 @@ export function ResultsGrid({
                   </button>
                 );
               })}
-              </div>
             </div>
           )}
 

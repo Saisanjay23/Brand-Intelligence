@@ -143,8 +143,7 @@ describe("validate / reject -- optimistic update and rollback", () => {
     render(<ResultsGrid {...baseProps()} />);
 
     await screen.findByText("Test Channel");
-    // status filter now defaults to "" (all) rather than "pending" -- no
-    // chip click needed to keep an optimistically-updated row visible
+    await user.click(screen.getByRole("button", { name: /⏳ Pending/ }));
     await user.click(screen.getByTitle("Table view"));
     const row = (await screen.findByText("Test Channel")).closest("tr")!;
     // scoped to the row -- the status filter chips above the table also
@@ -172,8 +171,7 @@ describe("validate / reject -- optimistic update and rollback", () => {
     render(<ResultsGrid {...baseProps({ onError })} />);
 
     await screen.findByText("Test Channel");
-    // status filter now defaults to "" (all) rather than "pending" -- no
-    // chip click needed to keep the row visible through the rollback
+    await user.click(screen.getByRole("button", { name: /⏳ Pending/ }));
     await user.click(screen.getByTitle("Table view"));
     const row = (await screen.findByText("Test Channel")).closest("tr")!;
     // scoped to the row -- the status filter chips above the table also
