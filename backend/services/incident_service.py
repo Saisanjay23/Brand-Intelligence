@@ -89,15 +89,43 @@ def diagnose(error_type: str, message: str) -> Diagnosis:
     return _GENERIC
 
 
+def _source_file(platform: str, kind: str) -> str:
+    """The exact scraper module a "what broke" email should point an
+    operator at -- e.g. `backend.platforms.facebook.discovery_engine:Discovery`
+    -- so a fix means opening one named file, not guessing across five
+    platforms' worth of engine code. `platform="all"` (the breaker
+    incidents -- no single platform down, or the whole pool exhausted) has
+    no one file to name."""
+    if platform == "all":
+        return ""
+    from backend.platforms import registry
+
+    plat = registry.PLATFORMS.get(platform)
+    if not plat:
+        return ""
+    # "session-check" (the periodic live-probe) exercises the same
+    # check_session() the analysis engine uses -- see
+    # sessions/manager.py::verify_session_item.
+    return plat.discovery_path if kind == "discovery" else plat.analysis_path
+
+
 async def record(
     platform: str, kind: str, scope: str, job_id: str,
     error_type: str, message: str, url: str = "",
+    where: str = "",
 ) -> None:
+    """`where` is the precise blame trail from an extraction strategy chain
+    (see shared/extraction.py::ExtractionResult.report) -- the file, line
+    and source text of each method that failed. `source_file` alone names
+    the module; this names the line inside it to change, which is the
+    difference between "Facebook discovery broke" and an actionable ticket."""
     diagnosis = diagnose(error_type, message)
     doc = {
         "platform": platform, "kind": kind, "scope": scope, "job_id": job_id,
         "error_type": error_type, "message": message,
         "cause": diagnosis.cause, "fix": diagnosis.fix, "url": url,
+        "source_file": _source_file(platform, kind),
+        "where": where,
         "ts": datetime.now(timezone.utc),
     }
     await incidents_db.record(doc)

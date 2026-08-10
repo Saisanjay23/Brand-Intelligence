@@ -22,6 +22,7 @@ def _build_email(incident: dict) -> EmailMessage:
     msg["Subject"] = f"[Brand Intelligence] Alert: {incident['platform'].title()} Pipeline Incident"
     msg["From"] = settings.alert_from
     msg["To"] = ", ".join(settings.alert_emails)
+    source_file = incident.get("source_file", "")
     body = (
         f"An incident occurred in the '{incident['platform']}' {incident['kind']} pipeline.\n\n"
         f"Scope: {incident['scope']}\n"
@@ -33,6 +34,13 @@ def _build_email(incident: dict) -> EmailMessage:
         f"--- System Diagnosis ---\n"
         f"Cause: {incident['cause']}\n"
         f"Fix: {incident['fix']}\n"
+        + (f"Likely source file: {source_file}\n" if source_file else "")
+        + (
+            "\n--- Exactly where it broke ---\n"
+            "Each extraction method that failed, with the file and line to open.\n"
+            f"{incident['where']}\n"
+            if incident.get("where") else ""
+        )
     )
     msg.set_content(body)
     return msg
@@ -76,6 +84,35 @@ async def notify_incident(incident: dict) -> None:
         return
     _LAST_ALERT[incident["platform"]] = now
     await asyncio.to_thread(_send_sync, incident)
+
+
+def send_test_email() -> tuple[bool, str]:
+    """Synchronous on purpose -- called from an admin "Send test email"
+    button, which wants to know right away whether it worked, not a
+    fire-and-forget best-effort like the real alert path. Returns
+    (sent, detail) so the Mail settings UI can show the actual SMTP error
+    (wrong port, auth rejected, ...) instead of a generic failure."""
+    if not settings.alert_emails:
+        return False, "No recipient email configured -- add at least one under Alert Emails first."
+    if not settings.smtp_host:
+        return False, "No SMTP host configured."
+    msg = EmailMessage()
+    msg["Subject"] = "[Brand Intelligence] Test email"
+    msg["From"] = settings.alert_from
+    msg["To"] = ", ".join(settings.alert_emails)
+    msg.set_content(
+        "This is a test email from the Brand Intelligence Suite's Mail settings tab.\n\n"
+        "If you received this, incident/session alerts will reach this address."
+    )
+    try:
+        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=10) as server:
+            if settings.smtp_user and settings.smtp_pass:
+                server.starttls()
+                server.login(settings.smtp_user, settings.smtp_pass)
+            server.send_message(msg)
+        return True, f"Sent to {', '.join(settings.alert_emails)}"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
 
 
 async def send_daily_digest() -> None:

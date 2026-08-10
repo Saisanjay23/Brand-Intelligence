@@ -28,6 +28,7 @@ from datetime import datetime
 from typing import Any, Iterator, Optional
 from urllib.parse import quote
 
+from backend.shared.extraction import ExtractionResult, run_strategies
 from backend.shared.text import iter_dicts
 from backend.stealth.browser import Session
 from backend.platforms.facebook.discovery_engine import Hit
@@ -119,6 +120,76 @@ class TwitterUser:
     @property
     def has_custom_pic(self) -> bool:
         return bool(self.avatar) and not RE_DEFAULT_PIC.search(self.avatar)
+
+
+# ── DOM fallback ──────────────────────────────────────────────────────
+# The SearchTimeline payload above is the primary and much richer source.
+# It is also the single point of failure: when X rotates the query id or
+# reshapes the response, `search_state()` recognises nothing, `by_id` stays
+# empty, and the sweep reports 0 results as a clean success -- silent, total,
+# and indistinguishable from "this keyword genuinely matches nobody".
+#
+# This reads the same result feed off the rendered page instead. It carries
+# strictly less (no follower counts, no join date -- those are not in the
+# results feed at all), but it keeps discovery producing profile URLs, which
+# is discovery's actual job; analysis fills the rest in per-profile later.
+#
+# Anchored on `data-testid="UserCell"`, X's own long-lived hook for one
+# account row, rather than on generated class names, which change constantly.
+JS_DOM_USERS = """
+() => {
+  const seen = new Set();
+  const out = [];
+  for (const cell of document.querySelectorAll('[data-testid="UserCell"]')) {
+    // the first /handle link in a cell is the account it belongs to
+    const link = cell.querySelector('a[role="link"][href^="/"]');
+    if (!link) continue;
+    const handle = (link.getAttribute('href') || '').split('?')[0].replace(/^\\//, '');
+    // reject anything that is not a bare profile path -- /i/..., /search,
+    // /hashtag/... and status permalinks all appear inside these cells
+    if (!handle || handle.includes('/') || /^(i|home|explore|search|hashtag|notifications|messages)$/.test(handle)) continue;
+    if (seen.has(handle.toLowerCase())) continue;
+    seen.add(handle.toLowerCase());
+
+    const img = cell.querySelector('img[src*="profile_images"]');
+    // the display name is the first text span that is not the @handle
+    let name = '';
+    for (const sp of cell.querySelectorAll('span')) {
+      const t = (sp.textContent || '').trim();
+      if (t && !t.startsWith('@') && t.toLowerCase() !== handle.toLowerCase()) { name = t; break; }
+    }
+    out.push({
+      handle,
+      name: name || handle,
+      avatar: img ? img.getAttribute('src') : '',
+      verified: !!cell.querySelector('[data-testid="icon-verified"]'),
+    });
+  }
+  return out;
+}
+"""
+
+
+async def dom_users(page) -> list[TwitterUser]:
+    """Scrape the rendered results feed. Used only when the network payload
+    yielded nothing -- see Discovery.sweep."""
+    rows = await page.evaluate(JS_DOM_USERS)
+    users: list[TwitterUser] = []
+    for r in rows or []:
+        handle = (r.get("handle") or "").strip()
+        if not handle:
+            continue
+        users.append(TwitterUser(
+            # the numeric rest id is not in the DOM; the handle IS a stable
+            # identity for dedup, and profile_repository keys on url when
+            # entity_id is blank
+            entity_id="",
+            handle=handle,
+            name=(r.get("name") or "").strip(),
+            avatar=(r.get("avatar") or "").strip(),
+            verified=bool(r.get("verified")),
+        ))
+    return users
 
 
 def parse_created(raw: str) -> str:
@@ -306,9 +377,18 @@ class Sweep:
     complete: bool = False
     seconds: float = 0.0
     error: str = ""
+    # which extraction method actually produced `users` -- "graphql" normally,
+    # "dom" when the network payload yielded nothing and the rendered feed
+    # had to stand in. Carried onto each Hit so a card can say where it came
+    # from rather than implying every field was equally well sourced.
+    source: str = "graphql"
+    # the full blame trail (see shared/extraction.py) when any strategy
+    # failed, so discovery_service can put file+line into the incident/email
+    extraction: Optional["ExtractionResult"] = None
 
     def summary(self) -> str:
-        return f"{len(self.hits)} hits, {self.pages} pages, {self.stopped}"
+        base = f"{len(self.hits)} hits, {self.pages} pages, {self.stopped}"
+        return f"{base}, via {self.source}" if self.source != "graphql" else base
 
 
 class Discovery:
@@ -397,7 +477,23 @@ class Discovery:
                     await page.wait_for_timeout(600)
                 last_cursor = cursor
 
-            out.users = list(by_id.values())
+            # Network payload first (richer), rendered DOM second. The DOM
+            # pass only runs when the payload produced nothing at all, so a
+            # healthy sweep never pays for it -- and when the payload shape
+            # rotates, discovery degrades to "fewer fields" instead of to
+            # "zero results, reported as success".
+            chain = await run_strategies(
+                f"twitter/search[{keyword!r}]",
+                [
+                    ("network:SearchTimeline", lambda: list(by_id.values())),
+                    ("dom:UserCell", lambda: dom_users(page)),
+                ],
+            )
+            out.users = chain.value or []
+            out.extraction = chain
+            if chain.degraded:
+                out.source = "dom"
+
             out.hits = [
                 Hit(
                     entity_id=u.entity_id,
@@ -410,7 +506,7 @@ class Discovery:
                     keyword=keyword,
                     tab=tab,
                     rank=i,
-                    source="graphql",
+                    source=out.source,
                 )
                 for i, u in enumerate(out.users)
                 if u.url

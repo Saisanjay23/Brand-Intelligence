@@ -409,18 +409,74 @@ async def _sweep_platform(
     if all_sweeps and len(empty) == len(all_sweeps):
         baseline = await _historic_yield(job.client_id, plat.id)
         if baseline > 0:
+            # Distinguish "the platform changed its payload" from "this
+            # session is not logged in". Both produce zero results, and
+            # blaming the wrong one sends an engineer to read parser code
+            # for a day when the actual fix is re-exporting cookies. A
+            # sweep that was refused (403/401) or bounced to a login wall
+            # never got far enough to parse anything, so parser drift is
+            # not a possible explanation for it.
+            blocked = [
+                s for s in all_sweeps
+                if any(tok in (getattr(s, "stopped", "") or "").lower()
+                       for tok in ("403", "401", "429", "login", "checkpoint", "auth"))
+            ]
+            if blocked:
+                reasons = sorted({getattr(s, "stopped", "") for s in blocked})
+                msg = (
+                    f"{plat.id}: every one of {len(all_sweeps)} sweep(s) returned 0 results, and "
+                    f"{len(blocked)} of them was refused by the platform ({', '.join(reasons)}). "
+                    "This is a SESSION problem, not a scraper-code problem: the account is logged "
+                    "out, challenged, or rate-limited. Re-export cookies for this platform under "
+                    "Admin -> Sessions. Do not go looking for a parser bug first."
+                )
+                log.error(msg)
+                await incidents_engine.record(
+                    plat.id, "discovery", job.client_id, job.id, "SessionInvalid", msg,
+                    where=_blame_trail(all_sweeps),
+                )
+                note_parts.append(f"SESSION REFUSED: {', '.join(reasons)} -- re-export cookies")
+                return saved, new, "; ".join(note_parts)
+
             msg = (
                 f"{plat.id}: every one of {len(all_sweeps)} sweep(s) returned 0 results, "
                 f"but this client/platform has {baseline} profile(s) from previous runs. "
-                "This is the signature of the platform changing its search payload shape "
-                "(rotated GraphQL doc ids, a new response envelope), not of the keywords "
-                "genuinely matching nothing."
+                "No sweep was refused by the platform, so the session is reaching the results "
+                "page and finding nothing recognisable there -- the signature of the platform "
+                "changing its search payload shape (rotated GraphQL doc ids, a new response "
+                "envelope), not of the keywords genuinely matching nothing."
             )
             log.error(msg)
+            # The blame trail from whichever engine ran a strategy chain
+            # (see shared/extraction.py): the exact file, line and source
+            # text of every extraction method that failed. Without this the
+            # alert says "Facebook discovery broke"; with it, it says which
+            # line to open.
             await incidents_engine.record(
                 plat.id, "discovery", job.client_id, job.id, "ParserDrift", msg,
+                where=_blame_trail(all_sweeps),
             )
             note_parts.append("SUSPECT: 0 results across every sweep despite prior history -- possible parser drift")
+
+    # A sweep that fell through to a weaker extraction method still produced
+    # results, so nothing above fires -- but the primary path is already
+    # broken and will take the rest with it. Surface it now, while output
+    # still looks healthy, rather than at the next total failure.
+    degraded = [s for s in all_sweeps if getattr(s, "extraction", None) and s.extraction.degraded]
+    if degraded:
+        first = degraded[0].extraction
+        msg = (
+            f"{plat.id}: {len(degraded)} of {len(all_sweeps)} sweep(s) fell back to a secondary "
+            f"extraction method ({first.strategy}) because the primary one stopped returning "
+            "anything. Results are still flowing but with fewer fields per profile, and the "
+            "primary path needs fixing before the fallback ages out too."
+        )
+        log.warning(msg)
+        await incidents_engine.record(
+            plat.id, "discovery", job.client_id, job.id, "ExtractionDegraded", msg,
+            where=_blame_trail(degraded),
+        )
+        note_parts.append(f"DEGRADED: fell back to {first.strategy}")
 
     incomplete = [s for s in all_sweeps if not s.complete]
     if incomplete:
@@ -429,6 +485,28 @@ async def _sweep_platform(
             + ", ".join(f"{s.keyword!r}/{s.tab} ({s.stopped})" for s in incomplete)
         )
     return saved, new, "; ".join(note_parts)
+
+
+def _blame_trail(sweeps: list) -> str:
+    """Merge every sweep's extraction failures into one deduplicated report.
+
+    Deduplicated on purpose: a 6-keyword sweep whose payload parser broke
+    fails at the SAME line six times, and six identical stack locations in
+    an alert email buries the one fact that matters.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for s in sweeps:
+        chain = getattr(s, "extraction", None)
+        if not chain:
+            continue
+        for f in chain.failures:
+            key = f"{f.strategy}|{f.file}:{f.line}"
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(f"  {f.describe()}")
+    return "\n".join(out)
 
 
 async def _historic_yield(client_id: str, platform_id: str) -> int:

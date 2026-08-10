@@ -33,8 +33,15 @@ from backend.platforms.facebook.discovery_engine import Hit
 ME = "https://www.instagram.com/accounts/edit/"
 
 RE_LOGIN = re.compile(
+    # The first three are the classic logged-out pages. The rest are the
+    # modern "saved login" wall, which is what a dead session actually gets
+    # served now -- it never says "log in" anywhere, which is precisely how
+    # it slipped past this check. Belt and braces alongside expect_path in
+    # check_session; neither is trusted alone.
     r"(Log in to Instagram|Sign up to see|Log In\b.*Sign Up|"
-    r"Phone number, username, or email)",
+    r"Phone number, username, or email|"
+    r"Use another profile|Create new account|"
+    r"See everyday moments from your close friends)",
     re.I,
 )
 RE_CHECKPOINT = re.compile(
@@ -50,7 +57,12 @@ RE_GONE = re.compile(
 
 class InstagramSession(Session):
     async def check_session(self) -> bool:  # type: ignore[override]
-        return await super().check_session(ME, RE_LOGIN, RE_CHECKPOINT)
+        # expect_path is what actually catches a dead Instagram session:
+        # the logged-out redirect lands on `instagram.com/#`, which trips
+        # none of the negative patterns -- see Session.check_session.
+        return await super().check_session(
+            ME, RE_LOGIN, RE_CHECKPOINT, expect_path="/accounts/edit",
+        )
 
 
 # ───────────────────── payload parsing (profile extraction) ────────────────
