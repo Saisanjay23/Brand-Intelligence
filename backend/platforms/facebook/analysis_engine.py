@@ -14,7 +14,6 @@ import asyncio
 import json
 import re
 import sys
-import time
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
@@ -84,8 +83,15 @@ RE_CHIP = re.compile(
     r"(followers?|following|friends?|likes?|people follow this)\b",
     re.I,
 )
-RE_LIVES_IN = re.compile(r"Lives in\s+([^\n·|]{2,70})")
-RE_FROM = re.compile(r"\bFrom\s+([^\n·|]{2,70})")
+# Anchored to the start of a line because these are About-tab FIELD labels,
+# not prose. Unanchored, "From" matched mid-sentence marketing copy -- a
+# live Page produced "From classrooms to cement plants, from learning
+# concepts to witnessing them" as a candidate location. `is_place` rejected
+# it, so nothing wrong was ever stored, but relying on the validator alone
+# to catch a matcher this loose is one plausible-looking city name away from
+# publishing a fabricated location on a client-facing incident.
+RE_LIVES_IN = re.compile(r"(?:^|\n)\s*Lives in\s+([^\n·|]{2,70})", re.M)
+RE_FROM = re.compile(r"(?:^|\n)\s*From\s+([^\n·|]{2,70})", re.M)
 RE_NO_POSTS = re.compile(
     r"(No posts yet|hasn't (?:added|shared|posted)|nothing to show|"
     r"No posts available)",
@@ -694,10 +700,15 @@ class Scraper:
     async def screenshot(self, page, row: Row) -> None:
         if not self.evidence:
             return
+        # DETERMINISTIC filename, no timestamp: re-analysing a profile must
+        # overwrite its own previous capture, not add another one. With a
+        # timestamp, a daily re-sweep left one PNG per profile per run on
+        # disk forever, and the profile document only ever pointed at the
+        # newest -- every earlier file was unreachable garbage.
         stem = re.sub(r"[^A-Za-z0-9._-]", "_", row.profile_id or "entity")[:60]
-        shot = self.evidence / f"{stem}_{int(time.time())}.png"
+        shot = self.evidence / f"{stem}.png"
         try:
-            await page.screenshot(path=str(shot))
+            await page.screenshot(path=str(shot), full_page=False)
             row.screenshot = str(shot)
         except Exception:
             pass
