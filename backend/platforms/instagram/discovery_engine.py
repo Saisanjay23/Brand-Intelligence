@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterator, Optional
 from urllib.parse import quote
 
+from backend.shared.extraction import ExtractionResult, run_strategies
 from backend.shared.text import iter_dicts
 from backend.stealth.browser import Session
 from backend.platforms.facebook.discovery_engine import Hit
@@ -251,6 +252,70 @@ PROFILE_INFO_API = "https://i.instagram.com/api/v1/users/web_profile_info/?usern
 MOBILE_UA = "Instagram 219.0.0.12.117 Android (29/10; 480dpi; 1080x2151; OnePlus; GM1913; OnePlus7Pro; qcom; en_US; 314660328)"
 
 
+# ── secondary endpoint fallback ───────────────────────────────────────
+# The sweep above talks to Instagram's private MOBILE search API. That is
+# fast and field-rich, and it is also a single point of failure: the
+# endpoint answers 403 for a session Instagram dislikes, and a shape change
+# to `users[].user` would leave `by_name` empty. Either way the sweep
+# reports 0 results as a clean success.
+#
+# The fallback is a DIFFERENT endpoint, not the rendered page. A DOM
+# fallback was tried first and rejected on evidence: Instagram's web search
+# is a slide-out panel in an SPA, the /explore/search/keyword/ URL renders
+# no results at all when loaded directly (verified live -- it returns only
+# nav chrome), and the only "profiles" a DOM scrape found were the logged-in
+# user's own account and a "popular" nav link. A fallback that invents
+# results is worse than no fallback, because those rows reach an analyst's
+# queue as real findings.
+#
+# `web/search/topsearch` is the web client's own endpoint: a separate path
+# on Instagram's side, so it survives the mobile one being refused or
+# reshaped, and it returns the same well-formed `users[]` structure.
+WEB_SEARCH_API = "https://www.instagram.com/web/search/topsearch/?query={q}"
+
+
+async def web_search_users(ctx, keyword: str, timeout_s: int = 45) -> list[InstagramUser]:
+    """Query the web client's search endpoint. Only runs when the mobile API
+    produced nothing -- see Discovery.sweep."""
+    res = await ctx.request.get(
+        WEB_SEARCH_API.format(q=quote(keyword)),
+        headers={
+            "User-Agent": MOBILE_UA,
+            "x-ig-app-id": "936619743392459",
+            "accept": "application/json",
+        },
+        timeout=timeout_s * 1000,
+    )
+    if res.status != 200:
+        # surfaced by run_strategies as this strategy's failure, with this
+        # line as the blame site
+        raise RuntimeError(f"web/search/topsearch returned HTTP {res.status}")
+
+    data = json.loads(await res.text())
+    users: list[InstagramUser] = []
+    seen: set[str] = set()
+    # the envelope nests the account under `user`; tolerate both shapes so a
+    # future flattening does not break this the way it broke the mobile one
+    for entry in data.get("users") or []:
+        u = entry.get("user") if isinstance(entry, dict) else None
+        u = u if isinstance(u, dict) else entry
+        if not isinstance(u, dict):
+            continue
+        username = (u.get("username") or "").strip()
+        if not username or username.lower() in seen:
+            continue
+        seen.add(username.lower())
+        users.append(InstagramUser(
+            entity_id=str(u.get("pk") or u.get("id") or ""),
+            username=username,
+            full_name=(u.get("full_name") or "").strip(),
+            avatar=(u.get("profile_pic_url") or "").strip(),
+            verified=bool(u.get("is_verified")),
+            private=bool(u.get("is_private")),
+        ))
+    return users
+
+
 @dataclass
 class Sweep:
     keyword: str
@@ -262,9 +327,14 @@ class Sweep:
     complete: bool = False
     seconds: float = 0.0
     error: str = ""
+    # "api" normally; "web-api" when the private mobile endpoint refused us
+    # or stopped being parseable and the web client's endpoint stood in
+    source: str = "api"
+    extraction: Optional["ExtractionResult"] = None
 
     def summary(self) -> str:
-        return f"{len(self.hits)} hits, {self.pages} responses, {self.stopped}"
+        base = f"{len(self.hits)} hits, {self.pages} responses, {self.stopped}"
+        return f"{base}, via {self.source}" if self.source != "api" else base
 
 
 class Discovery:
@@ -332,7 +402,25 @@ class Discovery:
                 out.stopped = "limit-reached"
                 out.complete = True
 
-            out.users = list(by_name.values())
+            # Private mobile API first (richer), rendered search page second.
+            # The DOM pass only runs when the API produced nothing at all --
+            # a 403, or a payload whose shape we no longer recognise -- so a
+            # healthy sweep never pays for a browser page.
+            chain = await run_strategies(
+                f"instagram/search[{keyword!r}]",
+                [
+                    ("api:mobile-topsearch", lambda: list(by_name.values())),
+                    ("api:web-topsearch", lambda: web_search_users(self.ctx, keyword, self.a.timeout)),
+                ],
+            )
+            out.users = chain.value or []
+            out.extraction = chain
+            if chain.degraded:
+                out.source = "web-api"
+                # the mobile leg failed, so whatever `stopped` recorded about
+                # it (http-403) no longer describes the sweep's outcome
+                out.stopped = "mobile-api-failed-web-recovered"
+
             out.hits = [
                 Hit(
                     entity_id=u.entity_id or u.username,
@@ -345,7 +433,7 @@ class Discovery:
                     keyword=keyword,
                     tab=tab,
                     rank=i,
-                    source="api",
+                    source=out.source,
                 )
                 for i, u in enumerate(out.users)
                 if u.url
