@@ -56,7 +56,15 @@ K_JOINED = (
     "page_creation_date",
     "profile_created_time",
 )
-K_POST_TIME = ("publish_time", "creation_time", "created_time", "publish_time_ts")
+# "created_time" deliberately excluded. Confirmed live, in the raw payload:
+# it belongs to COMMENT objects specifically --
+# `"comment":{"created_time":...}` under an `XFBCommentTimestampBadge`
+# typename -- not to posts. `creation_time` (kept) is confirmed genuinely
+# post-scoped in the same capture: it appears alongside the post's own
+# `post_id` field. See read_last_post()/_post_stamps() below for the fuller
+# fix -- a key name match alone (even "creation_time") isn't proof of a
+# real post; _post_stamps() additionally requires the post_id sibling.
+K_POST_TIME = ("publish_time", "creation_time", "publish_time_ts")
 K_LOCATION = (
     "current_city_name",
     "single_line_address",
@@ -442,14 +450,79 @@ def read_created(row: Row, h: Harvest) -> None:
             return
 
 
+def _post_stamps(roots) -> list[int]:
+    """K_POST_TIME values that belong to a genuine post object, not just
+    any nested dict that happens to reuse the key name.
+
+    This used to trust ANY dict carrying a K_POST_TIME key, on the
+    assumption that being inside the profile's own entity subtree (`ents`)
+    already meant "this profile's own post". That assumption was wrong,
+    confirmed live: a comment on one of this profile's posts is ALSO
+    nested inside that same entity subtree, and its own `created_time`
+    field was being counted as if it were a post -- letting a stranger's
+    comment on an old post make a dormant page's last-post date look like
+    today. (A different manifestation of the same root cause -- trusting a
+    key name with no structural check -- was closed earlier by dropping
+    "created_time" from K_POST_TIME entirely, once it was confirmed to
+    always be a comment field. This closes the general case: even
+    `creation_time`, confirmed genuinely post-scoped, still needs a real
+    post to hang off of.)
+
+    A genuine post's own dict was confirmed live to always carry a
+    `post_id` sibling in the SAME dict -- e.g.
+    `{"post_id": "...", "creation_time": 1786353437, "attachments": [...]}`.
+    Requiring that sibling is what actually scopes this to posts, not the
+    entity-subtree membership that was doing that job before.
+    """
+    out: list[int] = []
+    for root in roots:
+        for d in iter_dicts(root):
+            if "post_id" not in d:
+                continue
+            for key in K_POST_TIME:
+                v = d.get(key)
+                if isinstance(v, bool):
+                    continue
+                if isinstance(v, (int, float)):
+                    out.append(int(v))
+                elif isinstance(v, str) and v.isdigit():
+                    out.append(int(v))
+    return out
+
+
 def read_last_post(row: Row, h: Harvest) -> None:
-    # the entity's timeline_list_feed_units are this profile's own stories,
-    # so their creation_time needs no filtering; the regex fallback over
-    # raw payloads does, hence the scoped view and main-tab-only HTML.
-    stamps, tag = h.ent_ints(K_POST_TIME), "graphql"
+    # Three tiers, precise-and-narrow first, proven-but-looser as the safety
+    # net -- never silently empty just because the precise method's data
+    # hasn't arrived yet over XHR.
+    #
+    # 1. Entity-scoped, post_id-gated: this profile's own subtree, only
+    #    dicts confirmed (live) to be a real post (they carry a `post_id`
+    #    sibling -- notifications and comments do not, so this is what
+    #    actually excludes them, not the entity-subtree membership alone).
+    # 2. Unscoped, still post_id-gated: broader reach across every parsed
+    #    payload (embedded script tags + XHR), same real-post proof
+    #    required.
+    # 3. The original un-gated text-regex scan, INCLUDING the rendered
+    #    page's own HTML -- kept, not removed, because it is the only
+    #    source available before certain XHR responses (e.g. the timeline
+    #    feed units query) have necessarily arrived, and losing it produced
+    #    an empty result live where tiers 1-2 alone found nothing yet. Only
+    #    reached when 1-2 come up empty, and "created_time" is still
+    #    excluded from K_POST_TIME (the confirmed comment field), so the
+    #    specific leak that motivated this rewrite stays closed even here.
+    stamps, tag = _post_stamps(h.ents), "graphql"
+    if not stamps:
+        raw_parsed = []
+        for t in h.raw:
+            try:
+                raw_parsed.append(json.loads(t))
+            except (json.JSONDecodeError, ValueError):
+                continue
+        stamps = _post_stamps(h.gql) + _post_stamps(raw_parsed)
+        tag = "graphql-unscoped"
     if not stamps:
         stamps = find_ints(h.gql_raw() + h.html.get("main", ""), K_POST_TIME)
-        tag = "payload-regex"
+        tag = "payload-regex-ungated"
     dts = [epoch_to_dt(t) for t in stamps]
     dts = [d for d in dts if d]
     # a join/creation date can surface under creation_time -- drop it
@@ -474,10 +547,18 @@ def read_last_post(row: Row, h: Harvest) -> None:
 #
 # That is a precise absolute timestamp, not the "3d" relative text a person
 # sees -- so it needs no arithmetic against "now" and cannot drift.
+#
+# `/reel/` is in the selector because it was live-confirmed to be a real,
+# separate content type this was originally missing: a Page's newest post
+# was a Reel (`permalink_url: ".../reel/1711498136706603/"`, confirmed
+# authored by the page itself via its `actors` field), which this DOM
+# fallback silently skipped -- not wrong, just an incomplete result, and
+# the kind of gap that's easy to miss without checking the exact content
+# type Facebook actually served.
 JS_POST_TIMES = """
 () => {
   const out = [];
-  const sel = 'a[href*="/posts/"], a[href*="story_fbid"], a[href*="/videos/"], a[href*="permalink"]';
+  const sel = 'a[href*="/posts/"], a[href*="story_fbid"], a[href*="/videos/"], a[href*="/reel/"], a[href*="permalink"]';
   for (const a of document.querySelectorAll(sel)) {
     const al = a.getAttribute('aria-label') || a.getAttribute('title') || '';
     if (al) out.push(al);
@@ -958,18 +1039,18 @@ class Scraper:
 
     @staticmethod
     def report(i: int, total: int, u: str, row: Row) -> None:
-        print(f"[{i}/{total}] {u}", file=sys.stderr)
-        print(
-            f"    {row.status:<14} name={row.profile_name[:22]:<22} "
-            f"created={fmt_created(row.created_iso) or '-':<10} "
-            f"followers={row.followers if row.followers is not None else '-':<7} "
-            f"friends={row.friends if row.friends is not None else '-':<6} "
-            f"active={row.active_yes or '-':<3} "
-            f"risk={row.risk} {row.priority}",
-            file=sys.stderr,
+        from backend.shared.logging import get_logger as _gl
+        _log = _gl("platforms.facebook.analysis")
+        _log.info(
+            f"[{i}/{total}] {u} | {row.status} name={row.profile_name[:22]} "
+            f"followers={row.followers if row.followers is not None else '-'} "
+            f"friends={row.friends if row.friends is not None else '-'} "
+            f"active={row.active_yes or '-'} risk={row.risk} {row.priority}"
         )
 
     async def run(self, jobs: list[tuple[str, str, str]]) -> list[Row]:
+        from backend.shared.logging import get_logger as _gl
+        _run_log = _gl("platforms.facebook.analysis")
         if getattr(self.a, "concurrency", 1) > 1:
             return await self.run_parallel(jobs)
         rows: list[Row] = []
@@ -978,10 +1059,7 @@ class Scraper:
             rows.append(row)
             self.report(i, len(jobs), u, row)
             if row.status == "CHECKPOINT" and not self.a.keep_going:
-                print(
-                    "\nCHECKPOINT -- aborting to avoid burning the session.",
-                    file=sys.stderr,
-                )
+                _run_log.warning("CHECKPOINT -- aborting to avoid burning the session.")
                 break
             if i < len(jobs):
                 await self.pause()
