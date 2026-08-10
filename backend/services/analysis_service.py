@@ -245,7 +245,10 @@ async def _analyse_platform(
                 await sessions_engine.mark_session_failed(platform_id, session_id, "expired")
                 continue  # retry loop with the next available pooled session
 
-            await mgr.emit(job, "progress", f"[{platform_id}] session {session_item.get('identifier')} valid", total=len(urls))
+            await mgr.emit(
+                job, "progress", f"[{platform_id}] session {session_item.get('identifier')} valid",
+                total=len(urls), platform=platform_id, session_id=session_item.get("id", ""),
+            )
             # a passing check_session is proof this session works right now:
             # clear any leftover quarantine and reset its consecutive-failure
             # ladder, so an account that recovers isn't still carrying the

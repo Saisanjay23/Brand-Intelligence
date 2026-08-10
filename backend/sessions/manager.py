@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlparse
 
+from backend.config.settings import settings
 from backend.database.repositories import session_repository as sessions_db
 from backend.sessions.cookies import load_cookies
 from backend.shared.errors import ConflictError, NotFoundError, ValidationError
@@ -31,12 +32,11 @@ LOGIN_FLOW = {
     "facebook": ("https://www.facebook.com/login", "c_user"),
     "twitter": ("https://x.com/login", "auth_token"),
     "instagram": ("https://www.instagram.com/accounts/login/", "sessionid"),
-    "linkedin": ("https://www.linkedin.com/login", "li_at"),
 }
 
 CHECK_INTERVAL_S = 30 * 60  # generous on purpose -- this opens a real browser
 BATCH_SIZE = 5  # sessions live-checked per platform per monitor sweep
-MONITORED = ("facebook", "instagram", "twitter", "telegram", "linkedin")
+MONITORED = ("facebook", "instagram", "twitter", "telegram")
 
 _logins: dict[str, dict] = {}  # platform -> LoginRun-shaped dict
 _monitor_task: Optional[asyncio.Task] = None
@@ -69,6 +69,23 @@ def _get_platform(platform_id: str):
         raise NotFoundError(f"unknown platform {platform_id!r}") from None
 
 
+def _session_in_use(platform_id: str, session_id: str) -> bool:
+    """Is a currently-RUNNING job actually holding this exact session right
+    now -- not "was picked at some point", the live answer. `Job` carries
+    `session_id`/`session_platform`, stamped by discovery_service.py /
+    analysis_service.py at the moment session_for_job() hands one out, and
+    naturally clears itself: once the job's status leaves "running" (done,
+    failed, cancelled -- including via round_robin_service's own crash
+    recovery, see its module), this stops matching with no explicit
+    "release" call required anywhere."""
+    from backend.services.job_service import job_manager
+
+    return any(
+        j.status == "running" and j.session_platform == platform_id and j.session_id == session_id
+        for j in job_manager.jobs.values()
+    )
+
+
 def _public(s: dict) -> dict:
     """One pool entry as an API caller may see it -- never the cookie
     values. A session cookie IS the credential."""
@@ -80,7 +97,15 @@ def _public(s: dict) -> dict:
     return {
         "id": s["id"], "identifier": s["identifier"], "status": s["status"],
         "rate_limited_until": s["rate_limited_until"], "last_used": s["last_used"],
+        "use_count": s.get("use_count", 0),
+        "in_use": _session_in_use(s.get("platform", ""), s["id"]),
         "cookie_count": len(s.get("cookies", []) or []), "proxy_host": proxy_host,
+        "is_api_key": bool(s.get("api_key")),
+        # so the Sessions panel can show "cooling off, 3rd consecutive
+        # failure" instead of a bare red dot with no sense of whether this
+        # is a blip or a burned account
+        "consecutive_failures": s.get("consecutive_failures", 0),
+        "available": _is_available(s, _now()),
     }
 
 
@@ -91,11 +116,15 @@ async def state_for(platform_id: str) -> str:
     import os
     p = _get_platform(platform_id)
     if p.uses_api_key:
-        if os.environ.get(p.api_key_env):
-            return "ready"
         items = await sessions_db.list_pool(platform_id)
-        if items and items[0].get("api_key"):
-            os.environ[p.api_key_env] = str(items[0]["api_key"])
+        if items and any(s.get("api_key") for s in items):
+            for it in items:
+                if it.get("api_key") and _is_available(it, _now()):
+                    os.environ[p.api_key_env] = str(it["api_key"])
+                    return "ready"
+            if os.environ.get(p.api_key_env):
+                return "ready"
+        elif os.environ.get(p.api_key_env):
             return "ready"
         return "missing"
     if p.env_keys:
@@ -120,10 +149,40 @@ async def state_for(platform_id: str) -> str:
     items = await sessions_db.list_pool(platform_id)
     if not items:
         return "missing"
-    names: set[str] = set()
+
+    # "ready" has to mean "a job started right now could actually run", and
+    # that requires ONE session that is both complete and currently usable.
+    #
+    # This previously unioned cookie NAMES across the whole pool and never
+    # looked at status or rate_limited_until at all, so:
+    #   - twenty quarantined/checkpointed sessions still reported "ready",
+    #   - two half-broken sessions could jointly satisfy required_cookies
+    #     when neither one could log in on its own.
+    # Everything downstream trusts this: discovery decides which platforms
+    # to sweep, the scheduler's catch-up decides whether to queue analysis
+    # (and re-queued a doomed job every 20 minutes on a dead pool), and
+    # both health surfaces render it as a green light.
+    required = set(p.required_cookies)
+    now = _now()
+    complete_and_available = False
+    complete_but_unavailable = False
     for item in items:
-        names.update(c["name"] for c in (item.get("cookies") or []))
-    return "ready" if set(p.required_cookies) <= names else "incomplete"
+        names = {c["name"] for c in (item.get("cookies") or []) if c.get("name")}
+        if not required <= names:
+            continue
+        if _is_available(item, now):
+            complete_and_available = True
+            break
+        complete_but_unavailable = True
+
+    if complete_and_available:
+        return "ready"
+    if complete_but_unavailable:
+        # a real, fully-formed session exists -- it is just quarantined or
+        # cooling off. Distinct from "incomplete" (a botched cookie export),
+        # because the fix is different: wait, or add another account.
+        return "exhausted"
+    return "incomplete"
 
 
 async def status(platform_id: str, live_health: Optional[dict] = None) -> dict:
@@ -183,38 +242,101 @@ async def get_healthy_session(platform_id: str) -> Optional[dict]:
         return None
     now = _now()
     await sessions_db.update_item(platform_id, chosen["id"], status="ready", rate_limited_until=0.0, last_used=now)
-    chosen["status"], chosen["rate_limited_until"], chosen["last_used"] = "ready", 0.0, now
+    # a real, durable count of how many times this session has actually
+    # been handed to a job -- not a health check, an atomic $inc so two
+    # round-robin slots picking sessions concurrently can't drop one
+    # another's count
+    use_count = await sessions_db.increment_use_count(platform_id, chosen["id"])
+    chosen["status"], chosen["rate_limited_until"], chosen["last_used"], chosen["use_count"] = (
+        "ready", 0.0, now, use_count,
+    )
     return chosen
 
 
 async def session_for_job(platform_id: str) -> tuple[object, dict]:
     """What a discovery/analysis job needs to actually run: the Platform
-    metadata plus either `{}` (key/MTProto-authed) or a healthy pooled
-    session's cookies+proxy."""
+    metadata plus either `{}` (MTProto-authed) or a healthy pooled
+    session's credentials+proxy."""
     from backend.platforms import registry
 
     plat = _get_platform(platform_id)
-    if plat.uses_api_key or plat.env_keys:
+    if plat.env_keys:
         state = await registry.session_state(plat)
         if state != "ready":
             raise ConflictError(f"{platform_id} credentials {state}")
         return plat, {}
+    if plat.uses_api_key:
+        item = await get_healthy_session(platform_id)
+        if item is None:
+            raise ConflictError(f"{platform_id}: no healthy API keys available -- please add more keys or check quotas")
+        import os
+        os.environ[plat.api_key_env] = str(item.get("api_key", ""))
+        return plat, {"id": item["id"], "identifier": item["identifier"], "api_key": item["api_key"]}
     item = await get_healthy_session(platform_id)
     if item is None:
         raise ConflictError(f"{platform_id}: no healthy sessions available -- please add more cookies")
     return plat, {"id": item["id"], "identifier": item["identifier"], "cookies": item["cookies"], "proxy": item["proxy"]}
 
 
-async def mark_session_failed(platform_id: str, session_id: str, reason: str = "expired", rate_limited_until: float = 0) -> None:
-    """Quarantine one session. No-ops for key/MTProto-authed platforms,
-    which have no pool at all (session_id is empty there)."""
+async def mark_session_failed(
+    platform_id: str, session_id: str, reason: str = "expired",
+    rate_limited_until: float = 0,
+) -> None:
+    """Quarantine one session, backing off further each consecutive time.
+
+    No-ops for key/MTProto-authed platforms, which have no pool at all
+    (session_id is empty there).
+
+    The cooldown is GRADUATED (settings.session_backoff_minutes, default
+    15m -> 1h -> 6h -> 24h) and keyed on this session's own consecutive
+    failure count, which `get_healthy_session` resets to zero as soon as
+    the session is handed out and used successfully. A single rate-limit
+    used to cost a flat 24 hours, so one bad afternoon quarantined an
+    entire pool at once and left every platform dark until the next day --
+    while `state_for` cheerfully kept reporting "ready" and the scheduler
+    kept queueing jobs into the void.
+
+    An explicit `rate_limited_until` still wins, for a platform that tells
+    us exactly how long to wait (Telegram's FloodWait).
+    """
     if not session_id:
         return
-    fields: dict = {"status": reason}
+    item = await sessions_db.get_item(platform_id, session_id)
+    fails = int((item or {}).get("consecutive_failures") or 0) + 1
+    fields: dict = {"status": reason, "consecutive_failures": fails}
+
     if rate_limited_until:
         fields["rate_limited_until"] = float(rate_limited_until)
+    else:
+        ladder = settings.session_backoff_minutes or [15, 60, 360, 1440]
+        minutes = ladder[min(fails, len(ladder)) - 1]
+        fields["rate_limited_until"] = _now() + minutes * 60
+        fields["quarantine_minutes"] = minutes
+
     if await sessions_db.update_item(platform_id, session_id, **fields):
-        log.warning(f"{platform_id} session {session_id} marked {reason}")
+        mins = (fields["rate_limited_until"] - _now()) / 60
+        log.warning(
+            f"{platform_id} session {session_id} marked {reason} "
+            f"(failure #{fails}, cooling off ~{mins:.0f}m)"
+        )
+
+
+async def mark_session_ok(platform_id: str, session_id: str) -> None:
+    """Clear a session's quarantine after it demonstrably worked.
+
+    The backoff ladder in `mark_session_failed` only escalates while
+    failures are CONSECUTIVE -- without this reset the counter would ratchet
+    up over a session's whole lifetime and a healthy account would
+    eventually sit on a 24h cooldown after four unrelated blips months
+    apart. Called on a real read (analysis_service) and on a passing live
+    health check (_record_item_result).
+    """
+    if not session_id:
+        return
+    await sessions_db.update_item(
+        platform_id, session_id,
+        status="ready", rate_limited_until=0.0, consecutive_failures=0,
+    )
 
 
 async def pool_summary(platform_id: str) -> dict:
@@ -234,11 +356,14 @@ async def save_cookies(platform_id: str, blob: str, identifier: str = "") -> dic
     missing = [n for n in p.required_cookies if n not in {c["name"] for c in cookies}]
     if missing:
         raise ValidationError(f"missing {', '.join(missing)} -- export while logged in")
-    await sessions_db.add_item(platform_id, cookies, identifier)
+    try:
+        await sessions_db.add_item(platform_id, cookies, identifier)
+    except ValueError as e:
+        raise ConflictError(str(e))
     return await status(platform_id)
 
 
-async def save_api_key(platform_id: str, key: str) -> dict:
+async def save_api_key(platform_id: str, key: str, identifier: str = "") -> dict:
     from backend.config.settings import write_env
 
     p = _get_platform(platform_id)
@@ -248,17 +373,105 @@ async def save_api_key(platform_id: str, key: str) -> dict:
     if not key:
         raise ValidationError("empty key")
     write_env(p.api_key_env, key)
-    await sessions_db.save_api_key_session(platform_id, key, identifier="YouTube API Key")
-    log.info(f"{platform_id}: API key saved")
+    try:
+        await sessions_db.save_api_key_session(platform_id, key, identifier=identifier or "YouTube API Key")
+    except ValueError as e:
+        raise ConflictError(str(e))
+    log.info(f"{platform_id}: API key saved ({identifier or 'YouTube API Key'})")
     return await status(platform_id)
 
 
+async def update_session_credentials(platform_id: str, session_id: str, blob: str = "", api_key: str = "", identifier: Optional[str] = None) -> dict:
+    p = _get_platform(platform_id)
+    fields: dict = {}
+    if identifier is not None and identifier.strip():
+        fields["identifier"] = identifier.strip()
+    if p.uses_api_key:
+        if not api_key or not api_key.strip():
+            raise ValidationError("empty API key")
+        fields["api_key"] = api_key.strip()
+        from backend.config.settings import write_env
+        write_env(p.api_key_env, fields["api_key"])
+    elif not p.env_keys:
+        if not blob:
+            raise ValidationError("empty cookie JSON")
+        cookies = load_cookies(blob, p.cookie_domain)
+        if not cookies:
+            raise ValidationError("no cookies for this platform in that export")
+        missing = [n for n in p.required_cookies if n not in {c["name"] for c in cookies}]
+        if missing:
+            raise ValidationError(f"missing {', '.join(missing)} -- export while logged in")
+        fields["cookies"] = cookies
+    res = await sessions_db.update_session_credentials(platform_id, session_id, **fields)
+    if not res:
+        raise NotFoundError(f"session {session_id!r} not found in {platform_id} pool")
+    log.info(f"{platform_id}: updated session credentials for {session_id}")
+    return await status(platform_id)
+
+
+# Playwright's own accepted proxy schemes. See stealth/proxy.py::
+# build_proxy_config, which passes `server` straight through to Playwright's
+# context-launch option unvalidated -- this is the one place that stands
+# between a malformed string and a browser launch failing three steps into
+# a job, instead of at the moment the proxy is actually configured.
+_ALLOWED_PROXY_SCHEMES = ("http", "https", "socks4", "socks5", "socks5h")
+
+
+def _validate_proxy(proxy: dict) -> dict:
+    """Rejects anything Playwright would reject (or silently misuse), and
+    strips the result down to exactly the keys `build_proxy_config` reads --
+    so a caller-supplied dict can never smuggle unrelated fields into the
+    stored session document."""
+    server = str(proxy.get("server") or "").strip()
+    if not server:
+        raise ValidationError("proxy.server is required")
+    parsed = urlparse(server)
+    if parsed.scheme not in _ALLOWED_PROXY_SCHEMES:
+        raise ValidationError(
+            f"proxy.server must start with one of {'/'.join(s + '://' for s in _ALLOWED_PROXY_SCHEMES)} -- got {server!r}"
+        )
+    if not parsed.hostname:
+        raise ValidationError(f"proxy.server has no host: {server!r}")
+    if not parsed.port:
+        raise ValidationError(f"proxy.server has no port: {server!r}")
+
+    out: dict = {"server": server}
+    if username := str(proxy.get("username") or "").strip():
+        out["username"] = username
+    if password := str(proxy.get("password") or "").strip():
+        out["password"] = password
+    if tz := str(proxy.get("timezone_id") or "").strip():
+        # not validated against the IANA database here -- resolve_timezone_id
+        # (stealth/timezone.py) just hands whatever string this is straight
+        # to Playwright's own `timezone_id` context option, which will
+        # itself reject a bogus zone at browser-launch time; duplicating
+        # that whole database here isn't worth it for a value an analyst
+        # typed once and will notice is wrong the first time a session runs.
+        out["timezone_id"] = tz
+    return out
+
+
 async def set_proxy(platform_id: str, session_id: str, proxy: Optional[dict]) -> dict:
+    p = _get_platform(platform_id)
+    if proxy and (p.uses_api_key or p.env_keys):
+        # A per-session PROXY is a Playwright context option -- it only
+        # means anything for the cookie-authed platforms that actually
+        # launch a browser through sessions/manager.py::session_for_job.
+        # YouTube (api_key) talks to a REST API directly, never a browser;
+        # Telegram (env_keys/MTProto) connects via Telethon, which has its
+        # own separate proxy mechanism this field was never wired to.
+        # Accepting either here would store a proxy that LOOKS configured
+        # in the pool but is silently never read by anything -- exactly the
+        # trap this check exists to close.
+        raise ConflictError(
+            f"{platform_id}: has no per-session browser proxy "
+            f"({'API-key' if p.uses_api_key else 'MTProto'} access doesn't route through one)"
+        )
     item = await sessions_db.get_item(platform_id, session_id)
     if item is None:
         raise NotFoundError(f"{platform_id}: session {session_id!r} not in pool")
     if proxy:
-        await sessions_db.update_item(platform_id, session_id, proxy=proxy)
+        await sessions_db.update_item(platform_id, session_id, proxy=_validate_proxy(proxy))
     else:
         await sessions_db.unset_proxy(platform_id, session_id)
     return await status(platform_id)
@@ -393,6 +606,11 @@ async def _record_item_result(
         if not ok:
             log.warning(f"{platform_id}/{identifier}: session check inconclusive, leaving status as-is -- {detail}")
         return
+    if ok:
+        # a passing live check is the strongest evidence a session works --
+        # clear any quarantine and reset the consecutive-failure ladder
+        await mark_session_ok(platform_id, session_id)
+        return
     was_ok = previous is None or previous.get("ok", True)
     if was_ok and not ok:
         await mark_session_failed(platform_id, session_id, "expired")
@@ -413,9 +631,23 @@ async def _record_platform_summary(platform_id: str) -> None:
 
 
 def _platform_busy(platform_id: str) -> bool:
+    """Is a job currently using this platform's session pool?
+
+    A job with `platform=None` sweeps EVERY ready platform -- which is what
+    every discovery job is, and what the analysis catch-up is -- so it
+    counts as busy for all of them. Matching only on `j.platform ==
+    platform_id` meant a discovery sweep never registered as busy at all,
+    and the monitor would launch up to BATCH_SIZE real browsers against
+    cookies a live sweep was using at that moment. Two Playwright contexts
+    on one account from one IP is the single most reliable way to earn a
+    checkpoint.
+    """
     from backend.services.job_service import job_manager
 
-    return any(j.platform == platform_id and j.status == "running" for j in job_manager.jobs.values())
+    return any(
+        j.status == "running" and (j.platform is None or j.platform == platform_id)
+        for j in job_manager.jobs.values()
+    )
 
 
 async def _pick_batch(platform_id: str, limit: int) -> list[tuple[str, str, list[dict]]]:

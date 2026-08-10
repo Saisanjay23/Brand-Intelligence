@@ -261,6 +261,15 @@ export interface SessionItem {
   status: string;
   rate_limited_until: number;
   last_used: number;
+  // how many times this session has actually been handed to a job --
+  // durable, never reset, distinct from `last_used` (a timestamp, not a
+  // count)
+  use_count: number;
+  // is a job holding this EXACT session right now, this instant -- derived
+  // server-side from the real running job that acquired it (see
+  // sessions/manager.py::_session_in_use), so it clears itself the moment
+  // that job stops running rather than needing anything to "release" it
+  in_use: boolean;
   cookie_count: number;
   proxy_host: string;
   is_api_key?: boolean;

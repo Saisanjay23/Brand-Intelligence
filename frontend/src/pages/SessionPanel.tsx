@@ -46,6 +46,11 @@ const embeddedStyles = `
   to { opacity: 1; }
 }
 
+@keyframes runningPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
 .tab-btn {
   transition: all 0.2s ease;
 }
@@ -317,12 +322,15 @@ export function SessionPanel({ sessions, onChanged }: Props) {
                         const isReady = ss.status === "ready";
                         const cooldown = cooldownLabel(ss.rate_limited_until);
 
+                        const running = !!ss.in_use;
+
                         return (
                           <div
                             key={ss.id}
                             style={{
-                              background: "var(--bg-surface-alt, #1d2939)",
-                              border: "1px solid var(--border-color, #344054)",
+                              background: running ? "var(--bg-surface-3, #26344a)" : "var(--bg-surface-alt, #1d2939)",
+                              border: running ? "1px solid var(--accent, #7c5cff)" : "1px solid var(--border-color, #344054)",
+                              boxShadow: running ? "0 0 0 1px var(--accent, #7c5cff) inset" : "none",
                               borderRadius: "6px",
                               padding: "8px 10px",
                               display: "flex",
@@ -348,10 +356,36 @@ export function SessionPanel({ sessions, onChanged }: Props) {
                                 <span title={ss.identifier || `Account ${index + 1}`} style={{ fontSize: "13px", fontWeight: 600, color: "var(--text-primary, #fff)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                                   {ss.identifier || `Account ${index + 1}`}
                                 </span>
+                                {running && (
+                                  <span
+                                    title="A job is using this session right now"
+                                    style={{
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      gap: "4px",
+                                      fontSize: "9px",
+                                      fontWeight: 700,
+                                      color: "var(--accent, #7c5cff)",
+                                      background: "rgba(124, 92, 255, 0.15)",
+                                      border: "1px solid var(--accent, #7c5cff)",
+                                      borderRadius: "10px",
+                                      padding: "1px 7px",
+                                      flexShrink: 0
+                                    }}
+                                  >
+                                    <span style={{
+                                      width: "6px", height: "6px", borderRadius: "50%",
+                                      background: "var(--accent, #7c5cff)",
+                                      animation: "runningPulse 1.2s ease-in-out infinite"
+                                    }} />
+                                    RUNNING NOW
+                                  </span>
+                                )}
                               </div>
                               <div style={{ fontSize: "11px", color: "var(--text-muted, #98a2b3)", marginTop: "2px", display: "flex", alignItems: "center", gap: "6px" }}>
                                 <span>{ss.cookie_count > 0 ? `${ss.cookie_count} cookies` : s.kind === "api-key" || ss.is_api_key ? "API Key" : "Active"}</span>
                                 {cooldown && <span style={{ color: "var(--text-secondary, #d8d8d8)" }}>• ⌛ {cooldown}</span>}
+                                <span title="Total times this session has been picked for a job">• Used {ss.use_count ?? 0}×</span>
                               </div>
                             </div>
 
@@ -372,7 +406,7 @@ export function SessionPanel({ sessions, onChanged }: Props) {
                                 <div>LIVE · {isReady ? "ACTIVE" : "EXPIRED"}</div>
                                 {ss.last_used > 0 && (
                                   <div style={{ fontSize: "8px", fontWeight: 500, marginTop: "1px", opacity: 0.9 }}>
-                                    Refreshed: {new Date(ss.last_used * 1000).toLocaleTimeString()}
+                                    Last scrape: {new Date(ss.last_used * 1000).toLocaleString()}
                                   </div>
                                 )}
                               </div>

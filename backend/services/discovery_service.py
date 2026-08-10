@@ -372,6 +372,13 @@ async def _sweep_platform(
         groups.setdefault(cap, []).append(tab)
 
     plat_obj, session_item = await sessions_engine.session_for_job(plat.id)
+    if session_item.get("id"):
+        # so the Sessions panel can show "currently running" against the
+        # exact pooled item this sweep picked -- see
+        # sessions/manager.py::_session_in_use(). Skipped for Telegram
+        # (env_keys auth, session_for_job returns {} -- no pooled id to
+        # highlight), harmless no-op there.
+        await mgr.emit(job, "progress", platform=plat.id, session_id=session_item["id"])
     if not plat_obj.session_path:
         # No browser Session object here (that's the `else` branch's job),
         # so nothing else closes whatever connection this discoverer opens

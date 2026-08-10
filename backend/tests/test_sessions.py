@@ -57,12 +57,69 @@ def test_pool_summary_counts():
     assert summary == {"total": 3, "available": 1, "dead": 1}
 
 
+# ── graduated quarantine backoff ───────────────────────────────────────────
+# One rate-limit used to cost a flat 24h, so a single bad afternoon could
+# quarantine an entire pool until the next day.
+
+def test_backoff_ladder_escalates_then_saturates():
+    from backend.config.settings import settings
+
+    ladder = settings.session_backoff_minutes
+    assert ladder == [15, 60, 360, 1440], "default ladder changed -- update this test deliberately"
+
+    def cooldown_for(consecutive_failures: int) -> int:
+        return ladder[min(consecutive_failures, len(ladder)) - 1]
+
+    assert cooldown_for(1) == 15      # first blip costs minutes, not a day
+    assert cooldown_for(2) == 60
+    assert cooldown_for(3) == 360
+    assert cooldown_for(4) == 1440
+    assert cooldown_for(99) == 1440   # saturates, never indexes past the end
+
+
+def test_a_first_failure_is_far_cheaper_than_the_old_flat_day():
+    from backend.config.settings import settings
+
+    assert settings.session_backoff_minutes[0] < 24 * 60
+
+
 def test_public_view_of_non_cookie_items():
     from backend.sessions.manager import _public
-    yt_item = {"id": "api_key", "identifier": "YouTube API Key", "status": "ready",
-               "rate_limited_until": 0.0, "last_used": 0.0, "api_key": "secret"}
+    yt_item = {"platform": "youtube", "id": "api_key", "identifier": "YouTube API Key",
+               "status": "ready", "rate_limited_until": 0.0, "last_used": 0.0, "api_key": "secret"}
     assert _public(yt_item) == {
         "id": "api_key", "identifier": "YouTube API Key", "status": "ready",
-        "rate_limited_until": 0.0, "last_used": 0.0, "cookie_count": 0, "proxy_host": ""
+        "rate_limited_until": 0.0, "last_used": 0.0, "use_count": 0, "in_use": False,
+        "cookie_count": 0, "proxy_host": "",
+        "is_api_key": True, "consecutive_failures": 0, "available": True,
     }
+
+
+def test_public_view_never_leaks_the_credential():
+    """The single most important property of _public: a session cookie /
+    API key IS the credential, and this shape is what the API returns."""
+    from backend.sessions.manager import _public
+    item = _item("s1", status="ready")
+    item["api_key"] = "SECRET-KEY"
+    item["cookies"] = [{"name": "c_user", "value": "SECRET-COOKIE"}]
+    rendered = repr(_public(item))
+    assert "SECRET-KEY" not in rendered
+    assert "SECRET-COOKIE" not in rendered
+
+
+def test_public_view_reports_unavailability():
+    """A quarantined session must not read as usable in the Sessions panel.
+
+    `_public` resolves availability against the real clock, so the cooldown
+    has to be genuinely in the future rather than relative to this module's
+    synthetic NOW.
+    """
+    import time as _time
+
+    from backend.sessions.manager import _public
+    cooling = _item("s1", status="rate_limited", rate_limited_until=_time.time() + 3600)
+    cooling["consecutive_failures"] = 3
+    out = _public(cooling)
+    assert out["available"] is False
+    assert out["consecutive_failures"] == 3
 
