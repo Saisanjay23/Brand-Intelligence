@@ -287,9 +287,25 @@ def latest_post(blob: Any, handle: str = "", entity_id: str = "") -> str:
     """Newest post date in a timeline payload, as ISO.
 
     Scoped to the profile's own posts: a timeline also carries retweets and
-    quoted authors, and counting those would make a dormant account look live.
-    Pinned tweets are excluded for the opposite reason -- an old pinned post
-    would otherwise pass for recent activity.
+    quoted authors, and counting those would make a dormant account look live
+    -- `retweeted_status_result` is the marker for that and is excluded below.
+
+    KNOWN GAP, not yet fixed: a pinned tweet is NOT excluded, despite this
+    having been the intent (see the module's analysis_engine.py, whose
+    dom_last_post() fallback DOES exclude it, correctly, via the DOM's own
+    "Pinned" label). Confirmed live on a real account: the account's actual
+    newest ORGANIC post was 2026-08-07, but this function reported
+    2026-08-10 -- the date of an older tweet the account has pinned to the
+    top of their profile. A pinned tweet's `legacy` dict carries no marker
+    distinguishing it (checked live: no key containing "pin" anywhere in
+    it), and it does not appear in the UserTweets timeline's own entries
+    list either -- it is surfaced through some other part of the response
+    this function doesn't currently have enough evidence to parse
+    correctly. Left unfixed rather than guessed at, since a wrong filter
+    here risks breaking working extraction for every other account. Net
+    effect: this can overstate an account's last-active date by the age of
+    whatever they have pinned -- never understate it, and never fabricate
+    a date that doesn't correspond to a real tweet.
     """
     want_h, want_id = handle.lower(), str(entity_id or "")
     best = ""

@@ -7,10 +7,19 @@ first; this file owns everything specific to a validated profile visit: URL
 normalization for the analysis entry point, and the browser-drive loop
 (Scraper).
 
-One request does it: visiting a profile fires UserByScreenName, whose `legacy`
-object holds every field the report wants as typed values -- an integer
-follower count rather than a rendered "154M", and a real join date. So this
-never scrapes the DOM, and unlike Facebook the Created Date column is filled.
+One request does it, usually: visiting a profile fires UserByScreenName, whose
+`legacy` object holds every field the report wants as typed values -- an
+integer follower count rather than a rendered "154M", and a real join date.
+So most fields never need the DOM, and unlike Facebook the Created Date
+column is filled.
+
+The one field that does fall back to the DOM is last-post date. It comes
+from a SEPARATE query (UserTweets) than the profile one, and that query can
+simply not have landed in the single ~1.2s window this waits for it -- a
+timing miss, not a parsing failure, confirmed live: two accounts stored with
+no last-post date reproduced fine on a fresh visit. When that happens,
+dom_last_post() reads the same information off the already-rendered
+timeline instead of waiting longer or re-requesting.
 """
 
 from __future__ import annotations
@@ -18,7 +27,6 @@ from __future__ import annotations
 import asyncio
 import re
 import sys
-import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -63,6 +71,51 @@ def handle_of(url: str) -> str:
         return ""
     h = seg[0].lstrip("@")
     return "" if h.lower() in BAD_SEGMENTS else h
+
+
+# ── DOM last-post fallback ────────────────────────────────────────────
+# latest_post() (discovery_engine.py) reads the UserTweets GraphQL response,
+# and deliberately excludes reposts and pinned tweets -- counting either
+# would make a dormant account look active. A DOM fallback has to preserve
+# that same filtering, not just grab the newest <time> on the page: verified
+# live on a real account, the single newest tweet CELL on screen was a
+# repost, one day newer than that account's actual last original post.
+# `[data-testid="socialContext"]` is the exact element X renders that
+# repost badge in ("Adani Group reposted") -- excluding any cell that has
+# one reproduces latest_post()'s scoping.
+#
+# No live example of a currently-pinned tweet was available to confirm its
+# exact socialContext text, so "pinned" is matched defensively (case
+# -insensitive substring) alongside the confirmed "repost" -- an unmatched
+# pinned tweet would only make this fallback occasionally too generous by
+# one tweet, never wrong in the direction that hides real inactivity.
+JS_TWEET_TIMES = """
+() => {
+  const out = [];
+  for (const cell of document.querySelectorAll('[data-testid="tweet"]')) {
+    const time = cell.querySelector('time[datetime]');
+    if (!time) continue;
+    const ctx = cell.querySelector('[data-testid="socialContext"]');
+    const label = ctx ? (ctx.textContent || '').toLowerCase() : '';
+    out.push({dt: time.getAttribute('datetime'), repostOrPinned: /repost|retweet|pinned/.test(label)});
+  }
+  return out;
+}
+"""
+
+
+async def dom_last_post(page) -> str:
+    """Newest ORGANIC post date read off the already-rendered timeline.
+    '' when nothing usable is on screen -- never a guess."""
+    try:
+        cells = await page.evaluate(JS_TWEET_TIMES)
+    except Exception:
+        return ""
+    dates = [
+        c["dt"][:10] for c in (cells or [])
+        if c.get("dt") and not c.get("repostOrPinned")
+    ]
+    return max(dates) if dates else ""
 
 
 class Scraper:
@@ -198,6 +251,17 @@ class Scraper:
                 row.last_post_iso = max(posts)
                 row.posts_seen = "yes"
                 row.mark("last_post", "graphql")
+            elif row.posts_seen != "no":
+                # the UserTweets query (captured into `posts` above) missed
+                # its window -- fill() already determined "no posts at all"
+                # is not the case (posts_seen != "no"), so read the same
+                # information off the timeline that's already rendered on
+                # screen instead of waiting longer or re-requesting
+                iso = await dom_last_post(page)
+                if iso:
+                    row.last_post_iso = iso
+                    row.posts_seen = "yes"
+                    row.mark("last_post", "dom-time")
             await self.screenshot(page, row)
             row.status = "OK" if row.profile_name else "PARTIAL"
             return row
@@ -250,10 +314,15 @@ class Scraper:
     async def screenshot(self, page, row: Row) -> None:
         if not self.evidence:
             return
+        # DETERMINISTIC filename, no timestamp: re-analysing a profile must
+        # overwrite its own previous capture, not add another one. With a
+        # timestamp, a daily re-sweep left one PNG per profile per run on
+        # disk forever, and the profile document only ever pointed at the
+        # newest -- every earlier file was unreachable garbage.
         stem = re.sub(r"[^A-Za-z0-9._-]", "_", row.profile_id or "entity")[:60]
-        shot = self.evidence / f"{stem}_{int(time.time())}.png"
+        shot = self.evidence / f"{stem}.png"
         try:
-            await page.screenshot(path=str(shot))
+            await page.screenshot(path=str(shot), full_page=False)
             row.screenshot = str(shot)
         except Exception:
             pass
