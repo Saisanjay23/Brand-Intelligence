@@ -63,14 +63,15 @@ from __future__ import annotations
 import asyncio
 import re
 import sys
-import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote, urlparse
 
 from backend.shared.models.row import Row
-from backend.shared.text import (fmt_created, name_score, normalized_host,
-                                   parse_count, parse_normalized_url)
+from backend.shared.text import (MONTHS, fmt_created, name_score,
+                                   normalized_host, parse_count,
+                                   parse_normalized_url)
 from backend.platforms.instagram.discovery_engine import (DEFAULT_PIC_HINTS,
                                                            MOBILE_UA,
                                                            PROFILE_ENDPOINTS,
@@ -224,14 +225,35 @@ class Scraper:
         except Exception:
             return {}
 
-    # The grid's own post/reel links are in feed order (newest first), so
-    # the first one found is the most recent post -- no API needed to know
-    # that ordering, it's just how the profile page renders.
-    JS_FIRST_POST_LINK = """
+    # The grid's own post/reel links are NOT reliably newest-first --
+    # confirmed live (adanifoundationschools, 2026-08-10): the first three
+    # tiles were all dated 2025-09-01 while a genuinely newer post sat in
+    # 4th position -- Instagram's "pin to grid" feature, which holds up to
+    # 3 posts at the top regardless of date. No pin marker is visible in a
+    # third party's view of the DOM at all (checked the full ancestor chain
+    # of the pinned tiles up 4 levels -- no icon, no aria-label, nothing to
+    # key off of the way Twitter's TimelinePinEntry or a "Pinned" badge
+    # would give), so this can't be fixed by detecting "is this one
+    # pinned." Fixed the same way underneath as Twitter/Facebook were,
+    # though: read several candidates and take the real max instead of
+    # trusting grid position.
+    JS_GRID_ALT_DATES = """
     () => {
-      const a = document.querySelector('a[href*="/p/"], a[href*="/reel/"]');
-      return a ? a.getAttribute('href') : null;
+      const out = [];
+      for (const a of document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]')) {
+        const img = a.querySelector('img[alt]');
+        if (img) out.push(img.getAttribute('alt') || '');
+      }
+      return out.slice(0, 12);
     }
+    """
+
+    # Instagram's own pin cap is 3 -- visiting this many candidate links
+    # guarantees at least one genuinely-newest, non-pinned post is checked
+    # regardless of how many (0 to 3) are actually pinned right now.
+    JS_GRID_POST_LINKS = """
+    () => Array.from(document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]'))
+      .slice(0, 3).map(a => a.getAttribute('href'))
     """
 
     JS_POST_TIME = """
@@ -241,35 +263,93 @@ class Scraper:
     }
     """
 
+    # "Photo by X on September 01, 2025." / "...on August 09, 2026. May be
+    # an image..." / "Photo shared by X on August 08, 2026 tagging @Y."
+    # -- confirmed live across several accounts, always this "on <Month>
+    # <Day>, <Year>" shape for a PHOTO post's own accessibility alt text.
+    # Reels carry only their caption as alt text, no date -- yields nothing
+    # here, which is why tier 2 below still exists.
+    _RE_ALT_DATE = re.compile(r"\bon\s+([A-Za-z]+)\s+(\d{1,2}),\s+(\d{4})\b")
+
+    @classmethod
+    def _parse_alt_date(cls, text: str) -> str:
+        m = cls._RE_ALT_DATE.search(text or "")
+        if not m:
+            return ""
+        mon_name, day, year = m.groups()
+        month = next(
+            (i for i, name in enumerate(MONTHS, start=1)
+             if name.lower() == mon_name.lower()),
+            None,
+        )
+        if not month:
+            return ""
+        try:
+            dt = datetime(int(year), month, int(day), tzinfo=timezone.utc)
+        except ValueError:
+            return ""
+        now = datetime.now(timezone.utc)
+        # Instagram launched in 2010; a stamp before that or in the future
+        # is not a real post date
+        return dt.date().isoformat() if 2010 <= dt.year and dt <= now else ""
+
     async def read_last_post_date(self, page, private: bool, has_posts: bool) -> str:
-        """One extra page visit -- to the profile's own most recent post/reel
-        -- for a real last-post DATE. Confirmed live: that page renders a
+        """The real last-post date, robust to grid pinning (see
+        JS_GRID_ALT_DATES' comment above for the live-confirmed gap this
+        closes).
+
+        Tier 1, free -- no extra navigation: every currently-rendered grid
+        tile's own photo already carries its publish date in its
+        accessibility alt text. Reading every tile (not just the first)
+        and taking the real max is what survives pinning, at zero added
+        cost over the page visit already made to reach this profile.
+
+        Tier 2, up to 3 extra page visits -- only when tier 1 found no
+        parseable date at all (an all-Reels account, most often). Visits
+        the first 3 grid links -- Instagram's own pin cap -- and reads each
+        one's real `<time datetime>` element directly, taking the max.
+        Confirmed live: that page renders a
         `<time datetime="2026-07-23T16:00:21.000Z">` element with an exact
-        UTC timestamp, unlike the profile header (a post COUNT only) and
-        unlike network interception (does not fire the target's own profile
-        payload -- see module docstring). Returns "" on anything short of a
-        clean read: a private/postless account, a missing link, a failed
-        navigation, or a page with no <time> element -- never a guess.
+        UTC timestamp.
+
+        Returns "" on anything short of a clean read: a private/postless
+        account, no candidates, or failed navigations -- never a guess.
         """
         if private or not has_posts:
             return ""
+
         try:
-            href = await page.evaluate(self.JS_FIRST_POST_LINK)
-            if not href:
-                return ""
-            await page.goto(
-                f"https://www.instagram.com{href}",
-                wait_until="domcontentloaded",
-                timeout=self.a.timeout * 1000,
-            )
-            await page.wait_for_timeout(1500)
-            iso = await page.evaluate(self.JS_POST_TIME)
-            # the element's own datetime attribute is already a UTC ISO
-            # string ("...T...Z") -- the date is just its first 10 characters,
-            # no parsing needed
-            return iso[:10] if iso and len(iso) >= 10 else ""
+            alts = await page.evaluate(self.JS_GRID_ALT_DATES) or []
         except Exception:
-            return ""
+            alts = []
+        dates = [d for d in (self._parse_alt_date(a) for a in alts) if d]
+        if dates:
+            return max(dates)
+
+        try:
+            hrefs = await page.evaluate(self.JS_GRID_POST_LINKS) or []
+        except Exception:
+            hrefs = []
+        found: list[str] = []
+        for href in hrefs:
+            if not href:
+                continue
+            try:
+                await page.goto(
+                    f"https://www.instagram.com{href}",
+                    wait_until="domcontentloaded",
+                    timeout=self.a.timeout * 1000,
+                )
+                await page.wait_for_timeout(1500)
+                iso = await page.evaluate(self.JS_POST_TIME)
+                # the element's own datetime attribute is already a UTC ISO
+                # string ("...T...Z") -- the date is just its first 10
+                # characters, no parsing needed
+                if iso and len(iso) >= 10:
+                    found.append(iso[:10])
+            except Exception:
+                continue
+        return max(found) if found else ""
 
     # ───────────────────────────── per URL ────────────────────────────── #
 
@@ -463,10 +543,15 @@ class Scraper:
     async def screenshot(self, page, row: Row) -> None:
         if not self.evidence:
             return
+        # DETERMINISTIC filename, no timestamp: re-analysing a profile must
+        # overwrite its own previous capture, not add another one. With a
+        # timestamp, a daily re-sweep left one PNG per profile per run on
+        # disk forever, and the profile document only ever pointed at the
+        # newest -- every earlier file was unreachable garbage.
         stem = re.sub(r"[^A-Za-z0-9._-]", "_", row.profile_id or "entity")[:60]
-        shot = self.evidence / f"{stem}_{int(time.time())}.png"
+        shot = self.evidence / f"{stem}.png"
         try:
-            await page.screenshot(path=str(shot))
+            await page.screenshot(path=str(shot), full_page=False)
             row.screenshot = str(shot)
         except Exception:
             pass
@@ -485,14 +570,11 @@ class Scraper:
 
     @staticmethod
     def report(i: int, total: int, u: str, row: Row) -> None:
-        print(f"[{i}/{total}] {u}", file=sys.stderr)
-        print(
-            f"    {row.status:<14} name={row.profile_name[:22]:<22} "
-            f"created={fmt_created(row.created_iso) or '-':<10} "
-            f"followers={row.followers if row.followers is not None else '-':<9} "
-            f"active={row.active_yes or '-':<3} "
-            f"risk={row.risk} {row.priority}",
-            file=sys.stderr,
+        from backend.shared.logging import get_logger as _gl
+        _gl("platforms.instagram.analysis").info(
+            f"[{i}/{total}] {u} | {row.status} name={row.profile_name[:22]} "
+            f"followers={row.followers if row.followers is not None else '-'} "
+            f"active={row.active_yes or '-'} risk={row.risk} {row.priority}"
         )
 
     async def run(self, jobs: list[tuple[str, str, str]]) -> list[Row]:
@@ -502,8 +584,9 @@ class Scraper:
             rows.append(row)
             self.report(i, len(jobs), u, row)
             if row.status == "CHECKPOINT" and not getattr(self.a, "keep_going", False):
-                print(
-                    "\nCHECKPOINT -- aborting to protect the session.", file=sys.stderr
+                from backend.shared.logging import get_logger as _gl
+                _gl("platforms.instagram.analysis").warning(
+                    "CHECKPOINT -- aborting to protect the session."
                 )
                 break
             if i < len(jobs):
