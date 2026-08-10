@@ -147,6 +147,10 @@ export interface Profile {
   username?: string;
   location?: string;
   last_post_date?: string | null;
+  // true/false/null -- computed from last_post_date against a 6-month
+  // dormant-account window. null means no last-post date was ever found
+  // (unknown), never "confirmed inactive" -- do not render null as Inactive.
+  is_active?: boolean | null;
   // publish hold (phase=analysis only) -- see backend/docs/adr/0007-publish-hold.md.
   // A row missing these (discovery-phase, or analysed before this feature
   // existed) should be treated as already published. The hold now genuinely

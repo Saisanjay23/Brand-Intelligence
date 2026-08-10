@@ -525,7 +525,8 @@ interface CardProps {
 }
 
 // Mirrors backend shared/models/scoring.py::NAME_THRESHOLD.
-const MATCH_HIGH_THRESHOLD = 80;
+const MATCH_EXACT_THRESHOLD = 100;
+const MATCH_MEDIUM_THRESHOLD = 50;
 
 // Risk-tier colour bands for the analysis card's Risk badge -- same three
 // bands as the old High/Medium/Low priority badge it replaces, just keyed
@@ -596,11 +597,19 @@ function ProfileCard({
             className="card-badge-top-right"
             title={`Name-to-keyword match score: ${r.name_score}/100`}
             style={{
-              background: r.name_score >= MATCH_HIGH_THRESHOLD ? "rgba(54,181,160,0.85)" : "rgba(255,128,0,0.85)",
+              background: r.name_score >= MATCH_EXACT_THRESHOLD 
+                ? "rgba(54,181,160,0.85)" 
+                : r.name_score >= MATCH_MEDIUM_THRESHOLD 
+                  ? "rgba(255,165,0,0.85)" 
+                  : "rgba(255,80,80,0.85)",
               color: "#fff",
             }}
           >
-            {r.name_score >= MATCH_HIGH_THRESHOLD ? "🎯 High Match" : "🎯 Low Match"}
+            {r.name_score >= MATCH_EXACT_THRESHOLD 
+              ? "🎯 High Match" 
+              : r.name_score >= MATCH_MEDIUM_THRESHOLD 
+                ? "🎯 Medium Match" 
+                : "🎯 Low Match"}
           </span>
         )}
         <span className="card-badge-platform">
@@ -757,7 +766,7 @@ export function ResultsGrid({
   const [priority, setPriority] = useState("");
   const [sortOrder, setSortOrder] = useState<"recent" | "past">("recent");
   const [keywordFilter, setKeywordFilter] = useState("");
-  const [matchLevel, setMatchLevel] = useState<"" | "high" | "low">("");
+  const [matchLevel, setMatchLevel] = useState<"" | "high" | "medium" | "low">("");
   const [entityType, setEntityType] = useState<"" | "profile" | "page">("");
   const [keywordMatchType, setKeywordMatchType] = useState<"" | "individual" | "domain">("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -2068,12 +2077,13 @@ export function ResultsGrid({
             {!isAnalysisView && (
               <select
                 value={matchLevel}
-                onChange={(e) => setMatchLevel(e.target.value as "" | "high" | "low")}
+                onChange={(e) => setMatchLevel(e.target.value as "" | "high" | "medium" | "low")}
                 className="select-filter"
                 title="How closely the scraped name matches the keyword that found it"
               >
                 <option value="">All Match Levels</option>
                 <option value="high">🎯 High Match</option>
+                <option value="medium">🎯 Medium Match</option>
                 <option value="low">🎯 Low Match</option>
               </select>
             )}
@@ -2455,6 +2465,23 @@ export function ResultsGrid({
                       {isAnalysisView && (
                         <td style={{ fontSize: "11px", color: "var(--text-muted)", whiteSpace: "nowrap" }}>
                           {inc?.socialProfileInfo.lastPostDate || r.last_post_date || emptyLabel(r, r.platform, "last_post_date")}
+                          {/* r.is_active is true/false/null -- null means no
+                              last-post date was ever found (unknown), never
+                              "confirmed inactive", so it renders nothing rather
+                              than a wrong badge. See ACTIVE_WINDOW_DAYS (6mo). */}
+                          {r.is_active !== null && r.is_active !== undefined && (
+                            <span
+                              title={r.is_active ? "Posted within the last 6 months" : "No post in over 6 months"}
+                              style={{
+                                marginLeft: "6px", fontSize: "10px", fontWeight: 700,
+                                padding: "1px 6px", borderRadius: "8px",
+                                color: r.is_active ? "var(--success, #36b5a0)" : "var(--text-dim)",
+                                background: r.is_active ? "rgba(54,181,160,0.12)" : "rgba(255,255,255,0.06)",
+                              }}
+                            >
+                              {r.is_active ? "● Active" : "○ Inactive"}
+                            </span>
+                          )}
                         </td>
                       )}
                       {isAnalysisView && (

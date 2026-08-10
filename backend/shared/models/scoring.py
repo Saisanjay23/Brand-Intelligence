@@ -25,7 +25,14 @@ W_NAME = 1  # display name matches the target brand
 W_ACTIVE = 2  # posted recently, so the account is live and doing harm now
 W_REACH = 1  # has an audience large enough for the impersonation to spread
 
-ACTIVE_WINDOW_DAYS = 90
+# 6 months -- the standard dormant-account threshold used across brand-
+# protection/OSINT practice: a profile that hasn't posted in that window is
+# treated as inactive (lower ongoing risk, but still a real registered
+# impersonation and not dismissed), while one active within it is treated
+# as live and actively doing harm. 30-day months, so 180 days rather than a
+# calendar-varying "6 months" -- deterministic regardless of which months
+# the window spans.
+ACTIVE_WINDOW_DAYS = 180
 NAME_THRESHOLD = 80  # token-set ratio, 0..100
 REACH_AT = 1000  # followers at or above this count as real reach
 

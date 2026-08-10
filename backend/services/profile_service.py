@@ -88,6 +88,14 @@ def _to_full(doc: dict, client: Optional[dict]) -> dict:
         "profile_image_url": doc.get("profile_image_url", ""),
         "followers": doc.get("followers"), "location": doc.get("location", ""),
         "last_post_date": doc.get("last_post_date"),
+        # True/False/None -- computed from last_post_date against the
+        # 6-month industry-standard dormant-account window (see
+        # shared/models/scoring.py::ACTIVE_WINDOW_DAYS and
+        # shared/models/row.py::Row.active_yes). None means "no last-post
+        # date was ever found," not "confirmed inactive" -- was already
+        # computed and used for risk scoring, just never reached this
+        # response before.
+        "is_active": doc.get("is_active"),
         "has_logo": bool(doc.get("has_logo", False)),
         "verified": bool(doc.get("verified", False)),
         "status": doc.get("status", "pending"),
