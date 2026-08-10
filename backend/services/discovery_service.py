@@ -373,9 +373,21 @@ async def _sweep_platform(
 
     plat_obj, session_item = await sessions_engine.session_for_job(plat.id)
     if not plat_obj.session_path:
+        # No browser Session object here (that's the `else` branch's job),
+        # so nothing else closes whatever connection this discoverer opens
+        # for itself -- confirmed live this mattered for real: Telegram's
+        # Discovery.sweep() opens its own MTProto connection lazily and,
+        # without this, never closed it, leaving the local SQLite
+        # `.session` file locked for the NEXT Telegram operation (an
+        # analysis run for the same client, immediately after, in the
+        # round-robin engine's own per-client turn) to fail against. See
+        # platforms/telegram/discovery_engine.py::Discovery.stop().
         for cap, group_tabs in groups.items():
             discoverer = plat_obj.discoverer()(_options_for(cap), None)
-            await _run_incremental(discoverer, keywords, group_tabs, _on_sweep_done, _on_page_hits)
+            try:
+                await _run_incremental(discoverer, keywords, group_tabs, _on_sweep_done, _on_page_hits)
+            finally:
+                await discoverer.stop()
     else:
         session = plat_obj.session_cls()(
             _options_for(default_max_results), session_item.get("cookies", []),

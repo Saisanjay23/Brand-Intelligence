@@ -185,6 +185,15 @@ class Discovery:
         self.a = args
         self.api = YouTubeAPI()
 
+    async def stop(self) -> None:
+        """No persistent connection to release (plain HTTP calls per
+        request) -- exists so discovery_service.py can call every
+        no-session platform's discoverer.stop() uniformly, the same way it
+        already calls session.stop() for the browser-based ones. See
+        telegram/discovery_engine.py's Discovery.stop() for the platform
+        where this actually matters."""
+        return None
+
     async def sweep(self, keyword: str, tab: str = "channels") -> Sweep:
         out = Sweep(keyword=keyword, tab=tab)
         started = time.time()
@@ -254,10 +263,3 @@ class Discovery:
         pairs = await asyncio.gather(*(one(i, k) for i, k in enumerate(keywords)))
         return [s for _, s in sorted(pairs, key=lambda p: p[0])]
 
-
-def merge(sweeps: list[Sweep]) -> list[Hit]:
-    seen: dict[str, Hit] = {}
-    for s in sweeps:
-        for h in s.hits:
-            seen.setdefault(h.entity_id, h)
-    return list(seen.values())

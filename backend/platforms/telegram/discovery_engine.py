@@ -320,6 +320,24 @@ class Discovery:
                 raise NotAuthorised("telegram session rejected")
             self.tg = tg
 
+    async def stop(self) -> None:
+        """Release the MTProto connection `sweep()` opened.
+
+        Confirmed live: without this, discovery_service.py's caller had
+        nothing to call it FROM either -- every discovery sweep for this
+        platform left `self.tg` connected, holding the local SQLite
+        `.session` file locked. Reproduced the real symptom directly: a
+        discovery sweep followed immediately by an analysis run for the
+        same client (exactly what the round-robin engine's per-client turn
+        does) failed analysis with "database is locked", because
+        Telethon's own client only supports one open connection to that
+        file at a time. Analysis' own Scraper always closes its own
+        connection via its `stop()`; this was the missing other half.
+        """
+        if self.tg is not None:
+            await self.tg.stop()
+            self.tg = None
+
     async def sweep(self, keyword: str, tab: str = "all") -> Sweep:
         out = Sweep(keyword=keyword, tab=tab)
         started = time.time()
@@ -386,10 +404,3 @@ class Discovery:
             await self.tg.stop()
         return sweeps
 
-
-def merge(sweeps: list[Sweep]) -> list[Hit]:
-    seen: dict[str, Hit] = {}
-    for s in sweeps:
-        for h in s.hits:
-            seen.setdefault(h.entity_id or h.url, h)
-    return list(seen.values())
