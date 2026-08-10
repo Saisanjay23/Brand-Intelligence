@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { RecentClient } from "../services/recentClients";
 
-export type ViewPage = "home" | "results" | "dashboard" | "sessions";
+export type ViewPage = "home" | "results" | "dashboard" | "sessions" | "proxies";
 
 interface Props {
   page: ViewPage;
@@ -81,6 +81,14 @@ export function Header({
           <span className="top-nav-badge">
             {readySessionsCount}/{platformCount}
           </span>
+        </button>
+
+        <button
+          onClick={() => onPage("proxies")}
+          className={`top-nav-btn ${page === "proxies" ? "active" : ""}`}
+        >
+          <span>🌐</span>
+          <span>Proxies</span>
         </button>
       </div>
 

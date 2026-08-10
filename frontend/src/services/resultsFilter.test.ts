@@ -168,6 +168,62 @@ describe("sortResults", () => {
     sortResults(rows, "recent");
     expect(rows).toEqual(original);
   });
+
+  // The analysis table renders `incident.riskRating` (the client-facing
+  // rubric), not `risk_score` (the internal triage rubric). Sorting on the
+  // internal one produced a visibly unsorted Risk column.
+  it("sorts analysis rows by the riskRating the table actually displays", () => {
+    const withRating = (rating: string, internal: number) =>
+      makeProfile({
+        phase: "analysis",
+        risk_score: internal,
+        incident: { riskRating: rating } as Profile["incident"],
+      });
+    // internal scores deliberately ordered OPPOSITE to the displayed rating,
+    // so sorting on the wrong field is unambiguous
+    const rows = [withRating("4", 9), withRating("9", 2), withRating("7", 5)];
+    const out = sortResults(rows, "recent", "analysis");
+    expect(out.map((r) => r.incident?.riskRating)).toEqual(["9", "7", "4"]);
+  });
+
+  it("falls back to the internal score when a row has no incident preview", () => {
+    // happens when the client record is gone -- build_incident_doc returns
+    // null there, so there is no riskRating to sort on
+    const rows = [
+      makeProfile({ phase: "analysis", risk_score: 3 }),
+      makeProfile({ phase: "analysis", risk_score: 9 }),
+    ];
+    const out = sortResults(rows, "recent", "analysis");
+    expect(out.map((r) => r.risk_score)).toEqual([9, 3]);
+  });
+});
+
+describe("emptyLabel blames the right thing", () => {
+  // A blocked run and a platform that doesn't expose a field produce the
+  // same empty cell for completely different reasons, and an analyst acts
+  // differently on each.
+  it("says analysis could not read the profile when the run was blocked", () => {
+    for (const reason of ["ERROR", "CHECKPOINT", "LOGIN_REQUIRED"]) {
+      const row = makeProfile({ phase: "analysis", analysis_status: reason });
+      expect(emptyLabel(row, "facebook", "followers")).toBe(
+        "analysis could not read this profile",
+      );
+    }
+  });
+
+  it("does not blame the session when the profile was genuinely read", () => {
+    const row = makeProfile({ phase: "analysis", analysis_status: "OK" });
+    expect(emptyLabel(row, "telegram", "location")).toBe("not exposed by this platform");
+  });
+
+  it("a blocked run outranks the platform-limitation label", () => {
+    // Telegram genuinely has no location -- but if the run never got in,
+    // that is the reason this cell is empty, not the platform.
+    const row = makeProfile({ phase: "analysis", analysis_status: "CHECKPOINT" });
+    expect(emptyLabel(row, "telegram", "location")).toBe(
+      "analysis could not read this profile",
+    );
+  });
 });
 
 describe("emptyLabel", () => {
@@ -250,15 +306,20 @@ describe("keywordRelevance / discovery sort", () => {
     expect(keywordRelevance(r)).toBe(0);
   });
 
-  it("sortResults puts an exact keyword match in the first row for discovery", () => {
+  it("sortResults leaves discovery rows in exactly the order the server returned them", () => {
+    // Discovery deliberately does NOT re-sort by relevance (that's what
+    // keywordRelevance's own tests above cover as a standalone utility) --
+    // the server's order already IS Facebook's own top-to-bottom render
+    // order (see profile_repository.py::find + the Facebook discovery
+    // engine's sweep() ordering fix), and the whole point of this view is
+    // showing an analyst exactly that, unmodified.
     const rows = [
-      makeProfile({ profile_name: "Tesla Fan Club 2019", keyword: "Tesla", risk_score: 9 }),
       makeProfile({ profile_name: "", keyword: "Tesla", risk_score: 5 }),
+      makeProfile({ profile_name: "Tesla Fan Club 2019", keyword: "Tesla", risk_score: 9 }),
       makeProfile({ profile_name: "Tesla", keyword: "Tesla", risk_score: 0 }),
     ];
     const out = sortResults(rows, "recent", "discovery", "Tesla");
-    expect(out[0].profile_name).toBe("Tesla");
-    expect(out[out.length - 1].profile_name).toBe("");
+    expect(out).toEqual(rows);
   });
 
   it("analysis phase keeps the existing risk-score sort untouched", () => {

@@ -42,7 +42,7 @@ export function JobMonitor({ job, log, onCancel }: Props) {
             background: running
               ? "rgba(136, 56, 221, 0.15)"
               : job.status === "done"
-                ? "rgba(0, 193, 77, 0.15)"
+                ? "rgba(54, 181, 160, 0.15)"
                 : "rgba(233, 80, 83, 0.15)",
             color: running
               ? "var(--cyan-bright)"
@@ -102,6 +102,17 @@ export function JobMonitor({ job, log, onCancel }: Props) {
               transition: "width 0.4s ease",
             }}
           />
+        </div>
+      )}
+
+      {job.status === "queued" && job.blocked_by && (
+        <div style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "8px" }}>
+          {/* previously an analyst just saw "QUEUED" with no way to tell
+              whether the job hadn't started yet or was stuck behind
+              someone else's sweep on the same platform lock (see
+              job_service.py's per-platform lock) */}
+          ⏳ Waiting on {job.blocked_by.client_id}'s {job.blocked_by.kind}
+          {job.blocked_by.platform ? ` (${job.blocked_by.platform})` : ""} to finish.
         </div>
       )}
 

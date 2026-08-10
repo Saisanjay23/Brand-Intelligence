@@ -6,7 +6,7 @@ import { jobsApi } from "../api/jobsApi";
 import type { Client, Job, PlatformHealth } from "../api/types";
 import { PlatformIcon } from "../components/PlatformIcon";
 
-type KeywordTab = "names" | "domain" | "drk";
+type KeywordTab = "names" | "domain" | "assetNames";
 type Mode = "create" | "select";
 
 interface Props {
@@ -33,6 +33,27 @@ function splitKeywordList(raw: string): string[] {
     .split(/[,\n]/)
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+// Facebook/Instagram/etc. search is not case-sensitive -- "adani" and
+// "Adani" return identical results -- so treating them as two distinct
+// keywords doubles the sweep for zero extra coverage, and shows up in the
+// UI as an inexplicable "I only added 2 keywords, why are there 3"
+// (exactly what this fixes: the chip lists used to dedup with an exact,
+// case-sensitive `.includes(v)`, so re-typing an existing keyword with
+// different casing silently added a functional duplicate instead of being
+// rejected). Keeps whichever casing was added FIRST; a later duplicate in
+// any other casing is dropped, not merged/renamed.
+function dedupeKeywordsCaseInsensitive(keywords: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const kw of keywords) {
+    const key = kw.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(kw);
+  }
+  return out;
 }
 
 function ChipInput({
@@ -128,129 +149,6 @@ function ChipInput({
   );
 }
 
-// Its own tab, combining both keyword lists -- a Digital Risk Keyword is
-// an optional per-keyword "Asset Name" override for the analysis output's
-// published-incident record: set one and it replaces the default (the
-// matched name keyword itself, or the client's own name for a domain
-// keyword) for any profile matched under that specific keyword. Left
-// blank, nothing changes -- "whatever comes stays as-is."
-function DrkKeywordsPanel({
-  nameKeywords,
-  domainKeywords,
-  nameKeywordDrk,
-  domainKeywordDrk,
-  onNameDrkChange,
-  onDomainDrkChange,
-  disabled,
-}: {
-  nameKeywords: string[];
-  domainKeywords: string[];
-  nameKeywordDrk: Record<string, string>;
-  domainKeywordDrk: Record<string, string>;
-  onNameDrkChange: (keyword: string, value: string) => void;
-  onDomainDrkChange: (keyword: string, value: string) => void;
-  disabled?: boolean;
-}) {
-  const [bulkOpen, setBulkOpen] = useState(false);
-  const [bulkText, setBulkText] = useState("");
-  const [skipped, setSkipped] = useState(0);
-
-  const rows = [
-    ...nameKeywords.map((kw) => ({ kw, type: "name" as const })),
-    ...domainKeywords.map((kw) => ({ kw, type: "domain" as const })),
-  ];
-
-  const applyBulk = () => {
-    let skippedCount = 0;
-    for (const rawLine of bulkText.split("\n")) {
-      const line = rawLine.trim();
-      if (!line) continue;
-      const sep = line.search(/[:,]/);
-      const kw = sep === -1 ? "" : line.slice(0, sep).trim();
-      const val = sep === -1 ? "" : line.slice(sep + 1).trim();
-      if (!kw || !val) {
-        skippedCount++;
-      } else if (nameKeywords.includes(kw)) {
-        onNameDrkChange(kw, val);
-      } else if (domainKeywords.includes(kw)) {
-        onDomainDrkChange(kw, val);
-      } else {
-        skippedCount++;
-      }
-    }
-    setSkipped(skippedCount);
-    setBulkText("");
-    // stay open when something was skipped -- that message only means
-    // anything while the analyst can still see it
-    if (skippedCount === 0) setBulkOpen(false);
-  };
-
-  if (!rows.length) {
-    return (
-      <div style={{ marginTop: "12px", fontSize: "12px", color: "var(--text-dim)" }}>
-        Add some Individual Name or Domain keywords first -- a Digital Risk Keyword overrides an existing keyword, it
-        doesn't create a new one.
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ marginTop: "12px" }}>
-      <div className="drk-editor-list">
-        {rows.map(({ kw, type }) => (
-          <div key={`${type}-${kw}`} className="drk-editor-row">
-            <span className="drk-editor-kw" title={type === "name" ? "Individual name keyword" : "Domain keyword"}>
-              {type === "name" ? "👤" : "🏷️"} {kw}
-            </span>
-            <input
-              value={(type === "name" ? nameKeywordDrk : domainKeywordDrk)[kw] ?? ""}
-              onChange={(e) => (type === "name" ? onNameDrkChange : onDomainDrkChange)(kw, e.target.value)}
-              placeholder="Asset Name override…"
-              disabled={disabled}
-            />
-          </div>
-        ))}
-      </div>
-      <button
-        type="button"
-        className="bulk-kw-toggle"
-        onClick={() => {
-          setSkipped(0);
-          setBulkOpen((v) => !v);
-        }}
-        disabled={disabled}
-      >
-        {bulkOpen ? "▾" : "▸"} 📋 Bulk add (one "keyword: override" per line)
-      </button>
-      {bulkOpen && (
-        <div className="bulk-kw-panel">
-          <textarea
-            value={bulkText}
-            onChange={(e) => setBulkText(e.target.value)}
-            placeholder={"gautam adani: Gautam S. Adani (Chairman)\nadanigroup.com: Adani Group Official"}
-            rows={4}
-            disabled={disabled}
-          />
-          <button
-            type="button"
-            className="btn-cyber-primary"
-            style={{ width: "auto", marginTop: "6px" }}
-            onClick={applyBulk}
-            disabled={disabled || !bulkText.trim()}
-          >
-            Apply All
-          </button>
-          {skipped > 0 && (
-            <div style={{ fontSize: "11px", color: "var(--text-dim)", marginTop: "4px" }}>
-              {skipped} line(s) skipped -- keyword not found among Individual Names/Domain Keywords, or not in
-              "keyword: override" / "keyword, override" format.
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
 
 function KeywordTabs({
   activeTab,
@@ -261,10 +159,12 @@ function KeywordTabs({
   onRemoveName,
   onAddDomain,
   onRemoveDomain,
-  nameKeywordDrk,
-  domainKeywordDrk,
-  onNameDrkChange,
-  onDomainDrkChange,
+  assetNameIndividualKw,
+  assetNameDomainKw,
+  onAddAssetIndividual,
+  onRemoveAssetIndividual,
+  onAddAssetDomain,
+  onRemoveAssetDomain,
   disabled,
 }: {
   activeTab: KeywordTab;
@@ -275,10 +175,12 @@ function KeywordTabs({
   onRemoveName: (i: number) => void;
   onAddDomain: (v: string) => void;
   onRemoveDomain: (i: number) => void;
-  nameKeywordDrk: Record<string, string>;
-  domainKeywordDrk: Record<string, string>;
-  onNameDrkChange: (keyword: string, value: string) => void;
-  onDomainDrkChange: (keyword: string, value: string) => void;
+  assetNameIndividualKw: string[];
+  assetNameDomainKw: string[];
+  onAddAssetIndividual: (v: string) => void;
+  onRemoveAssetIndividual: (i: number) => void;
+  onAddAssetDomain: (v: string) => void;
+  onRemoveAssetDomain: (i: number) => void;
   disabled?: boolean;
 }) {
   return (
@@ -293,16 +195,16 @@ function KeywordTabs({
           🏷️ Domain Keywords
           {domainKeywords.length > 0 && <span className="kw-tab-count">{domainKeywords.length}</span>}
         </button>
-        <button className={`kw-tab-btn ${activeTab === "drk" ? "active" : ""}`} onClick={() => onTab("drk")}>
-          🎯 DRK Keywords
-          {Object.keys(nameKeywordDrk).length + Object.keys(domainKeywordDrk).length > 0 && (
-            <span className="kw-tab-count">
-              {Object.keys(nameKeywordDrk).length + Object.keys(domainKeywordDrk).length}
-            </span>
-          )}
+        <button className={`kw-tab-btn ${activeTab === "assetNames" ? "active" : ""}`} onClick={() => onTab("assetNames")}>
+          🏷️ Asset Names
+          {(assetNameIndividualKw.length + assetNameDomainKw.length) > 0 && <span className="kw-tab-count">{assetNameIndividualKw.length + assetNameDomainKw.length}</span>}
         </button>
       </div>
-      {activeTab === "names" && (
+      {/* All panels stay mounted regardless of which tab is active --
+          only hidden via CSS, not unmounted -- so switching tabs mid-edit
+          never discards an in-progress bulk-paste textarea or the
+          single-keyword input's partially-typed text. */}
+      <div style={{ display: activeTab === "names" ? "block" : "none" }}>
         <ChipInput
           chips={nameKeywords}
           onAdd={onAddName}
@@ -310,8 +212,8 @@ function KeywordTabs({
           placeholder="type a person's name, press Enter…"
           disabled={disabled}
         />
-      )}
-      {activeTab === "domain" && (
+      </div>
+      <div style={{ display: activeTab === "domain" ? "block" : "none" }}>
         <ChipInput
           chips={domainKeywords}
           onAdd={onAddDomain}
@@ -319,18 +221,34 @@ function KeywordTabs({
           placeholder="type a brand/domain keyword, press Enter…"
           disabled={disabled}
         />
-      )}
-      {activeTab === "drk" && (
-        <DrkKeywordsPanel
-          nameKeywords={nameKeywords}
-          domainKeywords={domainKeywords}
-          nameKeywordDrk={nameKeywordDrk}
-          domainKeywordDrk={domainKeywordDrk}
-          onNameDrkChange={onNameDrkChange}
-          onDomainDrkChange={onDomainDrkChange}
-          disabled={disabled}
-        />
-      )}
+      </div>
+      <div style={{ display: activeTab === "assetNames" ? "block" : "none" }}>
+        <div style={{ marginTop: "12px", fontSize: "12px", color: "var(--text-dim)" }}>
+          Asset Name choices for the analysis view dropdown.
+        </div>
+        <div style={{ display: "flex", gap: "20px", marginTop: "12px" }}>
+          <div style={{ flex: 1 }}>
+            <label className="field-label">Individual Names</label>
+            <ChipInput
+              chips={assetNameIndividualKw}
+              onAdd={onAddAssetIndividual}
+              onRemove={onRemoveAssetIndividual}
+              placeholder="asset name for individuals…"
+              disabled={disabled}
+            />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label className="field-label">Domain Names</label>
+            <ChipInput
+              chips={assetNameDomainKw}
+              onAdd={onAddAssetDomain}
+              onRemove={onRemoveAssetDomain}
+              placeholder="asset name for domains…"
+              disabled={disabled}
+            />
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -416,6 +334,22 @@ function PlatformLimitsEditor({
 
 const EMPTY_FORM = { id: "", name: "", domain: "", nameKw: [] as string[], domainKw: [] as string[], cron: "" };
 
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+function parseCronSchedule(cron: string): { mode: "none" | "daily" | "weekly" | "custom"; hour: number; weekday: number } {
+  const trimmed = cron.trim();
+  if (!trimmed) return { mode: "none", hour: 2, weekday: 0 };
+  const daily = trimmed.match(/^0 (\d{1,2}) \* \* \*$/);
+  if (daily) return { mode: "daily", hour: Number(daily[1]), weekday: 0 };
+  const weekly = trimmed.match(/^0 (\d{1,2}) \* \* (\d)$/);
+  if (weekly) return { mode: "weekly", hour: Number(weekly[1]), weekday: Number(weekly[2]) };
+  return { mode: "custom", hour: 2, weekday: 0 };
+}
+
+function buildCronSchedule(mode: "daily" | "weekly", hour: number, weekday: number): string {
+  return mode === "daily" ? `0 ${hour} * * *` : `0 ${hour} * * ${weekday}`;
+}
+
 export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, analysisBusy, onJobs, onError }: Props) {
   const [clients, setClients] = useState<Client[]>([]);
   const [loadingClients, setLoadingClients] = useState(true);
@@ -427,10 +361,11 @@ export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, 
   const [idInput, setIdInput] = useState(EMPTY_FORM.id);
   const [nameInput, setNameInput] = useState(EMPTY_FORM.name);
   const [domainInput, setDomainInput] = useState(EMPTY_FORM.domain);
+  const [logoUrlInput, setLogoUrlInput] = useState("");
   const [nameKeywords, setNameKeywords] = useState<string[]>(EMPTY_FORM.nameKw);
   const [domainKeywords, setDomainKeywords] = useState<string[]>(EMPTY_FORM.domainKw);
-  const [nameKeywordDrk, setNameKeywordDrk] = useState<Record<string, string>>({});
-  const [domainKeywordDrk, setDomainKeywordDrk] = useState<Record<string, string>>({});
+  const [assetNameIndividualKw, setAssetNameIndividualKw] = useState<string[]>([]);
+  const [assetNameDomainKw, setAssetNameDomainKw] = useState<string[]>([]);
   const [platformLimits, setPlatformLimits] = useState<Record<string, string>>({});
   const [facebookTabLimits, setFacebookTabLimits] = useState<{ people: string; pages: string }>({
     people: "",
@@ -442,6 +377,18 @@ export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, 
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [deleting, setDeleting] = useState(false);
+
+  // Platform scope for the Sweep and Re-run Analysis actions -- "" is the
+  // "All Platforms" choice (the previous, only, behavior: every ready
+  // platform swept/analysed in one job). Set to one platform id to scope
+  // that single run to just that platform; every other platform is left
+  // untouched, and its own session doesn't need to be ready. Kept as two
+  // separate selections since an analyst commonly wants to sweep one
+  // platform right after fixing its session while leaving the others on
+  // their normal "All Platforms" cadence, and re-run analysis for a
+  // different one entirely.
+  const [sweepPlatform, setSweepPlatform] = useState("");
+  const [analysisPlatform, setAnalysisPlatform] = useState("");
 
   const refreshClients = useCallback(() => {
     setLoadingClients(true);
@@ -461,10 +408,11 @@ export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, 
     setIdInput(c.client_id);
     setNameInput(c.name);
     setDomainInput(c.domain || "");
+    setLogoUrlInput(c.logo_url || "");
     setNameKeywords(c.name_keywords || []);
     setDomainKeywords(c.domain_keywords || []);
-    setNameKeywordDrk(c.name_keyword_drk || {});
-    setDomainKeywordDrk(c.domain_keyword_drk || {});
+    setAssetNameIndividualKw(c.asset_name_individual_keywords || []);
+    setAssetNameDomainKw(c.asset_name_domain_keywords || []);
     setPlatformLimits(
       Object.fromEntries(Object.entries(c.platform_limits || {}).map(([k, v]) => [k, String(v)])),
     );
@@ -480,10 +428,11 @@ export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, 
     setIdInput(EMPTY_FORM.id);
     setNameInput(EMPTY_FORM.name);
     setDomainInput(EMPTY_FORM.domain);
+    setLogoUrlInput("");
     setNameKeywords(EMPTY_FORM.nameKw);
     setDomainKeywords(EMPTY_FORM.domainKw);
-    setNameKeywordDrk({});
-    setDomainKeywordDrk({});
+    setAssetNameIndividualKw([]);
+    setAssetNameDomainKw([]);
     setPlatformLimits({});
     setFacebookTabLimits({ people: "", pages: "" });
     setCron(EMPTY_FORM.cron);
@@ -508,9 +457,16 @@ export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, 
     setActiveClient(null);
     setEditing(false);
     clearForm();
+    setSweepPlatform("");
+    setAnalysisPlatform("");
   };
 
   const selectSavedClient = (id: string) => {
+    // a platform scope picked for a different client must not silently
+    // carry over -- "sweep only Telegram" meant for client A should never
+    // fire against client B just because the selector still held that value
+    setSweepPlatform("");
+    setAnalysisPlatform("");
     if (!id) {
       setActiveClient(null);
       setEditing(false);
@@ -559,24 +515,15 @@ export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, 
         const n = Number(raw);
         if (raw.trim() && Number.isFinite(n) && n > 0) fbTabLimits[tab] = Math.floor(n);
       }
-      // only keep DRK overrides for keywords that still exist, with
-      // non-blank text -- a blank override is the same as no override
-      const cleanDrk = (drk: Record<string, string>, keywords: string[]): Record<string, string> => {
-        const kws = new Set(keywords);
-        const out: Record<string, string> = {};
-        for (const [kw, v] of Object.entries(drk)) {
-          if (kws.has(kw) && v.trim()) out[kw] = v.trim();
-        }
-        return out;
-      };
       const client = await clientsApi.upsertClient({
         client_id: id,
         name,
         domain: domainInput.trim(),
+        logo_url: logoUrlInput.trim(),
         name_keywords: nameKeywords,
         domain_keywords: domainKeywords,
-        name_keyword_drk: cleanDrk(nameKeywordDrk, nameKeywords),
-        domain_keyword_drk: cleanDrk(domainKeywordDrk, domainKeywords),
+        asset_name_individual_keywords: assetNameIndividualKw,
+        asset_name_domain_keywords: assetNameDomainKw,
         platform_limits: parsedLimits,
         platform_tab_limits: Object.keys(fbTabLimits).length ? { facebook: fbTabLimits } : {},
         cron: cron.trim() || null,
@@ -606,7 +553,20 @@ export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, 
     try {
       const { job_id } = await discoveryApi.discover({
         client_id: activeClient.client_id,
-        keywords: [...(activeClient.name_keywords || []), ...(activeClient.domain_keywords || [])],
+        // case-insensitive dedup here too, not just on add (see
+        // dedupeKeywordsCaseInsensitive above) -- this covers an already-
+        // affected saved client (like this one) immediately, without
+        // requiring the analyst to first go edit and remove the duplicate
+        // chip by hand, AND it catches the same literal keyword existing
+        // in both the name and domain lists (a real, if less common,
+        // second way to end up sweeping the same term twice).
+        keywords: dedupeKeywordsCaseInsensitive([
+          ...(activeClient.name_keywords || []),
+          ...(activeClient.domain_keywords || []),
+        ]),
+        // "" -> omitted -> every ready platform (unchanged default);
+        // a specific id scopes the sweep to just that one platform
+        platform: sweepPlatform || undefined,
       });
       const job = await jobsApi.job(job_id);
       onJobs([job]);
@@ -615,10 +575,41 @@ export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, 
     }
   };
 
+  const sweepPlatformName = sweepPlatform
+    ? platforms.find((p) => p.platform === sweepPlatform)?.name || sweepPlatform
+    : "";
+  const analysisPlatformName = analysisPlatform
+    ? platforms.find((p) => p.platform === analysisPlatform)?.name || analysisPlatform
+    : "";
+
   const handleRunAnalysis = async () => {
     if (!activeClient) return;
+    // Always a FORCED re-run (force: true): without it, clicking this
+    // button after the auto-trigger-on-approve (or the 20-minute catch-up
+    // sweep) had already cleared the normal backlog to zero did nothing at
+    // all -- the job would immediately report "nothing to analyse, already
+    // up to date" -- which read as the button being broken. force=true
+    // re-scrapes every currently-approved profile for this client
+    // regardless of whether an earlier run already scored it, so an
+    // explicit click here always does real work as long as anything is
+    // approved. Confirmed first since it means visiting every one of them
+    // again, not a free action.
+    const scope = analysisPlatformName ? `on ${analysisPlatformName}` : "across every ready platform";
+    if (
+      !window.confirm(
+        `Re-run analysis for every validated profile of "${activeClient.name || activeClient.client_id}" ${scope}, including ones already analysed? This re-scrapes each one again.`,
+      )
+    ) {
+      return;
+    }
     try {
-      const { job_id } = await analysisApi.analyse({ client_id: activeClient.client_id });
+      const { job_id } = await analysisApi.analyse({
+        client_id: activeClient.client_id,
+        force: true,
+        // "" -> omitted -> every ready platform; a specific id scopes the
+        // re-run to just that one platform
+        platform: analysisPlatform || undefined,
+      });
       const job = await jobsApi.job(job_id);
       onJobs([job]);
     } catch (e) {
@@ -659,7 +650,20 @@ export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, 
           <button className={`mode-tab-btn ${mode === "create" ? "active" : ""}`} onClick={switchToCreate}>
             ➕ Create Client
           </button>
-          <button className={`mode-tab-btn ${mode === "select" ? "active" : ""}`} onClick={() => setMode("select")}>
+          <button
+            className={`mode-tab-btn ${mode === "select" ? "active" : ""}`}
+            onClick={() => {
+              if (!activeClient && clientId) {
+                const existing = clients.find((c) => c.client_id === clientId);
+                if (existing) {
+                  setActiveClient(existing);
+                  loadIntoForm(existing);
+                  setEditing(false);
+                }
+              }
+              setMode("select");
+            }}
+          >
             📂 Select Saved Client
           </button>
         </div>
@@ -724,22 +728,89 @@ export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, 
               </div>
             </div>
 
+            {/* "All Platforms" (blank) is the default and previous-only
+                behavior -- every ready platform swept in one job. Picking
+                one platform here scopes JUST this run to it; every other
+                platform is left untouched and doesn't need its own session
+                to be ready. Independent of the Analysis selector below --
+                an analyst commonly wants to fix and re-sweep one platform's
+                session without touching the others' normal cadence. */}
+            <div style={{ marginBottom: "8px" }}>
+              <label className="field-label" style={{ fontSize: "11px" }}>
+                🎯 Sweep Platform
+              </label>
+              <select
+                className="client-select-input"
+                style={{ marginTop: "5px", width: "100%" }}
+                value={sweepPlatform}
+                onChange={(e) => setSweepPlatform(e.target.value)}
+                disabled={busy}
+                title="Which platform(s) Search This Client sweeps"
+              >
+                <option value="">🌐 All Platforms</option>
+                {platforms.map((p) => (
+                  <option key={p.platform} value={p.platform}>
+                    {p.name}
+                    {p.session_state !== "ready" ? ` (${p.session_state})` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             <button
               className="btn-cyber-primary"
               disabled={busy || !activeKeywordCount}
               onClick={handleSearch}
-              title="Sweeps every ready platform for this client's combined name + domain keywords"
+              title={
+                sweepPlatformName
+                  ? `Sweeps ONLY ${sweepPlatformName} for this client's combined name + domain keywords`
+                  : "Sweeps every ready platform for this client's combined name + domain keywords"
+              }
             >
-              {busy ? "⚡ Discovery Sweep Running…" : "🔍 Search This Client"}
+              {busy
+                ? "⚡ Discovery Sweep Running…"
+                : sweepPlatformName
+                  ? `🔍 Search This Client (${sweepPlatformName})`
+                  : "🔍 Search This Client"}
             </button>
+
+            <div style={{ marginTop: "12px", marginBottom: "8px" }}>
+              <label className="field-label" style={{ fontSize: "11px" }}>
+                🎯 Analysis Platform
+              </label>
+              <select
+                className="client-select-input"
+                style={{ marginTop: "5px", width: "100%" }}
+                value={analysisPlatform}
+                onChange={(e) => setAnalysisPlatform(e.target.value)}
+                disabled={analysisBusy}
+                title="Which platform(s) Re-run Analysis re-analyses"
+              >
+                <option value="">🌐 All Platforms</option>
+                {platforms.map((p) => (
+                  <option key={p.platform} value={p.platform}>
+                    {p.name}
+                    {p.session_state !== "ready" ? ` (${p.session_state})` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
 
             <button
               className="btn-secondary-action"
               disabled={analysisBusy}
               onClick={handleRunAnalysis}
-              title="Analyses every already-validated, not-yet-analysed profile for this client across every platform"
+              title={
+                analysisPlatformName
+                  ? `Re-analyses EVERY validated profile on ${analysisPlatformName} only, including ones already analysed -- always does a fresh pass`
+                  : "Re-analyses EVERY validated profile for this client across every ready platform, including ones already analysed -- always does a fresh pass, not just a catch-up on what's new"
+              }
             >
-              {analysisBusy ? "🧪 Analysis Running…" : "🧪 Analyse Validated Profiles (catch-up)"}
+              {analysisBusy
+                ? "🧪 Analysis Running…"
+                : analysisPlatformName
+                  ? `🔁 Re-run Analysis (${analysisPlatformName})`
+                  : "🔁 Re-run Analysis (All Validated)"}
             </button>
 
             <div style={{ marginTop: "14px", textAlign: "right" }}>
@@ -782,6 +853,13 @@ export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, 
                   placeholder="🌐 domain, e.g. xyz.com…"
                   className="client-select-input"
                 />
+                <input
+                  value={logoUrlInput}
+                  onChange={(e) => setLogoUrlInput(e.target.value)}
+                  placeholder="🖼️ real brand logo URL (optional) — shown side-by-side during analysis review…"
+                  className="client-select-input"
+                  title="Shown next to a discovered profile's avatar during triage, so you don't have to open a separate tab to compare"
+                />
               </div>
             </div>
 
@@ -790,34 +868,16 @@ export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, 
               onTab={setActiveTab}
               nameKeywords={nameKeywords}
               domainKeywords={domainKeywords}
-              onAddName={(v) => setNameKeywords((prev) => (prev.includes(v) ? prev : [...prev, v]))}
-              onRemoveName={(i) =>
-                setNameKeywords((prev) => {
-                  const removed = prev[i];
-                  setNameKeywordDrk((drk) => {
-                    if (!(removed in drk)) return drk;
-                    const { [removed]: _drop, ...rest } = drk;
-                    return rest;
-                  });
-                  return prev.filter((_, idx) => idx !== i);
-                })
-              }
-              onAddDomain={(v) => setDomainKeywords((prev) => (prev.includes(v) ? prev : [...prev, v]))}
-              onRemoveDomain={(i) =>
-                setDomainKeywords((prev) => {
-                  const removed = prev[i];
-                  setDomainKeywordDrk((drk) => {
-                    if (!(removed in drk)) return drk;
-                    const { [removed]: _drop, ...rest } = drk;
-                    return rest;
-                  });
-                  return prev.filter((_, idx) => idx !== i);
-                })
-              }
-              nameKeywordDrk={nameKeywordDrk}
-              domainKeywordDrk={domainKeywordDrk}
-              onNameDrkChange={(kw, v) => setNameKeywordDrk((prev) => ({ ...prev, [kw]: v }))}
-              onDomainDrkChange={(kw, v) => setDomainKeywordDrk((prev) => ({ ...prev, [kw]: v }))}
+              onAddName={(v) => setNameKeywords((prev) => (prev.some((k) => k.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]))}
+              onRemoveName={(i) => setNameKeywords((prev) => prev.filter((_, idx) => idx !== i))}
+              onAddDomain={(v) => setDomainKeywords((prev) => (prev.some((k) => k.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]))}
+              onRemoveDomain={(i) => setDomainKeywords((prev) => prev.filter((_, idx) => idx !== i))}
+              assetNameIndividualKw={assetNameIndividualKw}
+              assetNameDomainKw={assetNameDomainKw}
+              onAddAssetIndividual={(v) => setAssetNameIndividualKw((prev) => (prev.some((k) => k.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]))}
+              onRemoveAssetIndividual={(i) => setAssetNameIndividualKw((prev) => prev.filter((_, idx) => idx !== i))}
+              onAddAssetDomain={(v) => setAssetNameDomainKw((prev) => (prev.some((k) => k.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]))}
+              onRemoveAssetDomain={(i) => setAssetNameDomainKw((prev) => prev.filter((_, idx) => idx !== i))}
               disabled={busy}
             />
 
@@ -832,23 +892,71 @@ export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, 
 
             <div style={{ marginTop: "20px" }}>
               <label className="field-label">⏱️ Recurring Schedule (optional)</label>
-              <input
-                value={cron}
-                onChange={(e) => setCron(e.target.value)}
-                placeholder="cron expression, e.g. 0 2 * * * — blank disables"
-                style={{
-                  marginTop: "7px",
-                  width: "100%",
+              {(() => {
+                const parsed = parseCronSchedule(cron);
+                const selectStyle = {
                   background: "var(--bg-inner)",
                   border: "1px solid var(--border-color)",
                   borderRadius: "10px",
                   padding: "10px 12px",
                   color: "var(--text-main)",
                   fontSize: "12px",
-                  fontFamily: "var(--font-mono)",
                   outline: "none",
-                }}
-              />
+                } as const;
+                return (
+                  <div style={{ marginTop: "7px", display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <select
+                      value={parsed.mode}
+                      onChange={(e) => {
+                        const mode = e.target.value as "none" | "daily" | "weekly" | "custom";
+                        if (mode === "none") setCron("");
+                        else if (mode === "custom") setCron(cron.trim() || "0 2 * * *");
+                        else setCron(buildCronSchedule(mode, parsed.hour, parsed.weekday));
+                      }}
+                      style={{ ...selectStyle, width: "100%" }}
+                    >
+                      <option value="none">No recurring schedule</option>
+                      <option value="daily">Daily</option>
+                      <option value="weekly">Weekly</option>
+                      <option value="custom">Custom (cron expression)</option>
+                    </select>
+
+                    {(parsed.mode === "daily" || parsed.mode === "weekly") && (
+                      <div style={{ display: "flex", gap: "8px" }}>
+                        {parsed.mode === "weekly" && (
+                          <select
+                            value={parsed.weekday}
+                            onChange={(e) => setCron(buildCronSchedule("weekly", parsed.hour, Number(e.target.value)))}
+                            style={{ ...selectStyle, flex: 1 }}
+                          >
+                            {WEEKDAYS.map((d, i) => (
+                              <option key={d} value={i}>{d}</option>
+                            ))}
+                          </select>
+                        )}
+                        <select
+                          value={parsed.hour}
+                          onChange={(e) => setCron(buildCronSchedule(parsed.mode as "daily" | "weekly", Number(e.target.value), parsed.weekday))}
+                          style={{ ...selectStyle, flex: 1 }}
+                        >
+                          {Array.from({ length: 24 }, (_, h) => (
+                            <option key={h} value={h}>{`${String(h).padStart(2, "0")}:00`}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+                    {parsed.mode === "custom" && (
+                      <input
+                        value={cron}
+                        onChange={(e) => setCron(e.target.value)}
+                        placeholder="cron expression, e.g. 0 2 * * * — blank disables"
+                        style={{ ...selectStyle, width: "100%", fontFamily: "var(--font-mono)" }}
+                      />
+                    )}
+                  </div>
+                );
+              })()}
             </div>
 
             <button

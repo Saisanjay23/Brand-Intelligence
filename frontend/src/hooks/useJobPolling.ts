@@ -5,6 +5,38 @@ import type { Job, JobEvent, PlatformProgress } from "../api/types";
 const TERMINAL = new Set(["done", "failed", "cancelled"]);
 const POLL_MS = 2000;
 
+// A discovery/analysis sweep can run 20-40 minutes -- previously the only
+// way to know it finished was to keep the tab open and watch the progress
+// bar, or periodically tab back in to check. `watch()` is always called
+// right after the analyst clicks Search/Analyse, which is exactly the kind
+// of user gesture browsers require before `Notification.requestPermission`
+// will actually prompt (calling it unprompted on page load would just get
+// silently ignored or auto-denied).
+function ensureNotificationPermission(): void {
+  if (typeof Notification === "undefined" || Notification.permission !== "default") return;
+  Notification.requestPermission().catch(() => {});
+}
+
+function notifyJobFinished(job: Job): void {
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+  // An analyst actively watching the live progress bar doesn't need a
+  // popup duplicating what's already on screen -- only notify if they've
+  // tabbed away, which is the actual pain point ("no idea when results are
+  // ready" after switching tabs).
+  if (typeof document !== "undefined" && document.visibilityState === "visible" && document.hasFocus()) return;
+  const kind = job.kind === "discovery" ? "Discovery sweep" : "Analysis run";
+  const outcome = job.status === "done" ? "finished" : job.status === "failed" ? "failed" : "was cancelled";
+  try {
+    new Notification(`${kind} ${outcome}`, {
+      body: `${job.platform ?? "All platforms"} · ${job.found} found${job.new_profiles ? ` (${job.new_profiles} new)` : ""}`,
+      tag: job.id,
+    });
+  } catch {
+    // Notification can throw in contexts that don't actually support it
+    // despite the permission grant (e.g. some in-app webviews) -- non-fatal
+  }
+}
+
 // Replaces the old WebSocket-driven useMultiJob: this backend dropped
 // WebSocket progress in favor of polling + webhook (see
 // backend/docs/adr/0002-polling-plus-webhook-over-websocket.md), so a
@@ -19,12 +51,26 @@ export function useJobPolling(onFinish?: () => void, onItem?: () => void) {
   const item = useRef(onItem);
   item.current = onItem;
 
+  // `clearTimeout` only cancels a *scheduled* poll -- it can't stop one
+  // already in flight (mid-`await`). Each job's poll loop is tagged with an
+  // epoch that's bumped whenever the loop is (re)started for that job id;
+  // a loop whose epoch no longer matches when its await resolves knows it's
+  // stale -- superseded by a newer watch() call, or torn down on unmount --
+  // and neither applies its result nor reschedules itself. Without this, an
+  // in-flight poll from a torn-down/superseded loop would setState after
+  // unmount and/or re-arm a second concurrent timer for the same job id,
+  // double-applying the same event batch into the log.
+  const epochs = useRef<Record<string, number>>({});
+  const mounted = useRef(true);
+
   const stopAll = useCallback(() => {
+    mounted.current = false;
     Object.values(timers.current).forEach(clearTimeout);
     timers.current = {};
   }, []);
 
   const watch = useCallback((newJobs: Job[]) => {
+    ensureNotificationPermission();
     setJobs((prev) => {
       const next = { ...prev };
       newJobs.forEach((j) => (next[j.id] = j));
@@ -39,6 +85,8 @@ export function useJobPolling(onFinish?: () => void, onItem?: () => void) {
     newJobs.forEach((j) => {
       if (timers.current[j.id]) clearTimeout(timers.current[j.id]);
       seqs.current[j.id] = j.last_seq || 0;
+      const myEpoch = (epochs.current[j.id] = (epochs.current[j.id] || 0) + 1);
+      const stale = () => !mounted.current || epochs.current[j.id] !== myEpoch;
 
       const poll = async () => {
         try {
@@ -46,6 +94,7 @@ export function useJobPolling(onFinish?: () => void, onItem?: () => void) {
             jobsApi.job(j.id),
             jobsApi.jobEvents(j.id, seqs.current[j.id] || 0),
           ]);
+          if (stale()) return;
           setJobs((prev) => ({ ...prev, [j.id]: updated }));
 
           if (events.items.length) {
@@ -59,19 +108,24 @@ export function useJobPolling(onFinish?: () => void, onItem?: () => void) {
 
           if (TERMINAL.has(updated.status)) {
             delete timers.current[j.id];
+            notifyJobFinished(updated);
             finish.current?.();
             return;
           }
         } catch {
           // transient fetch failure -- keep polling rather than giving up
         }
+        if (stale()) return;
         timers.current[j.id] = setTimeout(poll, POLL_MS);
       };
       timers.current[j.id] = setTimeout(poll, POLL_MS);
     });
   }, []);
 
-  useEffect(() => stopAll, [stopAll]);
+  useEffect(() => {
+    mounted.current = true;
+    return stopAll;
+  }, [stopAll]);
 
   const activeJobs = Object.values(jobs).filter((j) => !TERMINAL.has(j.status));
   const running = activeJobs.length > 0;

@@ -27,3 +27,13 @@ export const post = (path: string, body: unknown) =>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+
+// Same error-shape handling as `json<T>`, but for an endpoint whose success
+// body is a binary file (e.g. a generated .xlsx) rather than JSON.
+export async function blob(res: Response): Promise<Blob> {
+  if (!res.ok) {
+    const d = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(d.detail ?? `request failed (${res.status})`);
+  }
+  return res.blob();
+}

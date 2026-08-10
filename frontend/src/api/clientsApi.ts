@@ -10,20 +10,22 @@ export const clientsApi = {
     client_id: string;
     name: string;
     domain?: string;
+    logo_url?: string;
     name_keywords?: string[];
     domain_keywords?: string[];
-    name_keyword_drk?: Record<string, string>;
-    domain_keyword_drk?: Record<string, string>;
+    asset_name_individual_keywords?: string[];
+    asset_name_domain_keywords?: string[];
     platform_limits?: Record<string, number>;
     platform_tab_limits?: Record<string, Record<string, number>>;
     cron?: string | null;
   }) =>
     post("/clients", {
       domain: "",
+      logo_url: "",
       name_keywords: [],
       domain_keywords: [],
-      name_keyword_drk: {},
-      domain_keyword_drk: {},
+      asset_name_individual_keywords: [],
+      asset_name_domain_keywords: [],
       platform_limits: {},
       platform_tab_limits: {},
       ...body,

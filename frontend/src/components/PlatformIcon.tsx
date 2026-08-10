@@ -91,16 +91,6 @@ export function PlatformIcon({ platform, size = 20, color }: Props) {
           />
         </svg>
       );
-    case "linkedin":
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-          <rect width="24" height="24" rx="5" fill={color || "#0A66C2"} />
-          <path
-            d="M7.1 9.6H4.4V19H7.1V9.6zM5.75 8.4A1.55 1.55 0 1 0 5.76 5.3a1.55 1.55 0 0 0-.01 3.1zM19.6 19v-5.2c0-2.78-1.48-4.07-3.46-4.07-1.6 0-2.31.88-2.71 1.5V9.6H10.7c.04.8 0 9.4 0 9.4h2.73v-5.25c0-.28.02-.56.1-.76.23-.56.75-1.15 1.63-1.15 1.15 0 1.6.88 1.6 2.16V19h2.84z"
-            fill="#fff"
-          />
-        </svg>
-      );
     default:
       return <span>🌐</span>;
   }

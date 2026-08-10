@@ -143,6 +143,8 @@ describe("validate / reject -- optimistic update and rollback", () => {
     render(<ResultsGrid {...baseProps()} />);
 
     await screen.findByText("Test Channel");
+    // status filter now defaults to "" (all) rather than "pending" -- no
+    // chip click needed to keep an optimistically-updated row visible
     await user.click(screen.getByTitle("Table view"));
     const row = (await screen.findByText("Test Channel")).closest("tr")!;
     // scoped to the row -- the status filter chips above the table also
@@ -170,6 +172,8 @@ describe("validate / reject -- optimistic update and rollback", () => {
     render(<ResultsGrid {...baseProps({ onError })} />);
 
     await screen.findByText("Test Channel");
+    // status filter now defaults to "" (all) rather than "pending" -- no
+    // chip click needed to keep the row visible through the rollback
     await user.click(screen.getByTitle("Table view"));
     const row = (await screen.findByText("Test Channel")).closest("tr")!;
     // scoped to the row -- the status filter chips above the table also
@@ -200,7 +204,7 @@ describe("phase toggle", () => {
     );
   });
 
-  it("shows the RiskScore column only in the analysis view", async () => {
+  it("shows the Risk column only in the analysis view", async () => {
     const user = userEvent.setup();
     vi.mocked(api.profiles).mockResolvedValue({
       items: [makeProfile({ phase: "analysis", username: "testchannel" })],
@@ -210,6 +214,6 @@ describe("phase toggle", () => {
     await user.click(screen.getByText("Analysis"));
     // analysis has no card/table toggle -- it's table-only (see ResultsGrid.tsx)
 
-    expect(await screen.findByText("RiskScore")).toBeInTheDocument();
+    expect(await screen.findByText("Risk")).toBeInTheDocument();
   });
 });

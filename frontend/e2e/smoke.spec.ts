@@ -10,7 +10,7 @@
  * /discovery` always sweeps every platform with a ready session in a single
  * job (see backend/api/routes_discovery.py). There is no way to trigger
  * discovery from the UI without also firing it at whichever of
- * Facebook/Instagram/Twitter/LinkedIn happen to have a live session
+ * Facebook/Instagram/Twitter happen to have a live session
  * configured -- exactly the real-account risk this project has otherwise
  * been careful to avoid running unattended. Until the backend grows a way to
  * scope a sweep to one platform again, this suite stays read-only: it

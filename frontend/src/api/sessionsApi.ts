@@ -1,8 +1,8 @@
 // API calls for the backend's sessions module (backend/api/session_routes.py).
-// One call per platform id (facebook/twitter/instagram/youtube/telegram/
-// linkedin) -- the backend has no per-platform route, `platform` is always
-// a parameter here, not a separate resource, so this one file covers every
-// platform's session/credential management rather than one file each.
+// One call per platform id (facebook/twitter/instagram/youtube/telegram) --
+// the backend has no per-platform route, `platform` is always a parameter
+// here, not a separate resource, so this one file covers every platform's
+// session/credential management rather than one file each.
 import { json, post, url } from "./httpClient";
 import type { SessionInfo } from "./types";
 
@@ -12,8 +12,18 @@ export const sessionsApi = {
   sessionStatus: (platform: string) => fetch(url(`/sessions/${platform}`)).then(json<SessionInfo>),
   saveCookies: (platform: string, blob: string, identifier = "") =>
     post(`/sessions/${platform}/cookies`, { blob, identifier }).then(json<SessionInfo>),
-  saveApiKey: (platform: string, key: string) =>
-    post(`/sessions/${platform}/api-key`, { key }).then(json<SessionInfo>),
+  saveApiKey: (platform: string, key: string, identifier = "") =>
+    post(`/sessions/${platform}/api-key`, { key, identifier }).then(json<SessionInfo>),
+  updateSessionItem: (
+    platform: string,
+    sessionId: string,
+    body: { blob?: string; api_key?: string; identifier?: string },
+  ) =>
+    fetch(url(`/sessions/${platform}/${sessionId}`), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(json<SessionInfo>),
   launchLogin: (platform: string, timeoutS = 300, identifier = "") =>
     post(`/sessions/${platform}/login`, { timeout_s: timeoutS, identifier }).then(
       json<{ platform: string; status: string; message: string; started: string; finished: string }>,

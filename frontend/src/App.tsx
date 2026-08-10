@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Toaster } from "react-hot-toast";
 import { healthApi } from "./api/healthApi";
 import { sessionsApi } from "./api/sessionsApi";
 import type { Job, PlatformHealth, SessionInfo } from "./api/types";
@@ -7,6 +8,7 @@ import { AppLayout } from "./layouts/AppLayout";
 import { DashboardView } from "./pages/DashboardView";
 import { HomeView } from "./pages/HomeView";
 import { LiveResultsView } from "./pages/LiveResultsView";
+import { ProxyPanel } from "./pages/ProxyPanel";
 import { SessionPanel } from "./pages/SessionPanel";
 import { useJobPolling } from "./hooks/useJobPolling";
 import { loadRecentClients, rememberClient, forgetClient, type RecentClient } from "./services/recentClients";
@@ -120,7 +122,6 @@ export default function App() {
       {page === "results" && (
         <LiveResultsView
           clientId={clientId}
-          clientName={clientName}
           platforms={platforms}
           discoveryRunning={discoveryJobs.running}
           discoveryLog={discoveryJobs.log}
@@ -143,6 +144,20 @@ export default function App() {
       )}
 
       {page === "sessions" && <SessionPanel sessions={sessions} onChanged={refreshSessions} />}
+      {page === "proxies" && <ProxyPanel sessions={sessions} onChanged={refreshSessions} />}
+      <Toaster 
+        position="bottom-right" 
+        toastOptions={{ 
+          style: { 
+            background: 'rgba(16, 24, 40, 0.95)', 
+            color: '#fff', 
+            backdropFilter: 'blur(10px)',
+            border: '1px solid var(--border-subtle)',
+            fontSize: '13px',
+            fontFamily: 'var(--font-main)'
+          }
+        }} 
+      />
     </AppLayout>
   );
 }

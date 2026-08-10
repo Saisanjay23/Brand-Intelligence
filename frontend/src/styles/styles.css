@@ -1083,7 +1083,7 @@ a:hover {
 
 .platform-rail-grid {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 16px;
   margin-bottom: 20px;
 }
@@ -1699,6 +1699,32 @@ a:hover {
   border-left-color: var(--cyan);
 }
 
+/* Actions column is the last one in a wide, horizontally-scrollable table
+   (many analysis-only columns before it) -- pin it so Edit/Publish/Reject
+   stay reachable without scrolling all the way right. */
+.core_table-actions-cell {
+  position: sticky;
+  right: 0;
+  background: var(--bg-app);
+  box-shadow: -6px 0 8px -6px rgba(0, 0, 0, 0.4);
+  z-index: 1;
+}
+.core_table thead tr th.core_table-actions-cell {
+  z-index: 2;
+}
+.core_table tbody tr:hover td.core_table-actions-cell {
+  background: var(--bg-surface);
+}
+
+.table-name-truncate {
+  display: inline-block;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
 /* severity dot -- red/orange/yellow risk scale, replacing the old red/
    orange/green so Low genuinely reads as "lowest tier of risk", not "safe" */
 .sev-dot {
@@ -1858,4 +1884,216 @@ a:hover {
 }
 .phase-tab.active .phase-tab-count {
   background: rgba(136, 56, 221, 0.18); color: var(--cyan);
+}
+
+/* Aesthetic table actions for Analysis View */
+.table-btn-edit:hover {
+  background: linear-gradient(135deg, rgba(0, 229, 255, 0.25), rgba(0, 184, 212, 0.12)) !important;
+  box-shadow: 0 4px 12px rgba(0, 229, 255, 0.25) !important;
+  transform: translateY(-1px);
+  border-color: rgba(0, 229, 255, 0.6) !important;
+}
+.table-btn-publish:hover {
+  background: linear-gradient(135deg, rgba(136, 56, 221, 0.35), rgba(0, 229, 255, 0.3)) !important;
+  box-shadow: 0 4px 16px rgba(0, 229, 255, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.3) !important;
+  transform: translateY(-1px);
+  border-color: #00E5FF !important;
+}
+.table-btn-reject:hover {
+  background: linear-gradient(135deg, rgba(244, 63, 94, 0.25), rgba(190, 24, 93, 0.12)) !important;
+  box-shadow: 0 4px 12px rgba(244, 63, 94, 0.25) !important;
+  transform: translateY(-1px);
+  border-color: rgba(244, 63, 94, 0.6) !important;
+}
+.table-btn-edit:active, .table-btn-publish:active, .table-btn-reject:active {
+  transform: translateY(0);
+}
+
+/* Skeleton Loader */
+@keyframes shimmer {
+  0% {
+    background-position: -1000px 0;
+  }
+  100% {
+    background-position: 1000px 0;
+  }
+}
+
+.skeleton-row {
+  height: 52px;
+  margin-bottom: 8px;
+  border-radius: 8px;
+  background: linear-gradient(to right, rgba(255,255,255,0.03) 8%, rgba(255,255,255,0.08) 18%, rgba(255,255,255,0.03) 33%);
+  background-size: 1000px 100%;
+  animation: shimmer 2.5s infinite linear forwards;
+}
+
+/* Glassmorphism for Table Headers */
+table th {
+  background: rgba(16, 24, 40, 0.75) !important;
+  backdrop-filter: blur(12px) !important;
+  -webkit-backdrop-filter: blur(12px) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+/* Glassmorphism for Edit Drawer */
+div[role="dialog"] > div {
+  backdrop-filter: blur(20px) !important;
+  -webkit-backdrop-filter: blur(20px) !important;
+  background: rgba(22, 30, 46, 0.85) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+/* ── evidence capture (analysis view) ──────────────────────────────────────
+   The screenshot analysis took while it was reading the profile. This is
+   the deliverable an impersonation report is built on -- the account is
+   usually suspended or deleted long before anyone acts on the finding -- so
+   it sits at the top of the incident panel rather than behind a toggle. */
+
+.evidence-block {
+  padding: 10px 12px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.evidence-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.evidence-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.evidence-when {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.evidence-download {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--cyan-bright);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.evidence-download:hover {
+  text-decoration: underline;
+}
+
+.evidence-thumb {
+  display: block;
+  width: 100%;
+  /* Reserve the space BEFORE the image loads. Without a min-height an
+     unloaded <img> collapses to ~0px, which both looks broken mid-load and
+     (worse) can stop a lazy-loaded image from ever being fetched, because a
+     zero-height box never meaningfully enters the viewport. */
+  min-height: 180px;
+  max-height: 220px;
+  object-fit: cover;
+  object-position: top center; /* the profile header is the evidentiary part */
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-inner);
+  cursor: zoom-in;
+}
+
+.evidence-thumb:hover {
+  border-color: var(--cyan);
+}
+
+.evidence-empty {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 11px;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.evidence-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: rgba(0, 0, 0, 0.85);
+  cursor: zoom-out;
+}
+
+.evidence-lightbox img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6);
+}
+
+.evidence-close {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  color: var(--text-main);
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.evidence-close:hover {
+  border-color: var(--cyan);
+}
+
+/* ── coverage banner ───────────────────────────────────────────────────────
+   "Did we actually check everything?" -- volume counts can't answer it, and
+   an approved profile that silently fell out of the analysis queue is the
+   worst thing this tool can do quietly. */
+
+.coverage-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  border-radius: 9px;
+  font-size: 12px;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.08);
+  color: #fbbf24;
+}
+
+.coverage-banner.coverage-blocked {
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.08);
+  color: #fca5a5;
+}
+
+.coverage-banner-detail {
+  color: var(--text-dim);
+}
+
+.coverage-banner button {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 11px;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 0;
 }

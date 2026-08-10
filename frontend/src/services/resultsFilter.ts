@@ -96,6 +96,28 @@ export interface ExtraFilters {
   // Facebook-discovery-only people/pages filter -- entity_type is blank
   // on every other platform, so this is a no-op there.
   entityType?: "" | "profile" | "page";
+  // Individual-name-keyword vs domain-keyword match, classified the same
+  // way services/incident_publisher.py::_category_and_asset_name does --
+  // by set-membership against the client's own configured keyword lists,
+  // not a stored per-profile field. Available in both discovery and
+  // analysis views.
+  keywordMatchType?: "" | "individual" | "domain";
+}
+
+/** The client's own configured keyword lists, used only to classify which
+ * category (individual vs domain) a row's matched keyword(s) fall under
+ * for `keywordMatchType` filtering -- see `ExtraFilters.keywordMatchType`. */
+export interface ClientKeywordSets {
+  nameKeywords: Set<string>;
+  domainKeywords: Set<string>;
+}
+
+/** A row's matched keyword string(s), independent of phase: discovery rows
+ * carry every keyword sweep that found them as an array, analysis rows
+ * carry a single comma-joined string. */
+function rowMatchedKeywords(r: Profile): string[] {
+  if (r.phase === "discovery") return r.keywords || [];
+  return (r.keyword || "").split(",").map((s) => s.trim()).filter(Boolean);
 }
 
 export type SortOrder = "recent" | "past";
@@ -152,17 +174,31 @@ export function reachLabel(): "followers" {
   return "followers";
 }
 
-/** One unified filter pass over the rows already in memory -- no tabs, no
- * network round trip per toggle. Every predicate is independent (AND logic). */
+/** A DEFENSIVE second pass over rows the server has already filtered.
+ *
+ * Every predicate here now has a server-side counterpart applied before
+ * limit/offset (see profilesApi.profiles and backend profile_repository.find),
+ * because a filter that only narrows the current page is not a filter: the
+ * pager kept reporting the unfiltered total, so "High priority" over 500
+ * rows showed the High rows within page 1 and still claimed 500 results.
+ *
+ * This is kept, rather than deleted, for the window where local state is
+ * ahead of the server -- an optimistic status change applied before its
+ * PATCH lands, or rows already in memory during a live-poll refresh. It
+ * must stay a strict subset of what the server does, or it will hide rows
+ * the server legitimately returned.
+ *
+ * Every predicate is independent (AND logic). */
 export function filterResults(
   rows: Profile[],
   filters: ResultFilters,
   extra: ExtraFilters,
   platform?: string,
+  clientKeywords?: ClientKeywordSets,
 ): Profile[] {
   return rows.filter((r) => {
     if (platform && platform !== "all" && r.platform !== platform) return false;
-    if (filters.phase !== "analysis" && filters.status && r.status !== filters.status) return false;
+    if (filters.status && r.status !== filters.status) return false;
     if (filters.priority && r.priority !== filters.priority) return false;
     if (filters.phase) {
       if (filters.phase === "discovery") {
@@ -198,6 +234,12 @@ export function filterResults(
 
     if (extra.entityType && r.entity_type !== extra.entityType) return false;
 
+    if (extra.keywordMatchType && clientKeywords) {
+      const matched = rowMatchedKeywords(r);
+      const set = extra.keywordMatchType === "individual" ? clientKeywords.nameKeywords : clientKeywords.domainKeywords;
+      if (!matched.some((k) => set.has(k))) return false;
+    }
+
     if (extra.searchQuery.trim()) {
       const q = extra.searchQuery.toLowerCase();
       const nameMatch = profileName(r).toLowerCase().includes(q);
@@ -209,37 +251,45 @@ export function filterResults(
   });
 }
 
-/** "recent" = highest risk first, "past" = lowest first. Does not mutate the
- * input array. `phase`/`activeKeyword` are only meaningful for Discovery:
- * that's the one view with no risk score to sort by, so it sorts by keyword
- * relevance instead.
+/** The number the Analysis table actually SHOWS in its Risk column.
  *
- * `status === "rejected"` is a deliberate exception to that: the server
- * already returns rejected rows most-recently-rejected first (rejected_at
- * desc, see profile_repository.py::find), and that decision order is the
- * one thing an analyst reviewing rejections actually wants preserved --
- * re-sorting by keyword relevance here would silently undo it. */
+ * There are two separate risk rubrics, deliberately (see
+ * backend/shared/models/scoring.py vs incident_scoring.py): `risk_score` is
+ * the tool's internal 2-9 triage score, `incident.riskRating` is the
+ * client-facing rating that gets published. The table renders the latter --
+ * so sorting on the former produced a Risk column that visibly wasn't
+ * sorted. Sort on what is displayed, and fall back to the internal score
+ * only for a row with no incident preview (a missing client record). */
+function displayedRisk(r: Profile): number {
+  const rating = r.incident?.riskRating;
+  const parsed = rating === undefined || rating === null ? NaN : Number(rating);
+  return Number.isFinite(parsed) ? parsed : r.risk_score || 0;
+}
+
+/** "recent" = highest risk first, "past" = lowest first for Analysis.
+ * Discovery is left exactly as the server returned it -- deliberately no
+ * client-side re-sort at all. That server order is the same order Facebook
+ * itself rendered the result (see profile_repository.py::find, ascending
+ * _id == insertion order == the order each platform actually returned
+ * results; and backend/platforms/facebook/discovery_engine.py::sweep,
+ * which now preserves true page-by-page order rather than a per-page-local
+ * rank). Re-sorting here by a relevance heuristic -- which this function
+ * used to do -- meant the UI never actually showed "what a real user sees
+ * searching Facebook themselves", regardless of how faithfully the backend
+ * scraped and stored that order; the card list just imposed its own
+ * ordering on top of it. Does not mutate the input array. */
 export function sortResults(
   rows: Profile[],
   order: SortOrder,
   phase?: string,
-  activeKeyword?: string,
-  status?: string,
+  _activeKeyword?: string,
+  _status?: string,
 ): Profile[] {
-  if (phase === "discovery" && status === "rejected") return rows;
-  if (phase === "discovery") {
-    return [...rows].sort((a, b) => {
-      const ra = keywordRelevance(a, activeKeyword);
-      const rb = keywordRelevance(b, activeKeyword);
-      if (ra !== rb) return ra - rb;
-      if (a.has_logo !== b.has_logo) return a.has_logo ? -1 : 1;
-      return 0;
-    });
-  }
+  if (phase === "discovery") return rows;
   return [...rows].sort((a, b) =>
     order === "recent"
-      ? (b.risk_score || 0) - (a.risk_score || 0)
-      : (a.risk_score || 0) - (b.risk_score || 0),
+      ? displayedRisk(b) - displayedRisk(a)
+      : displayedRisk(a) - displayedRisk(b),
   );
 }
 
@@ -249,13 +299,65 @@ export function applyFilters(
   extra: ExtraFilters,
   order: SortOrder,
   platform?: string,
+  clientKeywords?: ClientKeywordSets,
 ): Profile[] {
   return sortResults(
-    filterResults(rows, filters, extra, platform),
+    filterResults(rows, filters, extra, platform, clientKeywords),
     order,
     filters.phase,
     extra.keywordFilter,
   );
+}
+
+// Mirrors backend/shared/models/incident_scoring.py::compute_incident_risk_score
+// exactly (additive scale, logo floor of 6) plus incident_publisher.py's
+// `_is_active` (last post within ACTIVE_WINDOW_DAYS) -- used to recompute
+// the analysis table's Risk badge the instant an analyst toggles Username
+// Match or Logo Match, rather than waiting on a round trip or the 3s poll
+// for the server's own recompute to show up. The PATCH response still wins
+// once it lands (see ResultsGrid.tsx::saveProfileField), so this is purely
+// an instant preview, never the source of truth.
+const ACTIVE_WINDOW_DAYS = 183;
+
+function isRecentIso(iso: string | null | undefined, days: number): boolean {
+  if (!iso) return false;
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return false;
+  return (Date.now() - t) / 86400000 < days;
+}
+
+export function computeIncidentRiskScorePreview(input: {
+  logoMatch: boolean;
+  usernameMatch: boolean;
+  followers: number | null | undefined;
+  location: string | null | undefined;
+  lastPostDate: string | null | undefined;
+}): number {
+  const isActive = isRecentIso(input.lastPostDate, ACTIVE_WINDOW_DAYS);
+
+  // 1. Active account with both Logo and Username match -> 9
+  if (isActive && input.logoMatch && input.usernameMatch) {
+    return 9;
+  }
+
+  // 2. Inactive account with both Logo and Username match + Location -> 8
+  if (!isActive && input.logoMatch && input.usernameMatch && !!input.location) {
+    return 8;
+  }
+
+  // 3. Inactive account with both Logo and Username match, no location -> 7
+  if (input.logoMatch && input.usernameMatch) {
+    return 7;
+  }
+
+  // 4. Partial match (either Logo OR Username match)
+  if (input.logoMatch || input.usernameMatch) {
+    const hasMetadata = isActive || !!input.location || (input.followers !== null && input.followers !== undefined) || !!input.lastPostDate;
+    return hasMetadata ? 4 : 3;
+  }
+
+  // 5. Neither logo nor username match -> 2
+  return 2;
 }
 
 // Telegram has no location concept at all for users/channels/groups, and
@@ -281,12 +383,25 @@ export function ageLabel(iso?: string | null): string {
   return `${Math.floor(seconds / (86400 * 365))}y ago`;
 }
 
+// An analysis outcome meaning the profile was never actually read, so an
+// empty field says nothing about the profile. Mirrors the backend's
+// RETRYABLE_ANALYSIS_STATUSES.
+const NEVER_READ = new Set(["ERROR", "CHECKPOINT", "LOGIN_REQUIRED"]);
+
+export function analysisWasBlocked(r: Profile): boolean {
+  return !!r.analysis_status && NEVER_READ.has(r.analysis_status);
+}
+
 export function emptyLabel(
   r: Profile,
   platform: string,
   field: "followers" | "location" | "last_post_date",
 ): string {
   if (r.phase === "discovery") return "not analysed yet";
+  // A blocked run is the reason this cell is empty -- saying "not exposed
+  // by this platform" there would blame the platform for a session problem
+  // and read as a settled fact about the profile.
+  if (analysisWasBlocked(r)) return "analysis could not read this profile";
   if (NOT_EXPOSED[field]?.has(platform)) {
     return "not exposed by this platform";
   }

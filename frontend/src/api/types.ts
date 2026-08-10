@@ -17,15 +17,13 @@ export interface Client {
   client_id: string;
   name: string;
   domain: string;
+  // optional URL of the brand's own real logo -- shown side-by-side with a
+  // discovered profile's avatar during analysis triage.
+  logo_url?: string;
   name_keywords: string[];
   domain_keywords: string[];
-  // optional per-keyword "Digital Risk Keyword" display-name override,
-  // keyed by the literal keyword string -- if set, this is what shows as
-  // the published incident's assetName for a profile matched under that
-  // keyword; a keyword absent here keeps the default (the matched name
-  // keyword itself, or the client's own name for a domain keyword).
-  name_keyword_drk?: Record<string, string>;
-  domain_keyword_drk?: Record<string, string>;
+  asset_name_individual_keywords?: string[];
+  asset_name_domain_keywords?: string[];
   // platform id -> max results to scrape for this client. Missing (or 0)
   // means uncapped -- "scrape all" for that platform.
   platform_limits: Record<string, number>;
@@ -37,7 +35,16 @@ export interface Client {
   created_at?: string;
 }
 
-export type PlatformJobStatus = "pending" | "running" | "done" | "failed";
+// Four distinct not-successful outcomes, because each calls for a different
+// next step:
+//   skipped -- never attempted; its session wasn't ready when the sweep
+//              started. Fix the session under Sessions.
+//   partial -- started and covered only some of what was asked (a cap fired,
+//              the session pool ran dry mid-run, a sweep stalled). The job's
+//              `message` says which. Re-run to pick up the remainder.
+//   failed  -- started and broke outright.
+//   done    -- everything asked for was actually attempted.
+export type PlatformJobStatus = "pending" | "running" | "done" | "partial" | "failed" | "skipped";
 
 export interface PlatformProgress {
   status: PlatformJobStatus;
@@ -63,7 +70,15 @@ export interface Job {
   started: string;
   finished: string;
   last_seq: number;
+  // oldest event still retained server-side (the per-job event buffer is a
+  // ring -- see MAX_EVENTS_PER_JOB). A client resuming from an after_seq
+  // below this missed a range rather than receiving a silently short stream.
+  first_seq?: number;
   platforms: Record<string, PlatformProgress>;
+  // set only while status="queued" and something else holds this job's
+  // platform lock -- turns an unexplained "queued" into "waiting on
+  // client X's Facebook sweep" (see job_service.py's per-platform lock).
+  blocked_by?: { job_id: string; client_id: string; kind: JobKind; platform: string | null } | null;
 }
 
 export interface JobEvent {
@@ -108,6 +123,13 @@ export interface Profile {
   // Validate action -- carried through to the analysis-phase record too
   logo_match?: boolean | null;
   username_match?: boolean | null;
+  // set only on a profile a rediscovery just bounced from "rejected" back
+  // to "pending" because its display name and/or logo actually changed
+  // (see backend/database/repositories/profile_repository.py's
+  // RECONSIDER_FIELDS) -- {field: {old, new}}. Cleared the moment the
+  // analyst makes a fresh decision.
+  changes?: Record<string, { old: unknown; new: unknown }> | null;
+  changed_at?: string | null;
   // full fields (phase=analysis)
   client_id?: string;
   client_name?: string;
@@ -117,9 +139,24 @@ export interface Profile {
   last_post_date?: string | null;
   // publish hold (phase=analysis only) -- see backend/docs/adr/0007-publish-hold.md.
   // A row missing these (discovery-phase, or analysed before this feature
-  // existed) should be treated as already published.
+  // existed) should be treated as already published. The hold now genuinely
+  // EXPIRES on its own once publish_hold_until passes; publishing early is
+  // what the Publish action is for.
   published?: boolean;
   publish_hold_until?: string | null;
+  // Evidence capture taken while analysis was reading the profile -- often
+  // the only surviving proof the account existed by the time a takedown
+  // request is actually read. Null when no capture was taken (evidence
+  // disabled, an API-only platform like YouTube/Telegram, or a run that
+  // never reached the profile). Append ?download=true for an attachment.
+  screenshot_url?: string | null;
+  screenshot_at?: string | null;
+  // "OK" | "PARTIAL" | "GONE" | "ERROR" | "CHECKPOINT" | "LOGIN_REQUIRED".
+  // The last three mean the profile was never actually read -- the run is
+  // retried automatically until analysis_attempts hits the server's cap.
+  analysis_status?: string;
+  analysis_attempts?: number;
+  analysed_at?: string | null;
   // live preview of the exact record Publish writes to published_incidents
   // (see backend/services/incident_publisher.py) -- analysis phase only,
   // null when the client record is gone. Editable pre-publish via
@@ -157,6 +194,35 @@ export interface PublishedIncidentPreview {
   assetName: string;
   thirdParty: boolean;
   socialProfileInfo: PublishedIncidentSocialProfileInfo;
+  // how much of this record rests on something actually read
+  evidence?: {
+    screenshot: boolean;
+    fieldsRead: number;
+    analysisStatus: string;
+  };
+}
+
+// GET /profiles/coverage -- "did we actually check everything?", which
+// volume counts alone can't answer. `complete` is false while anything is
+// still owed or was permanently given up on.
+export interface Coverage {
+  approved: number;
+  analysed: number;
+  awaiting_analysis: number;
+  analysis_failed: number;
+  held: number;
+  with_evidence: number;
+  complete: boolean;
+  // profiles that will NOT be retried without intervention
+  blocked: {
+    id: string;
+    url: string;
+    platform: string;
+    profile_name: string;
+    reason: string;
+    attempts: number;
+    detail: string;
+  }[];
 }
 
 export interface ProfilePatch {
@@ -183,12 +249,25 @@ export interface SessionItem {
   last_used: number;
   cookie_count: number;
   proxy_host: string;
+  is_api_key?: boolean;
+  // consecutive failures since this session last demonstrably worked --
+  // drives the graduated quarantine ladder (15m -> 1h -> 6h -> 24h), so a
+  // count of 1 is a blip and 4 is a probably-burned account
+  consecutive_failures?: number;
+  // server-computed "could a job use this right now": not dead, and past
+  // any cooldown. Distinct from `status` alone.
+  available?: boolean;
 }
 
 export interface SessionInfo {
   platform: string;
   name: string;
-  state: "ready" | "missing" | "incomplete" | "unreadable" | "expired" | "checkpointed";
+  // "exhausted" = a complete, valid session exists but every one is
+  // quarantined or cooling off right now. Distinct from "incomplete" (a
+  // botched cookie export) because the fix differs: wait, or add another
+  // account. This state used to be reported as "ready", so a fully dead
+  // pool showed green while every job launched into it failed.
+  state: "ready" | "missing" | "incomplete" | "exhausted" | "unreadable" | "expired" | "checkpointed";
   kind: "cookies" | "api-key" | "mtproto";
   can_login: boolean;
   cookie_count: number;
@@ -216,6 +295,13 @@ export interface PlatformHealth {
   total: number;
   last_error: string;
   last_seen: number;
+  // an inherent caveat about this platform's scraping surface -- was
+  // tracked in the backend registry but never actually surfaced anywhere.
+  // Empty when there's none.
+  stability_note?: string;
+  // true when field-scraping during analysis isn't implemented -- running
+  // analysis silently produces nothing useful. Surfaced so the UI can warn before, not after.
+  analysis_stub?: boolean;
 }
 
 export interface Incident {

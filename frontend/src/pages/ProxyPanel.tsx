@@ -1,0 +1,349 @@
+// Dedicated Proxy Configuration tab -- pulled out of Sessions on purpose
+// (see the app's nav) rather than folded into it, so proxy assignment
+// isn't buried behind the credential-management modal. Every write here
+// goes through the SAME backend routes SessionPanel's proxy fields would
+// have used (PUT/DELETE /sessions/{platform}/{id}/proxy) -- this page adds
+// no new API surface, just a UI for one that existed but had none.
+//
+// "Universal" input: one text box accepts a proxy string in whichever
+// shape the analyst's provider actually handed them (host:port,
+// host:port:user:pass, user:pass@host:port, scheme://host:port, ...) --
+// see services/proxyParser.ts for the exact grammar and
+// backend/sessions/manager.py::_validate_proxy for the server-side
+// backstop on whatever this parses to.
+import { useState } from "react";
+import { sessionsApi } from "../api/sessionsApi";
+import type { SessionInfo, SessionItem } from "../api/types";
+import { PlatformIcon } from "../components/PlatformIcon";
+import {
+  ALLOWED_PROXY_SCHEMES,
+  PROXY_FORMAT_EXAMPLES,
+  describeParsedProxy,
+  parseProxyString,
+  type ParsedProxy,
+} from "../services/proxyParser";
+
+interface Props {
+  sessions: SessionInfo[];
+  onChanged: () => void;
+}
+
+// A per-session proxy is a Playwright context-launch option -- it only
+// means anything for the platforms that actually route through
+// sessions/manager.py::session_for_job's cookie branch. YouTube (a REST
+// API call, no browser) and Telegram (Telethon/MTProto, its own separate
+// proxy mechanism) never read this field at all; the backend now refuses
+// to store one for them (see manager.py::set_proxy's kind-gate) -- this
+// mirrors that gate in the UI so the control is never offered where it
+// would silently do nothing.
+function supportsProxy(kind: SessionInfo["kind"]): boolean {
+  return kind === "cookies";
+}
+
+function cooldownLabel(rateLimitedUntil: number | undefined): string {
+  if (!rateLimitedUntil) return "";
+  const remainingMs = rateLimitedUntil * 1000 - Date.now();
+  if (remainingMs <= 0) return "";
+  const hours = Math.floor(remainingMs / 3600000);
+  const mins = Math.round((remainingMs % 3600000) / 60000);
+  if (hours > 0) return `~${hours}h${mins ? ` ${mins}m` : ""}`;
+  return `~${Math.max(1, mins)}m`;
+}
+
+export function ProxyPanel({ sessions, onChanged }: Props) {
+  const [busyId, setBusyId] = useState<string>(""); // `${platform}:${sessionId}`
+  const [error, setError] = useState<string>("");
+  const [editing, setEditing] = useState<string>(""); // same key, "" = none open
+  const [rawInput, setRawInput] = useState<string>("");
+  const [timezoneId, setTimezoneId] = useState<string>("");
+  const [showFormats, setShowFormats] = useState(false);
+
+  const parsed: ParsedProxy | null = editing ? parseProxyString(rawInput) : null;
+  const showParseError = editing && rawInput.trim().length > 0 && !parsed;
+
+  const openEditor = (platform: string, sessionId: string) => {
+    const key = `${platform}:${sessionId}`;
+    setEditing(key);
+    setRawInput("");
+    setTimezoneId("");
+    setError("");
+  };
+
+  const closeEditor = () => {
+    setEditing("");
+    setRawInput("");
+    setTimezoneId("");
+  };
+
+  const run = async (key: string, fn: () => Promise<unknown>) => {
+    setBusyId(key);
+    setError("");
+    try {
+      await fn();
+      onChanged();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusyId("");
+    }
+  };
+
+  const saveProxy = (platform: string, sessionId: string) => {
+    if (!parsed) return;
+    const key = `${platform}:${sessionId}`;
+    run(key, () =>
+      sessionsApi.setSessionProxy(platform, sessionId, {
+        server: parsed.server,
+        username: parsed.username,
+        password: parsed.password,
+        timezone_id: timezoneId.trim() || undefined,
+      }),
+    ).then(() => closeEditor());
+  };
+
+  const clearProxy = (platform: string, sessionId: string) => {
+    const key = `${platform}:${sessionId}`;
+    run(key, () => sessionsApi.clearSessionProxy(platform, sessionId));
+  };
+
+  const checkSession = (platform: string) => {
+    run(`check:${platform}`, () => sessionsApi.checkSessionNow(platform));
+  };
+
+  const proxyCapable = sessions.filter((s) => supportsProxy(s.kind));
+  const notApplicable = sessions.filter((s) => !supportsProxy(s.kind));
+
+  return (
+    <div style={{ padding: "24px", color: "var(--text-main, #f2f4f7)", maxWidth: "1200px", margin: "0 auto" }}>
+      <div style={{ marginBottom: "20px" }}>
+        <h1 style={{ fontSize: "22px", fontWeight: 700, color: "var(--text-primary, #fff)", margin: 0, letterSpacing: "-0.3px" }}>
+          🌐 Proxy Configuration
+        </h1>
+        <p style={{ fontSize: "13px", color: "var(--text-muted, #98a2b3)", margin: "4px 0 0 0" }}>
+          Each pooled session can exit through its own proxy instead of every account in the pool sharing
+          this machine's IP -- itself a correlation signal across "different" accounts. Paste a proxy
+          string in whatever format your provider gave you.
+        </p>
+      </div>
+
+      {error && (
+        <div style={{
+          padding: "10px 16px", background: "rgba(233, 80, 83,0.1)", border: "1px solid rgba(233, 80, 83,0.25)",
+          color: "var(--danger)", borderRadius: "10px", marginBottom: "16px", fontSize: "13px",
+          display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px",
+        }}>
+          <span>⚠️ {error}</span>
+          <button onClick={() => setError("")} style={{ background: "transparent", border: "none", color: "inherit", cursor: "pointer", fontSize: "14px", fontWeight: 700 }}>
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Universal-format help -- collapsed by default, one click away */}
+      <div style={{
+        background: "var(--bg-surface, #1e2837)", border: "1px solid var(--border-color, #344054)",
+        borderRadius: "10px", marginBottom: "20px", overflow: "hidden",
+      }}>
+        <button
+          onClick={() => setShowFormats((v) => !v)}
+          style={{
+            width: "100%", textAlign: "left", padding: "10px 14px", background: "transparent", border: "none",
+            color: "var(--text-primary, #fff)", fontSize: "12px", fontWeight: 600, cursor: "pointer",
+            display: "flex", justifyContent: "space-between", alignItems: "center",
+          }}
+        >
+          <span>📋 Accepted proxy formats ({ALLOWED_PROXY_SCHEMES.join(", ")})</span>
+          <span>{showFormats ? "▾" : "▸"}</span>
+        </button>
+        {showFormats && (
+          <div style={{ padding: "0 14px 14px", display: "flex", flexDirection: "column", gap: "6px" }}>
+            {PROXY_FORMAT_EXAMPLES.map((f) => (
+              <div key={f.example} style={{ display: "flex", gap: "10px", fontSize: "12px", alignItems: "baseline" }}>
+                <code style={{
+                  background: "var(--bg-app, #101828)", padding: "2px 8px", borderRadius: "5px",
+                  color: "var(--cyan-bright, #9a50e9)", fontFamily: "var(--font-mono, monospace)",
+                }}>
+                  {f.example}
+                </code>
+                <span style={{ color: "var(--text-muted, #98a2b3)" }}>{f.label}</span>
+              </div>
+            ))}
+            <div style={{ fontSize: "11px", color: "var(--text-muted, #98a2b3)", marginTop: "4px" }}>
+              Scheme defaults to <code>http</code> when omitted. Credentials are never echoed back once saved --
+              only the host is shown afterward.
+            </div>
+          </div>
+        )}
+      </div>
+
+      {proxyCapable.map((s) => (
+        <div key={s.platform} style={{
+          background: "var(--bg-surface, #1e2837)", border: "1px solid var(--border-color, #344054)",
+          borderRadius: "12px", padding: "16px", marginBottom: "16px",
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "12px" }}>
+            <PlatformIcon platform={s.platform} size={24} />
+            <div style={{ fontSize: "15px", fontWeight: 700, color: "var(--text-primary, #fff)" }}>{s.name}</div>
+            <div style={{ fontSize: "11px", color: "var(--text-muted, #98a2b3)" }}>
+              {s.sessions.length} session{s.sessions.length === 1 ? "" : "s"} in pool
+            </div>
+            <button
+              onClick={() => checkSession(s.platform)}
+              disabled={busyId === `check:${s.platform}` || s.state === "missing"}
+              title="Runs a live check against this platform's current session -- confirms a newly-set proxy actually lets the session through"
+              style={{
+                marginLeft: "auto", padding: "5px 10px", borderRadius: "6px", fontSize: "11px", fontWeight: 600,
+                background: "var(--bg-surface-3, #344054)", border: "1px solid var(--border-color, #344054)",
+                color: "var(--text-primary, #fff)", cursor: "pointer",
+              }}
+            >
+              {busyId === `check:${s.platform}` ? "Checking…" : "🔄 Check Session"}
+            </button>
+          </div>
+
+          {!s.sessions.length ? (
+            <div style={{ padding: "16px", textAlign: "center", fontSize: "12px", color: "var(--text-muted, #98a2b3)" }}>
+              No sessions in this platform's pool yet -- add one under Sessions first.
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              {s.sessions.map((item: SessionItem, idx: number) => {
+                const key = `${s.platform}:${item.id}`;
+                const isEditing = editing === key;
+                const isBusy = busyId === key;
+                const cooldown = cooldownLabel(item.rate_limited_until);
+                return (
+                  <div key={item.id} style={{
+                    background: "var(--bg-surface-alt, #1d2939)", border: "1px solid var(--border-color, #344054)",
+                    borderRadius: "8px", padding: "10px 12px",
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                      <span style={{
+                        fontSize: "10px", fontWeight: 700, color: "var(--text-muted, #98a2b3)",
+                        background: "var(--bg-app, #101828)", padding: "1px 5px", borderRadius: "3px",
+                      }}>
+                        #{idx + 1}
+                      </span>
+                      <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--text-primary, #fff)" }}>
+                        {item.identifier || `Account ${idx + 1}`}
+                      </span>
+                      {item.available === false && (
+                        <span style={{ fontSize: "10px", color: "var(--danger, #F04438)" }}>
+                          ⛔ {item.status}{cooldown ? ` · cooling off ${cooldown}` : ""}
+                        </span>
+                      )}
+                      <span style={{ flex: 1 }} />
+                      <span style={{ fontSize: "12px", color: item.proxy_host ? "var(--text-primary, #fff)" : "var(--text-muted, #98a2b3)" }}>
+                        {item.proxy_host ? `🌐 ${item.proxy_host}` : "no proxy set (direct)"}
+                      </span>
+                      <button
+                        onClick={() => (isEditing ? closeEditor() : openEditor(s.platform, item.id))}
+                        disabled={isBusy}
+                        style={{
+                          padding: "4px 9px", borderRadius: "5px", fontSize: "11px", fontWeight: 600,
+                          background: "var(--bg-surface-3, #344054)", border: "1px solid var(--border-color, #344054)",
+                          color: "var(--text-primary, #fff)", cursor: "pointer",
+                        }}
+                      >
+                        {isEditing ? "Cancel" : item.proxy_host ? "Change" : "Set Proxy"}
+                      </button>
+                      {item.proxy_host && (
+                        <button
+                          onClick={() => clearProxy(s.platform, item.id)}
+                          disabled={isBusy}
+                          title="Remove this session's proxy -- it will exit through this machine's own IP instead"
+                          style={{
+                            padding: "4px 9px", borderRadius: "5px", fontSize: "11px", fontWeight: 600,
+                            background: "transparent", border: "1px solid var(--border-color, #344054)",
+                            color: "var(--danger, #F04438)", cursor: "pointer",
+                          }}
+                        >
+                          {isBusy ? "…" : "Clear"}
+                        </button>
+                      )}
+                    </div>
+
+                    {isEditing && (
+                      <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid var(--border-color, #344054)" }}>
+                        <input
+                          autoFocus
+                          value={rawInput}
+                          onChange={(e) => setRawInput(e.target.value)}
+                          placeholder="paste any proxy string -- host:port, user:pass@host:port, socks5://host:port, ..."
+                          style={{
+                            width: "100%", background: "var(--bg-app, #101828)", border: "1px solid var(--border-color, #344054)",
+                            borderRadius: "7px", color: "var(--text-primary, #fff)", fontSize: "12px",
+                            fontFamily: "var(--font-mono, monospace)", padding: "8px 10px", outline: "none", boxSizing: "border-box",
+                          }}
+                        />
+                        <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "8px", flexWrap: "wrap" }}>
+                          <input
+                            value={timezoneId}
+                            onChange={(e) => setTimezoneId(e.target.value)}
+                            placeholder="IANA timezone (optional, e.g. America/New_York)"
+                            title="Spoofs the browser's reported timezone to match the proxy's exit location, so an IP that geolocates to New York doesn't show up alongside a browser reporting Asia/Kolkata -- a fingerprint mismatch that's a giveaway on its own"
+                            style={{
+                              flex: 1, minWidth: "220px", background: "var(--bg-app, #101828)", border: "1px solid var(--border-color, #344054)",
+                              borderRadius: "7px", color: "var(--text-primary, #fff)", fontSize: "12px", padding: "7px 10px",
+                              outline: "none", boxSizing: "border-box",
+                            }}
+                          />
+                          <button
+                            onClick={() => saveProxy(s.platform, item.id)}
+                            disabled={!parsed || isBusy}
+                            style={{
+                              padding: "7px 16px", borderRadius: "7px", fontSize: "12px", fontWeight: 600,
+                              background: parsed ? "var(--primary, #8838dd)" : "var(--bg-surface-3, #344054)",
+                              border: "none", color: "#fff", cursor: parsed ? "pointer" : "not-allowed",
+                            }}
+                          >
+                            {isBusy ? "Saving…" : "Save"}
+                          </button>
+                        </div>
+                        <div style={{ marginTop: "6px", fontSize: "11px" }}>
+                          {parsed && (
+                            <span style={{ color: "var(--success, #12B76A)" }}>
+                              ✓ parsed as {describeParsedProxy(parsed)}
+                            </span>
+                          )}
+                          {showParseError && (
+                            <span style={{ color: "var(--danger, #F04438)" }}>
+                              ✕ couldn't parse that as a proxy -- see the format list above
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ))}
+
+      {notApplicable.length > 0 && (
+        <div style={{
+          background: "var(--bg-surface-alt, #1d2939)", border: "1px dashed var(--border-color, #344054)",
+          borderRadius: "10px", padding: "14px 16px", fontSize: "12px", color: "var(--text-muted, #98a2b3)",
+        }}>
+          <div style={{ fontWeight: 600, color: "var(--text-primary, #fff)", marginBottom: "6px" }}>
+            Not applicable to every platform
+          </div>
+          {notApplicable.map((s) => (
+            <div key={s.platform} style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+              <PlatformIcon platform={s.platform} size={16} />
+              <span>
+                <strong style={{ color: "var(--text-primary, #fff)" }}>{s.name}</strong>
+                {" — "}
+                {s.kind === "api-key"
+                  ? "reached through its own API directly, no browser session to route through a proxy"
+                  : "connects via its own protocol client (Telethon/MTProto), which has a separate proxy mechanism this page doesn't manage"}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}

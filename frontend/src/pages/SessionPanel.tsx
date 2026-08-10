@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from "react";
+import { useState, type CSSProperties, type FC } from "react";
 import { sessionsApi } from "../api/sessionsApi";
 import type { SessionInfo } from "../api/types";
 
@@ -7,780 +7,726 @@ interface Props {
   onChanged: () => void;
 }
 
-// Shared field/button looks for the credential-entry drawers (cookie paste,
-// YouTube API key, Telegram login wizard) so each one isn't hand-rolling
-// the same style object.
-const inputStyle: CSSProperties = {
-  width: "100%",
-  background: "var(--bg-inner)",
-  border: "1px solid var(--border-color)",
-  borderRadius: "9px",
-  color: "var(--text-main)",
-  fontSize: "12px",
-  padding: "9px 10px",
-  outline: "none",
-};
+interface ModalState {
+  isOpen: boolean;
+  platform?: SessionInfo;
+  mode: "create" | "update";
+  targetSession?: { id: string; identifier: string; isApiKey?: boolean };
+}
 
-const primaryButtonStyle: CSSProperties = {
-  width: "100%",
-  marginTop: "8px",
-  padding: "9px",
-  borderRadius: "9px",
-  fontSize: "12px",
-  fontWeight: 700,
-  cursor: "pointer",
-  background: "linear-gradient(135deg, var(--cyan), var(--cyan-bright))",
-  color: "#000",
-  border: "none",
-};
+function getPlatformIcon(platform: string): string {
+  switch (platform) {
+    case "facebook": return "📘";
+    case "instagram": return "📸";
+    case "twitter": return "𝕏";
+    case "youtube": return "▶️";
+    case "telegram": return "✈️";
+    default: return "🌐";
+  }
+}
 
-const cancelButtonStyle: CSSProperties = {
-  width: "100%",
-  padding: "8px",
-  borderRadius: "9px",
-  fontSize: "11px",
-  fontWeight: 600,
-  cursor: "pointer",
-  background: "rgba(233, 80, 83,0.08)",
-  color: "var(--danger)",
-  border: "1px solid rgba(233, 80, 83,0.18)",
-};
+function cooldownLabel(rateLimitedUntil: number | undefined): string {
+  if (!rateLimitedUntil) return "";
+  const remainingMs = rateLimitedUntil * 1000 - Date.now();
+  if (remainingMs <= 0) return "";
+  const hours = Math.floor(remainingMs / 3600000);
+  const mins = Math.round((remainingMs % 3600000) / 60000);
+  if (hours > 0) return `cooldown ~${hours}h${mins ? ` ${mins}m` : ""}`;
+  return `cooldown ~${Math.max(1, mins)}m`;
+}
+
+const embeddedStyles = `
+@keyframes modalPopIn {
+  from { opacity: 0; transform: scale(0.96) translateY(-6px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.tab-btn {
+  transition: all 0.2s ease;
+}
+.tab-btn:hover {
+  background: var(--bg-hover, #344054);
+  color: var(--text-primary, #ffffff);
+}
+
+.action-btn {
+  transition: all 0.2s ease;
+}
+.action-btn:hover {
+  background: var(--primary, #8838dd) !important;
+  color: #ffffff !important;
+}
+`;
 
 export function SessionPanel({ sessions, onChanged }: Props) {
-  const [openCookiePlatform, setOpenCookiePlatform] = useState<string>("");
-  const [cookieBlob, setCookieBlob] = useState<string>("");
-  const [cookieIdentifier, setCookieIdentifier] = useState<string>("");
+  const [modal, setModal] = useState<ModalState>({ isOpen: false, mode: "create" });
+  const [activeTabs, setActiveTabs] = useState<Record<string, "pool" | "controls">>({});
   const [busyPlatform, setBusyPlatform] = useState<string>("");
-  const [errorNote, setErrorNote] = useState<string>("");
-  const [openYtKey, setOpenYtKey] = useState<boolean>(false);
-  const [ytApiKey, setYtApiKey] = useState<string>("");
-  // Telegram's MTProto login is a 3-step wizard (send code -> verify code ->
-  // optionally verify a 2FA password), unlike every other platform's
-  // single-shot cookie/API-key/browser-login flow -- see
-  // backend/services/telegram_login_service.py.
-  const [tgStep, setTgStep] = useState<"" | "start" | "code" | "password">("");
-  const [tgApiId, setTgApiId] = useState<string>("");
-  const [tgApiHash, setTgApiHash] = useState<string>("");
-  const [tgPhone, setTgPhone] = useState<string>("");
-  const [tgCode, setTgCode] = useState<string>("");
-  const [tgPassword, setTgPassword] = useState<string>("");
-  const [tgMessage, setTgMessage] = useState<string>("");
-  const [tgBusy, setTgBusy] = useState<boolean>(false);
-
-  const closeTelegramWizard = () => {
-    setTgStep("");
-    setTgCode("");
-    setTgPassword("");
-    setTgMessage("");
-  };
-  // Per-session proxy input, keyed by session id -- a 100-session pool can't
-  // reasonably get one text field each rendered permanently, so this is only
-  // populated for whichever session's proxy row is currently being edited.
-  const [proxyDraft, setProxyDraft] = useState<Record<string, string>>({});
-  const [proxyBusy, setProxyBusy] = useState<string>("");
+  const [globalError, setGlobalError] = useState<string>("");
 
   const handleAction = async (fn: () => Promise<unknown>, platform: string) => {
     setBusyPlatform(platform);
-    setErrorNote("");
+    setGlobalError("");
     try {
       await fn();
       onChanged();
     } catch (e) {
-      setErrorNote((e as Error).message);
+      setGlobalError((e as Error).message);
     } finally {
       setBusyPlatform("");
     }
   };
 
-  const getPlatformBadge = (s: SessionInfo) => {
-    if (s.state === "ready") {
-      return {
-        label: "ACTIVE",
-        bg: "rgba(0, 193, 77, 0.12)",
-        color: "var(--success)",
-        border: "rgba(0, 193, 77, 0.22)",
-      };
-    }
-    return {
-      label: s.state.toUpperCase(),
-      bg: "rgba(233, 80, 83, 0.12)",
-      color: "var(--danger)",
-      border: "rgba(233, 80, 83, 0.22)",
-    };
+  const setTab = (platformId: string, tab: "pool" | "controls") => {
+    setActiveTabs((prev) => ({ ...prev, [platformId]: tab }));
   };
 
   return (
-    <div style={{ animation: "fadeUp 0.4s ease" }}>
-      <h2 style={{ fontSize: "22px", fontWeight: 700, marginBottom: "4px" }}>
-        🔐 Session &amp; Authentication Manager
-      </h2>
-      <p
-        style={{
-          fontSize: "13px",
-          color: "var(--text-muted)",
-          marginBottom: "22px",
-        }}
-      >
-        Authenticate live platform sessions — choose interactive browser login,
-        paste cookie JSON, or enter API credentials.
-      </p>
+    <div style={{ padding: "24px", color: "var(--text-main, #f2f4f7)", position: "relative", maxWidth: "1600px", margin: "0 auto" }}>
+      <style>{embeddedStyles}</style>
 
-      {errorNote && (
-        <div
-          style={{
-            background: "rgba(233, 80, 83,0.1)",
-            border: "1px solid rgba(233, 80, 83,0.25)",
-            color: "var(--danger)",
-            borderRadius: "10px",
-            padding: "10px 14px",
-            marginBottom: "16px",
-            fontSize: "13px",
-          }}
-        >
-          ⚠️ {errorNote}
+      {/* Header Area */}
+      <div style={{ marginBottom: "24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div>
+          <h1 style={{ fontSize: "22px", fontWeight: 700, color: "var(--text-primary, #fff)", margin: 0, letterSpacing: "-0.3px" }}>
+            Platform Credential & Session Pool
+          </h1>
+          <p style={{ fontSize: "13px", color: "var(--text-muted, #98a2b3)", margin: "4px 0 0 0" }}>
+            Manage up to 20 accounts per platform with smart rotation during discovery sweeps.
+          </p>
         </div>
-      )}
+        {globalError && (
+          <div style={{
+            padding: "10px 16px",
+            background: "var(--bg-surface-alt, #1d2939)",
+            border: "1px solid var(--border-color, #344054)",
+            borderRadius: "8px",
+            color: "var(--text-primary, #ffffff)",
+            fontSize: "13px",
+            fontWeight: 500,
+            display: "flex",
+            alignItems: "center",
+            gap: "10px"
+          }}>
+            <span>⚠️ Notice: {globalError}</span>
+            <button
+              onClick={() => setGlobalError("")}
+              style={{ background: "transparent", border: "none", color: "#fff", cursor: "pointer", fontSize: "14px", fontWeight: 700 }}
+            >
+              ✕
+            </button>
+          </div>
+        )}
+      </div>
 
-      <div className="sessions-grid">
+      {/* Grid of Uniform Platform Modules */}
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+        gap: "16px",
+        alignItems: "stretch"
+      }}>
         {sessions.map((s) => {
-          const badge = getPlatformBadge(s);
+          const tab = activeTabs[s.platform] || "pool";
+          const poolCount = s.sessions?.length || 0;
+          const activeCount = s.sessions?.filter(x => x.status === "ready").length || 0;
+          const isAtMax = poolCount >= 20;
           const isBusy = busyPlatform === s.platform;
-          const isCookieOpen = openCookiePlatform === s.platform;
 
           return (
-            <div key={s.platform} className="session-card">
-              <div
-                style={{
+            <div
+              key={s.platform}
+              style={{
+                background: "var(--bg-surface, #1e2837)",
+                border: "1px solid var(--border-color, #344054)",
+                borderRadius: "12px",
+                padding: "14px",
+                boxShadow: "0 4px 12px rgba(0, 0, 0, 0.35)",
+                display: "flex",
+                flexDirection: "column",
+                height: "380px", /* Compact identical height for all platform modules */
+                overflow: "hidden",
+                position: "relative"
+              }}
+            >
+              {/* Platform Header */}
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "12px", flexShrink: 0 }}>
+                <div style={{
+                  width: "36px",
+                  height: "36px",
+                  borderRadius: "8px",
+                  background: "var(--bg-surface-alt, #1d2939)",
+                  border: "1px solid var(--border-subtle, rgba(255,255,255,0.08))",
                   display: "flex",
                   alignItems: "center",
-                  gap: "11px",
-                  marginBottom: "14px",
-                }}
-              >
-                <span
+                  justifyContent: "center",
+                  fontSize: "20px",
+                  flexShrink: 0
+                }}>
+                  {getPlatformIcon(s.platform)}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div title={s.name} style={{ fontSize: "16px", fontWeight: 700, color: "var(--text-primary, #fff)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {s.name}
+                  </div>
+                  <div style={{ fontSize: "11px", color: "var(--text-muted, #98a2b3)", display: "flex", alignItems: "center", gap: "5px", marginTop: "1px" }}>
+                    <span>Type: <strong style={{ color: "var(--text-body, #f2f4f7)" }}>{s.kind.toUpperCase()}</strong></span>
+                    <span>•</span>
+                    <span>Active: <strong style={{ color: "var(--text-body, #ffffff)" }}>{activeCount}</strong></span>
+                  </div>
+                </div>
+
+                {/* Add Session Button */}
+                {s.state !== "missing" || s.kind === "api-key" || s.kind === "cookies" ? (
+                  <button
+                    disabled={isAtMax || !!busyPlatform}
+                    onClick={() => setModal({ isOpen: true, mode: "create", platform: s })}
+                    style={{
+                      padding: "6px 10px",
+                      borderRadius: "6px",
+                      background: isAtMax ? "var(--bg-surface-3, #344054)" : "var(--primary, #8838dd)",
+                      color: "var(--text-primary, #fff)",
+                      border: "1px solid var(--border-subtle, rgba(255,255,255,0.08))",
+                      fontWeight: 600,
+                      fontSize: "11px",
+                      cursor: isAtMax ? "not-allowed" : "pointer",
+                      transition: "all 0.2s ease",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "4px",
+                      flexShrink: 0
+                    }}
+                    title={isAtMax ? "Pool limit reached (20 accounts)" : "Add account credentials"}
+                  >
+                    <span style={{ fontSize: "12px", fontWeight: 800 }}>＋</span>
+                    <span>Add</span>
+                  </button>
+                ) : null}
+              </div>
+
+              {/* Tab Navigation */}
+              <div style={{
+                display: "flex",
+                background: "var(--bg-app, #101828)",
+                padding: "3px",
+                borderRadius: "8px",
+                marginBottom: "12px",
+                border: "1px solid var(--border-color, #344054)",
+                flexShrink: 0
+              }}>
+                <button
+                  className="tab-btn"
+                  onClick={() => setTab(s.platform, "pool")}
                   style={{
-                    width: "36px",
-                    height: "36px",
-                    borderRadius: "10px",
-                    background: "var(--bg-inner)",
+                    flex: 1,
+                    padding: "6px 8px",
+                    borderRadius: "6px",
+                    border: "none",
+                    background: tab === "pool" ? "var(--bg-light, #ffffff)" : "transparent",
+                    color: tab === "pool" ? "var(--cyan, #8838dd)" : "var(--text-primary, #ffffff)",
+                    fontSize: "11px",
+                    fontWeight: tab === "pool" ? 700 : 500,
+                    cursor: "pointer",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
-                    fontSize: "18px",
+                    gap: "5px",
+                    boxShadow: tab === "pool" ? "0 2px 6px rgba(0, 0, 0, 0.2)" : "none"
                   }}
                 >
-                  {s.platform === "facebook"
-                    ? "📘"
-                    : s.platform === "instagram"
-                      ? "📸"
-                      : s.platform === "twitter"
-                        ? "𝕏"
-                        : s.platform === "youtube"
-                          ? "▶️"
-                          : s.platform === "linkedin"
-                            ? "💼"
-                            : "✈️"}
-                </span>
-
-                <span
-                  style={{
-                    fontSize: "16px",
-                    fontWeight: 700,
-                    flex: 1,
-                    color: "#fff",
-                  }}
-                >
-                  {s.name}
-                </span>
-
-                <span
-                  style={{
-                    fontSize: "10px",
-                    fontWeight: 700,
-                    padding: "3px 9px",
+                  <span>🗃️ Pool</span>
+                  <span style={{
+                    padding: "1px 6px",
                     borderRadius: "999px",
-                    background: badge.bg,
-                    color: badge.color,
-                    border: `1px solid ${badge.border}`,
+                    background: tab === "pool" ? "var(--cyan, #8838dd)" : "var(--bg-surface-3, #344054)",
+                    color: "#ffffff",
+                    fontSize: "10px",
+                    fontWeight: 700
+                  }}>
+                    {poolCount}/20
+                  </span>
+                </button>
+                <button
+                  className="tab-btn"
+                  onClick={() => setTab(s.platform, "controls")}
+                  style={{
+                    flex: 1,
+                    padding: "6px 8px",
+                    borderRadius: "6px",
+                    border: "none",
+                    background: tab === "controls" ? "var(--bg-light, #ffffff)" : "transparent",
+                    color: tab === "controls" ? "var(--cyan, #8838dd)" : "var(--text-primary, #ffffff)",
+                    fontSize: "11px",
+                    fontWeight: tab === "controls" ? 700 : 500,
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    boxShadow: tab === "controls" ? "0 2px 6px rgba(0, 0, 0, 0.2)" : "none"
                   }}
                 >
-                  {badge.label}
-                </span>
+                  <span>⚡ Verification</span>
+                </button>
               </div>
 
-              {s.state === "ready" && (
-                <div
-                  style={{
-                    fontSize: "11px",
-                    color: "var(--text-muted)",
-                    marginBottom: "6px",
-                    fontFamily: "var(--font-mono)",
-                  }}
-                >
-                  🕐 Cookies loaded ({s.cookie_count}) · {(s.sessions?.length || 0)} sessions active
-                </div>
-              )}
-              {s.sessions && s.sessions.length > 0 && (
-                <div style={{ marginBottom: "10px", fontSize: "11px", color: "var(--text-dim)" }}>
-                  {s.sessions.map(ss => (
-                    <div key={ss.id} style={{ marginBottom: "6px" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between" }}>
-                        <span>👤 {ss.identifier}</span>
-                        <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                          {ss.proxy_host && (
-                            <span title="Proxy assigned" style={{ color: "var(--text-dim)" }}>
-                              🌐 {ss.proxy_host}
-                            </span>
-                          )}
-                          <span style={{ color: ss.status === "ready" ? "var(--success)" : "var(--danger)" }}>{ss.status}</span>
-                        </span>
+              {/* Tab 1 Content: Session Pool */}
+              {tab === "pool" && (
+                <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, gap: "10px" }}>
+                  {/* Capacity Gauge */}
+                  <div style={{ flexShrink: 0 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", color: "var(--text-muted, #98a2b3)", marginBottom: "3px" }}>
+                      <span>Rotation Capacity</span>
+                      <span style={{ fontWeight: 600, color: "var(--text-body, #ffffff)" }}>
+                        {poolCount}/20 Accounts
+                      </span>
+                    </div>
+                    <div style={{ width: "100%", height: "4px", background: "var(--bg-app, #101828)", borderRadius: "2px", overflow: "hidden" }}>
+                      <div style={{
+                        height: "100%",
+                        width: `${Math.min(100, (poolCount / 20) * 100)}%`,
+                        background: "var(--primary, #8838dd)",
+                        transition: "width 0.3s ease"
+                      }} />
+                    </div>
+                  </div>
+
+                  {/* Sessions Scroll Area */}
+                  <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: "8px", paddingRight: "2px" }}>
+                    {(!s.sessions || s.sessions.length === 0) ? (
+                      <div style={{
+                        padding: "24px 12px",
+                        textAlign: "center",
+                        background: "var(--bg-surface-alt, #1d2939)",
+                        borderRadius: "8px",
+                        border: "1px dashed var(--border-color, #344054)",
+                        margin: "auto 0"
+                      }}>
+                        <div style={{ fontSize: "20px", marginBottom: "6px" }}>🛡️</div>
+                        <div style={{ fontSize: "12px", fontWeight: 600, color: "var(--text-primary, #fff)" }}>No accounts saved</div>
+                        <div style={{ fontSize: "11px", color: "var(--text-muted, #98a2b3)", margin: "3px auto 0 auto" }}>
+                          Click <strong>"＋ Add"</strong> above to input cookies or keys.
+                        </div>
                       </div>
-                      {s.kind === "cookies" && (
-                        <div style={{ display: "flex", gap: "4px", marginTop: "3px" }}>
-                          <input
-                            value={proxyDraft[ss.id] ?? ""}
-                            onChange={(e) =>
-                              setProxyDraft((d) => ({ ...d, [ss.id]: e.target.value }))
-                            }
-                            placeholder="proxy e.g. http://user:pass@host:port"
+                    ) : (
+                      s.sessions.map((ss, index) => {
+                        const isReady = ss.status === "ready";
+                        const cooldown = cooldownLabel(ss.rate_limited_until);
+
+                        return (
+                          <div
+                            key={ss.id}
                             style={{
-                              flex: 1,
-                              background: "var(--bg-inner)",
-                              border: "1px solid var(--border-color)",
+                              background: "var(--bg-surface-alt, #1d2939)",
+                              border: "1px solid var(--border-color, #344054)",
                               borderRadius: "6px",
-                              color: "var(--text-main)",
-                              fontSize: "10px",
-                              padding: "4px 6px",
-                              outline: "none",
-                            }}
-                          />
-                          <button
-                            disabled={!proxyDraft[ss.id]?.trim() || proxyBusy === ss.id}
-                            title="Assign this proxy to this one session"
-                            onClick={async () => {
-                              setProxyBusy(ss.id);
-                              setErrorNote("");
-                              try {
-                                const raw = proxyDraft[ss.id].trim();
-                                let server = raw;
-                                let username = "";
-                                let password = "";
-                                const m = raw.match(/^(\w+:\/\/)(?:([^:@]+):([^@]+)@)?(.+)$/);
-                                if (m) {
-                                  server = `${m[1]}${m[4]}`;
-                                  username = m[2] || "";
-                                  password = m[3] || "";
-                                }
-                                await sessionsApi.setSessionProxy(s.platform, ss.id, {
-                                  server,
-                                  username,
-                                  password,
-                                });
-                                setProxyDraft((d) => ({ ...d, [ss.id]: "" }));
-                                onChanged();
-                              } catch (e) {
-                                setErrorNote((e as Error).message);
-                              } finally {
-                                setProxyBusy("");
-                              }
-                            }}
-                            style={{
-                              padding: "4px 8px",
-                              borderRadius: "6px",
-                              fontSize: "10px",
-                              fontWeight: 600,
-                              cursor: "pointer",
-                              background: "var(--bg-inner)",
-                              color: "var(--text-main)",
-                              border: "1px solid var(--border-color)",
+                              padding: "8px 10px",
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                              gap: "8px",
+                              flexShrink: 0
                             }}
                           >
-                            Set
-                          </button>
-                          {ss.proxy_host && (
-                            <button
-                              disabled={proxyBusy === ss.id}
-                              title="Clear this session's proxy"
-                              onClick={async () => {
-                                setProxyBusy(ss.id);
-                                setErrorNote("");
-                                try {
-                                  await sessionsApi.clearSessionProxy(s.platform, ss.id);
-                                  onChanged();
-                                } catch (e) {
-                                  setErrorNote((e as Error).message);
-                                } finally {
-                                  setProxyBusy("");
-                                }
-                              }}
-                              style={{
-                                padding: "4px 8px",
-                                borderRadius: "6px",
+                            <div style={{ minWidth: 0, flex: 1 }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                <span style={{
+                                  fontSize: "10px",
+                                  fontWeight: 700,
+                                  color: "var(--text-muted, #98a2b3)",
+                                  background: "var(--bg-app, #101828)",
+                                  padding: "1px 5px",
+                                  borderRadius: "3px",
+                                  border: "1px solid var(--border-subtle, rgba(255,255,255,0.08))"
+                                }}>
+                                  #{index + 1}
+                                </span>
+                                <span title={ss.identifier || `Account ${index + 1}`} style={{ fontSize: "13px", fontWeight: 600, color: "var(--text-primary, #fff)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                  {ss.identifier || `Account ${index + 1}`}
+                                </span>
+                              </div>
+                              <div style={{ fontSize: "11px", color: "var(--text-muted, #98a2b3)", marginTop: "2px", display: "flex", alignItems: "center", gap: "6px" }}>
+                                <span>{ss.cookie_count > 0 ? `${ss.cookie_count} cookies` : s.kind === "api-key" || ss.is_api_key ? "API Key" : "Active"}</span>
+                                {cooldown && <span style={{ color: "var(--text-secondary, #d8d8d8)" }}>• ⌛ {cooldown}</span>}
+                              </div>
+                            </div>
+
+                            {/* Status & Actions Matching Live Discovery Violet & White Theme */}
+                            <div style={{ display: "flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
+                              <div style={{
+                                padding: "3px 8px",
+                                borderRadius: "4px",
                                 fontSize: "10px",
-                                fontWeight: 600,
-                                cursor: "pointer",
-                                background: "rgba(233, 80, 83,0.08)",
-                                color: "var(--danger)",
-                                border: "1px solid rgba(233, 80, 83,0.18)",
-                              }}
-                            >
-                              Clear
-                            </button>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  ))}
+                                fontWeight: 700,
+                                display: "flex",
+                                flexDirection: "column",
+                                alignItems: "center",
+                                background: isReady ? "var(--success, #12B76A)" : "var(--danger, #F04438)",
+                                color: "#ffffff",
+                                border: "1px solid var(--border-subtle, rgba(255,255,255,0.1))"
+                              }}>
+                                <div>LIVE · {isReady ? "ACTIVE" : "EXPIRED"}</div>
+                                {ss.last_used > 0 && (
+                                  <div style={{ fontSize: "8px", fontWeight: 500, marginTop: "1px", opacity: 0.9 }}>
+                                    Refreshed: {new Date(ss.last_used * 1000).toLocaleTimeString()}
+                                  </div>
+                                )}
+                              </div>
+
+                              <button
+                                className="action-btn"
+                                disabled={!!busyPlatform}
+                                onClick={() => setModal({
+                                  isOpen: true,
+                                  mode: "update",
+                                  platform: s,
+                                  targetSession: { id: ss.id, identifier: ss.identifier, isApiKey: ss.is_api_key }
+                                })}
+                                style={{
+                                  padding: "4px 8px",
+                                  borderRadius: "5px",
+                                  background: "var(--bg-surface-3, #344054)",
+                                  border: "1px solid var(--border-subtle, rgba(255,255,255,0.08))",
+                                  color: "var(--text-body, #ffffff)",
+                                  fontSize: "10px",
+                                  fontWeight: 600,
+                                  cursor: "pointer"
+                                }}
+                                title="Update account cookies or keywords"
+                              >
+                                Edit
+                              </button>
+                              <button
+                                className="action-btn"
+                                disabled={!!busyPlatform}
+                                onClick={() => handleAction(() => sessionsApi.deleteSessionItem(s.platform, ss.id), s.platform)}
+                                style={{
+                                  padding: "4px 7px",
+                                  borderRadius: "5px",
+                                  background: "var(--bg-surface-3, #344054)",
+                                  border: "1px solid var(--border-subtle, rgba(255,255,255,0.08))",
+                                  color: "var(--text-primary, #ffffff)",
+                                  fontSize: "10px",
+                                  fontWeight: 600,
+                                  cursor: "pointer"
+                                }}
+                                title="Delete account from pool"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
                 </div>
               )}
 
-              {s.state === "checkpointed" && (
-                <div
-                  style={{
-                    fontSize: "11px",
-                    color: "var(--danger)",
-                    marginBottom: "6px",
-                  }}
-                >
-                  ⚠️ The cookies look valid, but a live check found the
-                  platform rejected the session
-                  {s.message ? ` (${s.message})` : ""}. Re-run the login below.
-                </div>
-              )}
-
-              {s.last_verified && (
-                <div
-                  style={{
-                    fontSize: "10px",
-                    color: "var(--text-dim)",
-                    marginBottom: "12px",
-                    fontFamily: "var(--font-mono)",
-                  }}
-                >
-                  last live-checked: {new Date(s.last_verified).toLocaleString()}
-                </div>
-              )}
-
-              <div
-                style={{ display: "flex", flexDirection: "column", gap: "8px" }}
-              >
-                {s.state !== "missing" && (
-                  <button
-                    disabled={!!busyPlatform}
-                    onClick={() =>
-                      handleAction(
-                        () => sessionsApi.checkSessionNow(s.platform),
-                        s.platform,
-                      )
-                    }
-                    title="Runs the platform's own live check right now instead of waiting for the periodic sweep"
-                    style={{
-                      width: "100%",
-                      padding: "9px",
-                      borderRadius: "9px",
-                      fontSize: "12px",
-                      fontWeight: 600,
-                      cursor: "pointer",
-                      background: "var(--bg-inner)",
-                      color: "var(--text-main)",
-                      border: "1px solid var(--border-color)",
-                    }}
-                  >
-                    {isBusy ? "Checking…" : "🔄 Check Session Now"}
-                  </button>
-                )}
-
-                {s.can_login && (
-                  <button
-                    disabled={!!busyPlatform}
-                    onClick={() =>
-                      handleAction(
-                        () => sessionsApi.launchLogin(s.platform),
-                        s.platform,
-                      )
-                    }
-                    style={{
-                      width: "100%",
-                      padding: "10px",
-                      borderRadius: "9px",
-                      fontSize: "12px",
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      background:
-                        "linear-gradient(135deg, var(--cyan), var(--cyan-bright))",
-                      color: "#000",
-                      border: "none",
-                    }}
-                  >
-                    {isBusy
-                      ? "Launching Browser…"
-                      : `🚀 Launch Interactive Browser Login`}
-                  </button>
-                )}
-
-                {s.kind === "cookies" && (
-                  <button
-                    onClick={() =>
-                      setOpenCookiePlatform(isCookieOpen ? "" : s.platform)
-                    }
-                    style={{
-                      width: "100%",
-                      padding: "9px",
-                      borderRadius: "9px",
-                      fontSize: "12px",
-                      fontWeight: 600,
-                      cursor: "pointer",
-                      background: "var(--bg-inner)",
-                      color: "var(--text-main)",
-                      border: "1px solid var(--border-color)",
-                    }}
-                  >
-                    🍪{" "}
-                    {isCookieOpen
-                      ? "Close Cookie Importer"
-                      : "Paste Cookies JSON"}
-                  </button>
-                )}
-
-                {s.platform === "youtube" && (
-                  <button
-                    onClick={() => setOpenYtKey(!openYtKey)}
-                    style={{
-                      width: "100%",
-                      padding: "9px",
-                      borderRadius: "9px",
-                      fontSize: "12px",
-                      fontWeight: 600,
-                      cursor: "pointer",
-                      background: "var(--bg-inner)",
-                      color: "var(--text-main)",
-                      border: "1px solid var(--border-color)",
-                    }}
-                  >
-                    🔑 YouTube Data API Key
-                  </button>
-                )}
-
-                {s.platform === "telegram" && (
-                  <button
-                    onClick={() => (tgStep ? closeTelegramWizard() : setTgStep("start"))}
-                    style={{
-                      width: "100%",
-                      padding: "9px",
-                      borderRadius: "9px",
-                      fontSize: "12px",
-                      fontWeight: 600,
-                      cursor: "pointer",
-                      background: "var(--bg-inner)",
-                      color: "var(--text-main)",
-                      border: "1px solid var(--border-color)",
-                    }}
-                  >
-                    📱 {tgStep ? "Close Telegram Login" : "Log in to Telegram"}
-                  </button>
-                )}
-
-                {s.state !== "missing" && (
-                  <button
-                    disabled={!!busyPlatform}
-                    onClick={() =>
-                      handleAction(
-                        () => sessionsApi.deleteSessionPool(s.platform),
-                        s.platform,
-                      )
-                    }
-                    style={{
-                      width: "100%",
-                      padding: "8px",
-                      borderRadius: "9px",
-                      fontSize: "11px",
-                      fontWeight: 600,
-                      cursor: "pointer",
-                      background: "rgba(233, 80, 83,0.08)",
-                      color: "var(--danger)",
-                      border: "1px solid rgba(233, 80, 83,0.18)",
-                    }}
-                  >
-                    🗑️ Delete Stored Session
-                  </button>
-                )}
-              </div>
-
-              {/* Cookie JSON paste drawer */}
-              {isCookieOpen && (
-                <div
-                  style={{
-                    marginTop: "12px",
-                    paddingTop: "12px",
-                    borderTop: "1px solid var(--border-subtle)",
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: "8px",
-                  }}
-                >
-                  <input
-                    value={cookieIdentifier}
-                    onChange={(e) => setCookieIdentifier(e.target.value)}
-                    placeholder="Session Identifier (e.g. Account123)"
-                    style={{
-                      width: "100%",
-                      background: "var(--bg-inner)",
-                      border: "1px solid var(--border-color)",
-                      borderRadius: "9px",
-                      color: "var(--text-main)",
-                      fontSize: "12px",
-                      padding: "9px 10px",
-                      outline: "none",
-                    }}
-                  />
-                  <textarea
-                    rows={4}
-                    value={cookieBlob}
-                    onChange={(e) => setCookieBlob(e.target.value)}
-                    placeholder="Paste cookies JSON array export here…"
-                    style={{
-                      width: "100%",
-                      background: "var(--bg-inner)",
-                      border: "1px solid var(--border-color)",
-                      borderRadius: "9px",
-                      color: "var(--text-main)",
-                      fontFamily: "var(--font-mono)",
-                      fontSize: "11px",
-                      padding: "9px",
-                      resize: "vertical",
-                      outline: "none",
-                    }}
-                  />
-                  <button
-                    disabled={!cookieBlob.trim() || !!busyPlatform}
-                    onClick={() =>
-                      handleAction(async () => {
-                        await sessionsApi.saveCookies(s.platform, cookieBlob, cookieIdentifier);
-                        setCookieBlob("");
-                        setCookieIdentifier("");
-                        setOpenCookiePlatform("");
-                      }, s.platform)
-                    }
-                    style={{
-                      width: "100%",
-                      marginTop: "8px",
-                      padding: "9px",
-                      borderRadius: "9px",
-                      fontSize: "12px",
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      background:
-                        "linear-gradient(135deg, var(--cyan), var(--cyan-bright))",
-                      color: "#000",
-                      border: "none",
-                    }}
-                  >
-                    💾 Save Cookies Array
-                  </button>
-                </div>
-              )}
-
-              {/* YouTube Key drawer */}
-              {s.platform === "youtube" && openYtKey && (
-                <div
-                  style={{
-                    marginTop: "12px",
-                    paddingTop: "12px",
-                    borderTop: "1px solid var(--border-subtle)",
-                  }}
-                >
-                  <input
-                    value={ytApiKey}
-                    onChange={(e) => setYtApiKey(e.target.value)}
-                    placeholder="Paste YouTube Data API key…"
-                    style={{
-                      width: "100%",
-                      background: "var(--bg-inner)",
-                      border: "1px solid var(--border-color)",
-                      borderRadius: "9px",
-                      color: "var(--text-main)",
-                      fontSize: "12px",
-                      padding: "9px 10px",
-                      outline: "none",
-                    }}
-                  />
-                  <button
-                    disabled={!ytApiKey.trim() || !!busyPlatform}
-                    onClick={() =>
-                      handleAction(async () => {
-                        await sessionsApi.saveApiKey("youtube", ytApiKey.trim());
-                        setYtApiKey("");
-                        setOpenYtKey(false);
-                      }, "youtube")
-                    }
-                    style={{
-                      width: "100%",
-                      marginTop: "8px",
-                      padding: "9px",
-                      borderRadius: "9px",
-                      fontSize: "12px",
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      background:
-                        "linear-gradient(135deg, var(--cyan), var(--cyan-bright))",
-                      color: "#000",
-                      border: "none",
-                    }}
-                  >
-                    💾 Save YouTube API Key
-                  </button>
-                </div>
-              )}
-
-              {/* Telegram MTProto login wizard */}
-              {s.platform === "telegram" && tgStep && (
-                <div
-                  style={{
-                    marginTop: "12px",
-                    paddingTop: "12px",
-                    borderTop: "1px solid var(--border-subtle)",
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: "8px",
-                  }}
-                >
-                  {tgMessage && (
-                    <div style={{ fontSize: "11px", color: "var(--text-dim)" }}>
-                      {tgMessage}
+              {/* Tab 2 Content: Diagnostics & Controls */}
+              {tab === "controls" && (
+                <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: "10px" }}>
+                  {s.state === "checkpointed" && (
+                    <div style={{ padding: "10px", background: "var(--bg-surface-alt, #1d2939)", borderRadius: "6px", border: "1px solid var(--border-color, #344054)", color: "var(--text-secondary, #d8d8d8)", fontSize: "11px" }}>
+                      ⚠️ <strong>Checkpoint:</strong> {s.message || "Platform may require verification."}
                     </div>
                   )}
 
-                  {tgStep === "start" && (
-                    <>
-                      <input
-                        value={tgApiId}
-                        onChange={(e) => setTgApiId(e.target.value)}
-                        placeholder="API ID (from my.telegram.org)"
-                        inputMode="numeric"
-                        style={inputStyle}
-                      />
-                      <input
-                        value={tgApiHash}
-                        onChange={(e) => setTgApiHash(e.target.value)}
-                        placeholder="API Hash"
-                        style={inputStyle}
-                      />
-                      <input
-                        value={tgPhone}
-                        onChange={(e) => setTgPhone(e.target.value)}
-                        placeholder="Phone number, e.g. +15551234567"
-                        style={inputStyle}
-                      />
-                      <button
-                        disabled={!tgApiId.trim() || !tgApiHash.trim() || !tgPhone.trim() || tgBusy}
-                        onClick={async () => {
-                          setTgBusy(true);
-                          setErrorNote("");
-                          try {
-                            const res = await sessionsApi.telegramLoginStart(
-                              Number(tgApiId.trim()), tgApiHash.trim(), tgPhone.trim(),
-                            );
-                            setTgMessage(`Code sent to ${res.phone} -- enter it below.`);
-                            setTgStep("code");
-                          } catch (e) {
-                            setErrorNote((e as Error).message);
-                          } finally {
-                            setTgBusy(false);
-                          }
-                        }}
-                        style={primaryButtonStyle}
-                      >
-                        {tgBusy ? "Sending Code…" : "📨 Send Login Code"}
-                      </button>
-                    </>
-                  )}
+                  <div style={{ background: "var(--bg-surface-alt, #1d2939)", padding: "10px", borderRadius: "6px", border: "1px solid var(--border-color, #344054)" }}>
+                    <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-primary, #fff)", marginBottom: "3px" }}>
+                      🔍 Health Verification Status
+                    </div>
+                    <div style={{ fontSize: "11px", color: "var(--text-muted, #98a2b3)" }}>
+                      {s.last_verified ? `Last check: ${new Date(s.last_verified).toLocaleString()}` : "No verification sweep recorded yet."}
+                    </div>
+                  </div>
 
-                  {tgStep === "code" && (
-                    <>
-                      <input
-                        value={tgCode}
-                        onChange={(e) => setTgCode(e.target.value)}
-                        placeholder="Login code from Telegram"
-                        inputMode="numeric"
-                        style={inputStyle}
-                      />
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "auto", paddingTop: "6px" }}>
+                    {s.state !== "missing" && (
                       <button
-                        disabled={!tgCode.trim() || tgBusy}
-                        onClick={async () => {
-                          setTgBusy(true);
-                          setErrorNote("");
-                          try {
-                            const res = await sessionsApi.telegramLoginCode(tgCode.trim());
-                            if (res.status === "need_password") {
-                              setTgMessage("This account has two-factor auth enabled -- enter the password.");
-                              setTgStep("password");
-                              setTgCode("");
-                            } else {
-                              closeTelegramWizard();
-                              onChanged();
-                            }
-                          } catch (e) {
-                            setErrorNote((e as Error).message);
-                          } finally {
-                            setTgBusy(false);
-                          }
+                        className="action-btn"
+                        disabled={!!busyPlatform}
+                        onClick={() => handleAction(() => sessionsApi.checkSessionNow(s.platform), s.platform)}
+                        style={{
+                          width: "100%",
+                          padding: "8px",
+                          borderRadius: "6px",
+                          background: "var(--bg-surface-3, #344054)",
+                          border: "1px solid var(--border-color, #344054)",
+                          color: "var(--text-primary, #fff)",
+                          fontSize: "12px",
+                          fontWeight: 600,
+                          cursor: "pointer"
                         }}
-                        style={primaryButtonStyle}
                       >
-                        {tgBusy ? "Verifying…" : "✅ Verify Code"}
+                        {isBusy ? "Checking..." : "🔄 Verify Sweep Now"}
                       </button>
-                      <button onClick={async () => {
-                        await sessionsApi.telegramLoginCancel().catch(() => {});
-                        closeTelegramWizard();
-                      }} style={cancelButtonStyle}>
-                        ✕ Cancel
-                      </button>
-                    </>
-                  )}
+                    )}
 
-                  {tgStep === "password" && (
-                    <>
-                      <input
-                        type="password"
-                        value={tgPassword}
-                        onChange={(e) => setTgPassword(e.target.value)}
-                        placeholder="Two-factor password"
-                        style={inputStyle}
-                      />
+                    {s.can_login && (
                       <button
-                        disabled={!tgPassword.trim() || tgBusy}
-                        onClick={async () => {
-                          setTgBusy(true);
-                          setErrorNote("");
-                          try {
-                            await sessionsApi.telegramLoginPassword(tgPassword.trim());
-                            closeTelegramWizard();
-                            onChanged();
-                          } catch (e) {
-                            setErrorNote((e as Error).message);
-                          } finally {
-                            setTgBusy(false);
+                        className="action-btn"
+                        disabled={!!busyPlatform}
+                        onClick={() => handleAction(() => sessionsApi.launchLogin(s.platform), s.platform)}
+                        style={{
+                          width: "100%",
+                          padding: "8px",
+                          borderRadius: "6px",
+                          background: "var(--primary, #8838dd)",
+                          color: "var(--text-primary, #fff)",
+                          border: "none",
+                          fontSize: "12px",
+                          fontWeight: 600,
+                          cursor: "pointer"
+                        }}
+                      >
+                        {isBusy ? "Launching..." : "🚀 Launch Login"}
+                      </button>
+                    )}
+
+                    {s.state !== "missing" && (
+                      <button
+                        className="action-btn"
+                        disabled={!!busyPlatform}
+                        onClick={() => {
+                          if (confirm(`Delete ALL accounts for ${s.name}?`)) {
+                            handleAction(() => sessionsApi.deleteSessionPool(s.platform), s.platform);
                           }
                         }}
-                        style={primaryButtonStyle}
+                        style={{
+                          width: "100%",
+                          padding: "8px",
+                          borderRadius: "6px",
+                          background: "var(--bg-surface-3, #344054)",
+                          border: "1px solid var(--border-color, #344054)",
+                          color: "var(--text-primary, #ffffff)",
+                          fontSize: "12px",
+                          fontWeight: 600,
+                          cursor: "pointer"
+                        }}
                       >
-                        {tgBusy ? "Verifying…" : "✅ Verify Password"}
+                        🗑️ Clear Pool ({poolCount})
                       </button>
-                      <button onClick={async () => {
-                        await sessionsApi.telegramLoginCancel().catch(() => {});
-                        closeTelegramWizard();
-                      }} style={cancelButtonStyle}>
-                        ✕ Cancel
-                      </button>
-                    </>
-                  )}
+                    )}
+                  </div>
                 </div>
               )}
-
             </div>
           );
         })}
       </div>
+
+      {/* MODAL DIALOG: CLEAN & SIMPLE TWO-FIELD FORM */}
+      {modal.isOpen && modal.platform && (
+        <SessionEditModal
+          platform={modal.platform}
+          mode={modal.mode}
+          targetSession={modal.targetSession}
+          onClose={() => setModal({ isOpen: false, mode: "create" })}
+          onComplete={() => {
+            setModal({ isOpen: false, mode: "create" });
+            onChanged();
+          }}
+          onError={(err) => setGlobalError(err)}
+        />
+      )}
     </div>
   );
 }
+
+// Dedicated Modal Component for simple, two-field input
+interface ModalProps {
+  platform: SessionInfo;
+  mode: "create" | "update";
+  targetSession?: { id: string; identifier: string; isApiKey?: boolean };
+  onClose: () => void;
+  onComplete: () => void;
+  onError: (msg: string) => void;
+}
+
+const SessionEditModal: FC<ModalProps> = ({ platform, mode, targetSession, onClose, onComplete, onError }) => {
+  const isUpdate = mode === "update";
+  const [identifier, setIdentifier] = useState<string>(targetSession?.identifier || "");
+  const [cookieBlob, setCookieBlob] = useState<string>("");
+  const [apiKey, setApiKey] = useState<string>("");
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSubmitting(true);
+    try {
+      if (isUpdate && targetSession) {
+        await sessionsApi.updateSessionItem(platform.platform, targetSession.id, {
+          identifier: identifier.trim(),
+          ...(apiKey.trim() ? { api_key: apiKey.trim() } : {}),
+          ...(cookieBlob.trim() ? { blob: cookieBlob.trim() } : {})
+        });
+      } else {
+        if (platform.platform === "youtube" || platform.kind === "api-key") {
+          await sessionsApi.saveApiKey(platform.platform, apiKey.trim(), identifier.trim() || "YouTube API Key");
+        } else {
+          await sessionsApi.saveCookies(platform.platform, cookieBlob.trim(), identifier.trim() || "Unnamed Account");
+        }
+      }
+      onComplete();
+    } catch (err) {
+      onError((err as Error).message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const isApiKeyType = platform.platform === "youtube" || platform.kind === "api-key" || targetSession?.isApiKey;
+
+  return (
+    <div style={{
+      position: "fixed",
+      inset: 0,
+      background: "rgba(8, 15, 30, 0.75)",
+      backdropFilter: "blur(8px)",
+      zIndex: 9999,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: "20px",
+      animation: "fadeIn 0.15s ease-out"
+    }}>
+      <div style={{
+        background: "var(--bg-surface, #1e2837)",
+        border: "1px solid var(--border-color, #344054)",
+        borderRadius: "12px",
+        width: "100%",
+        maxWidth: "500px",
+        padding: "24px",
+        boxShadow: "0 20px 50px rgba(0, 0, 0, 0.65)",
+        animation: "modalPopIn 0.2s cubic-bezier(0.16, 1, 0.3, 1)"
+      }}>
+        {/* Modal Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <span style={{
+              width: "40px",
+              height: "40px",
+              borderRadius: "8px",
+              background: "var(--bg-surface-alt, #1d2939)",
+              border: "1px solid var(--border-color, #344054)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: "20px"
+            }}>
+              {getPlatformIcon(platform.platform)}
+            </span>
+            <div>
+              <h3 style={{ margin: 0, fontSize: "17px", fontWeight: 700, color: "var(--text-primary, #fff)" }}>
+                {isUpdate ? `Update ${targetSession?.identifier}` : `Add Account — ${platform.name}`}
+              </h3>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            style={{ background: "transparent", border: "none", color: "var(--text-muted, #98a2b3)", cursor: "pointer", fontSize: "16px", fontWeight: 700 }}
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* Form */}
+        <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+          {/* Field 1: Identifier / Keywords */}
+          <div>
+            <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "var(--text-body, #f2f4f7)", marginBottom: "6px" }}>
+              Account Keywords / Identifier
+            </label>
+            <input
+              value={identifier}
+              onChange={(e) => setIdentifier(e.target.value)}
+              placeholder="e.g., Marketing Account #1"
+              style={modalInputStyle}
+              required={!isUpdate}
+            />
+          </div>
+
+          {/* Field 2: Credentials */}
+          <div>
+            <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "var(--text-body, #f2f4f7)", marginBottom: "6px" }}>
+              {isApiKeyType ? "API Key" : "Cookies (JSON Array)"}
+            </label>
+            {isApiKeyType ? (
+              <input
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="Paste API key here..."
+                style={modalInputStyle}
+                required={!isUpdate}
+              />
+            ) : (
+              <textarea
+                rows={6}
+                value={cookieBlob}
+                onChange={(e) => setCookieBlob(e.target.value)}
+                placeholder={'Paste JSON cookies array e.g. [{"domain": ".facebook.com", ...}]'}
+                style={{ ...modalInputStyle, resize: "vertical", fontFamily: "monospace", fontSize: "12px", lineHeight: "1.4" }}
+                required={!isUpdate}
+              />
+            )}
+          </div>
+
+          {/* Actions */}
+          <div style={{ display: "flex", gap: "10px", marginTop: "8px", justifyContent: "flex-end" }}>
+            <button
+              type="button"
+              onClick={onClose}
+              className="action-btn"
+              style={{
+                padding: "9px 16px",
+                borderRadius: "8px",
+                background: "var(--bg-surface-3, #344054)",
+                border: "1px solid var(--border-color, #344054)",
+                color: "var(--text-primary, #fff)",
+                fontSize: "13px",
+                fontWeight: 600,
+                cursor: "pointer"
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              className="action-btn"
+              style={{
+                padding: "9px 20px",
+                borderRadius: "8px",
+                background: "var(--primary, #8838dd)",
+                border: "1px solid var(--border-subtle, rgba(255,255,255,0.1))",
+                color: "var(--text-primary, #fff)",
+                fontSize: "13px",
+                fontWeight: 600,
+                cursor: "pointer"
+              }}
+            >
+              {isSubmitting ? "Saving..." : "Save Session"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+const modalInputStyle: CSSProperties = {
+  width: "100%",
+  background: "var(--bg-app, #101828)",
+  border: "1px solid var(--border-color, #344054)",
+  borderRadius: "8px",
+  color: "var(--text-primary, #fff)",
+  fontSize: "13px",
+  padding: "10px 12px",
+  outline: "none",
+  boxSizing: "border-box"
+};
