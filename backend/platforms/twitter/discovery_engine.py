@@ -283,30 +283,57 @@ def iter_users(blob: Any) -> Iterator[TwitterUser]:
             yield user
 
 
-def latest_post(blob: Any, handle: str = "", entity_id: str = "") -> str:
-    """Newest post date in a timeline payload, as ISO.
+def pinned_tweet_ids(blob: Any) -> set[str]:
+    """Every tweet id currently pinned to the top of a profile, per THIS
+    response's own pin marker.
 
-    Scoped to the profile's own posts: a timeline also carries retweets and
-    quoted authors, and counting those would make a dormant account look live
-    -- `retweeted_status_result` is the marker for that and is excluded below.
+    Confirmed live (captured UserTweets response, 2026): a pinned tweet is
+    not flagged on the tweet object itself -- it is wrapped by a distinct
+    top-level instruction, `instructions[N] == {"type": "TimelinePinEntry",
+    "entry": {...tweet...}}`, sitting alongside the normal
+    `TimelineAddEntries` instruction that holds the regular timeline. (The
+    same account's profile response separately carries
+    `data.user.result.pinned_items.tweet_ids_str`, a second, independent
+    confirmation of the same id -- not used here to avoid a race: that's a
+    DIFFERENT network response, and there's no guaranteed ordering between
+    it and this one arriving.)
 
-    KNOWN GAP, not yet fixed: a pinned tweet is NOT excluded, despite this
-    having been the intent (see the module's analysis_engine.py, whose
-    dom_last_post() fallback DOES exclude it, correctly, via the DOM's own
-    "Pinned" label). Confirmed live on a real account: the account's actual
-    newest ORGANIC post was 2026-08-07, but this function reported
-    2026-08-10 -- the date of an older tweet the account has pinned to the
-    top of their profile. A pinned tweet's `legacy` dict carries no marker
-    distinguishing it (checked live: no key containing "pin" anywhere in
-    it), and it does not appear in the UserTweets timeline's own entries
-    list either -- it is surfaced through some other part of the response
-    this function doesn't currently have enough evidence to parse
-    correctly. Left unfixed rather than guessed at, since a wrong filter
-    here risks breaking working extraction for every other account. Net
-    effect: this can overstate an account's last-active date by the age of
-    whatever they have pinned -- never understate it, and never fabricate
-    a date that doesn't correspond to a real tweet.
+    Structure-agnostic on purpose: searches for the `TimelinePinEntry` type
+    marker rather than hardcoding `instructions[1]`'s index or the path down
+    to it, since this response's shape has migrated before (see this
+    module's docstring on `legacy` fields moving to sibling objects) and
+    will again.
     """
+    ids: set[str] = set()
+    for d in iter_dicts(blob):
+        if d.get("type") != "TimelinePinEntry":
+            continue
+        entry = d.get("entry")
+        if not isinstance(entry, dict):
+            continue
+        for sub in iter_dicts(entry):
+            rid = sub.get("rest_id")
+            if rid:
+                ids.add(str(rid))
+    return ids
+
+
+def latest_post(blob: Any, handle: str = "", entity_id: str = "") -> str:
+    """Newest ORGANIC post date in a timeline payload, as ISO.
+
+    Scoped to the profile's own posts, excluding two things that would make
+    a dormant account look active if counted:
+      - retweets/quotes of someone else -- `retweeted_status_result` is the
+        marker, an unambiguous field on the tweet itself.
+      - a pinned tweet -- NOT a marker on the tweet itself (confirmed live:
+        no key containing "pin" anywhere in a pinned tweet's own `legacy`
+        dict), so pinned_tweet_ids() above finds it via its wrapping
+        instruction instead, and this function drops any tweet whose id is
+        in that set. Verified live: without this, a real account's reported
+        last-post date was 2026-08-10 (its pinned tweet) instead of
+        2026-08-07 (its actual newest post).
+    """
+    pinned = pinned_tweet_ids(blob)
     want_h, want_id = handle.lower(), str(entity_id or "")
     best = ""
     for d in iter_dicts(blob):
@@ -316,6 +343,9 @@ def latest_post(blob: Any, handle: str = "", entity_id: str = "") -> str:
         if "full_text" not in legacy and "conversation_id_str" not in legacy:
             continue  # a user object, not a tweet
         if legacy.get("retweeted_status_result"):
+            continue
+        tweet_id = str(legacy.get("id_str") or d.get("rest_id") or "")
+        if tweet_id and tweet_id in pinned:
             continue
         author = str(legacy.get("user_id_str") or "")
         core = ((d.get("core") or {}).get("user_results") or {}).get("result") or {}
