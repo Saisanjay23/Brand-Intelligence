@@ -76,7 +76,21 @@ ANALYSIS_FIELDS = (
 # `urls_for(exclude_analysed=True)`. ERROR/CHECKPOINT/LOGIN_REQUIRED are all
 # transient environment failures (timeout, dead proxy, session challenged
 # mid-run), not verdicts about the profile.
-RETRYABLE_ANALYSIS_STATUSES = ("ERROR", "CHECKPOINT", "LOGIN_REQUIRED")
+#
+# PARTIAL joined this list after a live check: 11 Instagram PARTIAL rows
+# were found stuck at analysis_attempts=0 -- literally never eligible for a
+# second try, because only a RETRYABLE status ever increments that counter.
+# All 11 carried the same "profile payload not seen" note, a timing/render
+# issue on that visit, not a verdict about the profile -- re-running one of
+# them live (outside this codebase, as a direct check) succeeded cleanly on
+# the very next attempt. PARTIAL was also missing from publish()'s guard, so
+# a row with no name/followers/date/location was eligible to be published as
+# a client-facing incident with silently incomplete data. Both are now fixed
+# by the one change: PARTIAL rows re-enter the analysis queue (bounded by
+# MAX_ANALYSIS_ATTEMPTS, same as the other three) and cannot be published
+# until they clear it or exhaust their retries and surface via
+# stuck_analysis() instead.
+RETRYABLE_ANALYSIS_STATUSES = ("ERROR", "CHECKPOINT", "LOGIN_REQUIRED", "PARTIAL")
 
 # How many times a single profile may fail analysis before it stops being
 # retried. Without a cap, a genuinely dead URL (deleted account that still
@@ -652,12 +666,14 @@ async def publish(doc_id: str) -> dict:
     if doc.get("status") == "rejected":
         raise ConflictError(f"profile {doc_id!r} was rejected and cannot be published")
     if doc.get("analysis_status") in RETRYABLE_ANALYSIS_STATUSES:
-        # the analysis run never actually read this profile (timeout,
-        # checkpoint, rejected cookies) -- there is no finding here to
-        # publish, only the record of a failed attempt
+        # ERROR/CHECKPOINT/LOGIN_REQUIRED: the analysis run never actually
+        # read this profile. PARTIAL: it read SOME of the profile but not
+        # enough to trust -- either way this is queued for another attempt,
+        # not a finding to publish yet.
         raise ConflictError(
             f"profile {doc_id!r} last analysis ended in {doc['analysis_status']} -- "
-            "nothing was read from the profile, so there is no result to publish"
+            "not a complete result yet, so there is nothing to publish "
+            "(it will be retried automatically)"
         )
     res = await db()[PROFILES].update_one(
         {"_id": oid},
