@@ -31,6 +31,11 @@ export interface Client {
   // discovery tab -- currently only "facebook": {people, pages}. A tab
   // missing here falls back to platform_limits[platform], then uncapped.
   platform_tab_limits: Record<string, Record<string, number>>;
+  // platform id -> this brand's OWN official handle there, e.g.
+  // {twitter: "adanionline"}. Discovery scores each found profile's handle
+  // against it -- the only automated username signal in the system, since
+  // name_score only ever compares display names.
+  official_handles?: Record<string, string>;
   cron?: string | null;
   created_at?: string;
 }
@@ -89,6 +94,7 @@ export interface JobEvent {
   found: number;
   total: number;
   ts: string;
+  client_id: string;
 }
 
 // One shape for both response variants of GET /profiles (card when
@@ -119,6 +125,10 @@ export interface Profile {
   // 0-100 name-vs-keyword closeness (discovery-seeded, analysis-refined) --
   // powers the card's High/Low match badge
   name_score?: number | null;
+  // 0-100 handle-vs-official-handle closeness. null/undefined means NOT
+  // MEASURED (the client has no official handle set for this platform) --
+  // deliberately distinct from 0, which means "measured, no resemblance".
+  username_score?: number | null;
   // an analyst's own visual confirmation, set via the discovery card's
   // Validate action -- carried through to the analysis-phase record too
   logo_match?: boolean | null;

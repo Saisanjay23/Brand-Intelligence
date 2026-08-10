@@ -656,6 +656,29 @@ function ProfileCard({
           </div>
         )}
 
+        {/* Automated handle-vs-official-handle signal. Only rendered when it
+            was actually measured (null = the client has no official handle
+            configured for this platform) -- showing "0" for an unmeasured
+            profile would read as "checked, no match", which is a different
+            and much stronger claim than "never checked". */}
+        {r.username_score !== null && r.username_score !== undefined && (
+          <div className="card-detail-row">
+            <span
+              title={`This profile's @handle scores ${r.username_score}/100 against the brand's own official handle on this platform. Automated -- distinct from the Username-match box you tick by hand.`}
+              style={{
+                color:
+                  r.username_score >= 90 ? "var(--danger)"
+                    : r.username_score >= 70 ? "var(--warn-yellow, #fdb71b)"
+                      : "var(--text-dim)",
+                fontWeight: r.username_score >= 70 ? 700 : 400,
+              }}
+            >
+              🪪 Handle {r.username_score}/100
+              {r.username_score >= 90 ? " — near-identical" : r.username_score >= 70 ? " — similar" : ""}
+            </span>
+          </div>
+        )}
+
         {(r.logo_match || r.username_match) && (
           <div className="card-detail-row">
             {r.logo_match && <span>🖼️ Logo match</span>}
@@ -1091,13 +1114,21 @@ export function ResultsGrid({
   }, [clientId, platform, isAnalysisView, profiles]);
 
   const [publishingAll, setPublishingAll] = useState(false);
+  const [publishScope, setPublishScope] = useState<"all" | "recent" | "2days" | "week">("all");
+
+  const PUBLISH_SCOPE_LABELS: Record<typeof publishScope, string> = {
+    all: "All",
+    recent: "Recent (last 24h)",
+    "2days": "Last 2 Days",
+    week: "Last Week",
+  };
 
   const publishAll = async () => {
     if (!clientId) return;
     setPublishingAll(true);
     try {
-      await profilesApi.publishAllProfiles(clientId, platform || undefined);
-      toast.success("All incidents successfully published", { icon: "✅" });
+      const res = await profilesApi.publishAllProfiles(clientId, platform || undefined, publishScope);
+      toast.success(`${res.published} incident(s) published`, { icon: "✅" });
       await load(false);
     } catch (e) {
       toast.error((e as Error).message);
@@ -2171,14 +2202,28 @@ export function ResultsGrid({
                 >
                   🔗 Add URLs
                 </button>
+                <select
+                  value={publishScope}
+                  onChange={(e) => setPublishScope(e.target.value as typeof publishScope)}
+                  disabled={publishingAll}
+                  title="Which analysed profiles Publish should include"
+                  style={{
+                    padding: "6px 8px", fontSize: "11px", background: "var(--bg-inner)",
+                    border: "1px solid var(--border-color)", borderRadius: "8px", color: "var(--text-main)",
+                  }}
+                >
+                  {(Object.keys(PUBLISH_SCOPE_LABELS) as (typeof publishScope)[]).map((s) => (
+                    <option key={s} value={s}>{PUBLISH_SCOPE_LABELS[s]}</option>
+                  ))}
+                </select>
                 <button
                   className="btn-cyber-primary"
                   style={{ padding: "7px 11px", fontSize: "11px", marginTop: 0, width: "auto" }}
                   onClick={publishAll}
                   disabled={publishingAll || !clientId}
-                  title="Publish every held analysis result matching the current platform view"
+                  title="Publish held analysis results matching the current platform view and selected scope"
                 >
-                  {publishingAll ? "Publishing…" : "📢 Publish All"}
+                  {publishingAll ? "Publishing…" : `📢 Publish ${publishScope === "all" ? "All" : PUBLISH_SCOPE_LABELS[publishScope]}`}
                 </button>
               </>
             )}

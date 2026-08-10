@@ -17,6 +17,7 @@ export const clientsApi = {
     asset_name_domain_keywords?: string[];
     platform_limits?: Record<string, number>;
     platform_tab_limits?: Record<string, Record<string, number>>;
+    official_handles?: Record<string, string>;
     cron?: string | null;
   }) =>
     post("/clients", {

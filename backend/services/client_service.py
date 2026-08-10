@@ -15,16 +15,21 @@ from backend.database.repositories import published_incident_repository as publi
 
 async def upsert(
     client_id: str, name: str, domain: str = "",
-    name_keywords: Optional[list[str]] = None, domain_keywords: Optional[list[str]] = None,
+    name_keywords: Optional[list[str]] = None,
+    domain_keywords: Optional[list[str]] = None,
+    logo_url: str = "",
+    asset_name_individual_keywords: list[str] = [],
+    asset_name_domain_keywords: list[str] = [],
     platform_limits: Optional[dict[str, int]] = None,
     platform_tab_limits: Optional[dict[str, dict[str, int]]] = None,
     cron: Optional[str] = None,
-    name_keyword_drk: Optional[dict[str, str]] = None,
-    domain_keyword_drk: Optional[dict[str, str]] = None,
+    official_handles: Optional[dict[str, str]] = None,
 ) -> dict:
     return await clients_db.upsert(
-        client_id, name, domain, name_keywords, domain_keywords, platform_limits, platform_tab_limits, cron,
-        name_keyword_drk, domain_keyword_drk,
+        client_id, name, domain, name_keywords, domain_keywords,
+        platform_limits, platform_tab_limits, cron,
+        logo_url, asset_name_individual_keywords, asset_name_domain_keywords,
+        official_handles,
     )
 
 

@@ -253,6 +253,54 @@ function KeywordTabs({
   );
 }
 
+// The brand's OWN handle on each platform. Without this the tool has no
+// automated username signal at all: every name_score() in the backend
+// compares display names, so a handle squat ("@adani_care_official") is
+// invisible until a human notices it. Optional per platform -- a blank one
+// simply means "no username score for this platform", never a zero score.
+function OfficialHandlesEditor({
+  platforms,
+  handles,
+  onChange,
+  disabled,
+}: {
+  platforms: PlatformHealth[];
+  handles: Record<string, string>;
+  onChange: (platform: string, value: string) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div style={{ marginTop: "20px" }}>
+      <label className="field-label">🪪 Official Handles (optional)</label>
+      <div style={{ fontSize: "11px", color: "var(--text-dim)", marginTop: "3px", marginBottom: "8px" }}>
+        This brand's <strong>real</strong> account name on each platform. Used to spot look-alike usernames
+        (e.g. <code>adanigroup_official</code> vs <code>adanigroup</code>). Paste the handle or the full
+        profile link — either works. Leave blank if the brand has no account there.
+      </div>
+      <div className="platform-limits-grid">
+        {platforms.map((p) => (
+          <div key={p.platform} className="platform-limit-row">
+            <div className="platform-limit-label">
+              <PlatformIcon platform={p.platform} size={16} />
+              <span>{p.name}</span>
+            </div>
+            <input
+              value={handles[p.platform] ?? ""}
+              onChange={(e) => onChange(p.platform, e.target.value)}
+              placeholder="e.g. adanigroup"
+              title={`This brand's own official handle on ${p.name}`}
+              disabled={disabled}
+              className="platform-limit-input"
+              style={{ minWidth: "150px" }}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
 function PlatformLimitsEditor({
   platforms,
   limits,
@@ -334,22 +382,6 @@ function PlatformLimitsEditor({
 
 const EMPTY_FORM = { id: "", name: "", domain: "", nameKw: [] as string[], domainKw: [] as string[], cron: "" };
 
-const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-
-function parseCronSchedule(cron: string): { mode: "none" | "daily" | "weekly" | "custom"; hour: number; weekday: number } {
-  const trimmed = cron.trim();
-  if (!trimmed) return { mode: "none", hour: 2, weekday: 0 };
-  const daily = trimmed.match(/^0 (\d{1,2}) \* \* \*$/);
-  if (daily) return { mode: "daily", hour: Number(daily[1]), weekday: 0 };
-  const weekly = trimmed.match(/^0 (\d{1,2}) \* \* (\d)$/);
-  if (weekly) return { mode: "weekly", hour: Number(weekly[1]), weekday: Number(weekly[2]) };
-  return { mode: "custom", hour: 2, weekday: 0 };
-}
-
-function buildCronSchedule(mode: "daily" | "weekly", hour: number, weekday: number): string {
-  return mode === "daily" ? `0 ${hour} * * *` : `0 ${hour} * * ${weekday}`;
-}
-
 export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, analysisBusy, onJobs, onError }: Props) {
   const [clients, setClients] = useState<Client[]>([]);
   const [loadingClients, setLoadingClients] = useState(true);
@@ -367,6 +399,7 @@ export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, 
   const [assetNameIndividualKw, setAssetNameIndividualKw] = useState<string[]>([]);
   const [assetNameDomainKw, setAssetNameDomainKw] = useState<string[]>([]);
   const [platformLimits, setPlatformLimits] = useState<Record<string, string>>({});
+  const [officialHandles, setOfficialHandles] = useState<Record<string, string>>({});
   const [facebookTabLimits, setFacebookTabLimits] = useState<{ people: string; pages: string }>({
     people: "",
     pages: "",
@@ -416,6 +449,7 @@ export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, 
     setPlatformLimits(
       Object.fromEntries(Object.entries(c.platform_limits || {}).map(([k, v]) => [k, String(v)])),
     );
+    setOfficialHandles({ ...(c.official_handles || {}) });
     const fbTabs = c.platform_tab_limits?.facebook || {};
     setFacebookTabLimits({
       people: fbTabs.people !== undefined ? String(fbTabs.people) : "",
@@ -434,6 +468,7 @@ export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, 
     setAssetNameIndividualKw([]);
     setAssetNameDomainKw([]);
     setPlatformLimits({});
+    setOfficialHandles({});
     setFacebookTabLimits({ people: "", pages: "" });
     setCron(EMPTY_FORM.cron);
   };
@@ -515,6 +550,10 @@ export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, 
         const n = Number(raw);
         if (raw.trim() && Number.isFinite(n) && n > 0) fbTabLimits[tab] = Math.floor(n);
       }
+      const cleanHandles: Record<string, string> = {};
+      for (const [platform, raw] of Object.entries(officialHandles)) {
+        if (raw.trim()) cleanHandles[platform] = raw.trim();
+      }
       const client = await clientsApi.upsertClient({
         client_id: id,
         name,
@@ -526,6 +565,7 @@ export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, 
         asset_name_domain_keywords: assetNameDomainKw,
         platform_limits: parsedLimits,
         platform_tab_limits: Object.keys(fbTabLimits).length ? { facebook: fbTabLimits } : {},
+        official_handles: cleanHandles,
         cron: cron.trim() || null,
       });
       setActiveClient(client);
@@ -724,7 +764,6 @@ export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, 
                     ? `${Object.keys(activeClient.platform_limits).length} platform cap(s)`
                     : "scrape all platforms"}
                 </span>
-                {activeClient.cron && <span className="meta-chip">⏱️ {activeClient.cron}</span>}
               </div>
             </div>
 
@@ -890,74 +929,12 @@ export function HomeView({ clientId, platforms, onClient, onForgetClient, busy, 
               disabled={busy}
             />
 
-            <div style={{ marginTop: "20px" }}>
-              <label className="field-label">⏱️ Recurring Schedule (optional)</label>
-              {(() => {
-                const parsed = parseCronSchedule(cron);
-                const selectStyle = {
-                  background: "var(--bg-inner)",
-                  border: "1px solid var(--border-color)",
-                  borderRadius: "10px",
-                  padding: "10px 12px",
-                  color: "var(--text-main)",
-                  fontSize: "12px",
-                  outline: "none",
-                } as const;
-                return (
-                  <div style={{ marginTop: "7px", display: "flex", flexDirection: "column", gap: "8px" }}>
-                    <select
-                      value={parsed.mode}
-                      onChange={(e) => {
-                        const mode = e.target.value as "none" | "daily" | "weekly" | "custom";
-                        if (mode === "none") setCron("");
-                        else if (mode === "custom") setCron(cron.trim() || "0 2 * * *");
-                        else setCron(buildCronSchedule(mode, parsed.hour, parsed.weekday));
-                      }}
-                      style={{ ...selectStyle, width: "100%" }}
-                    >
-                      <option value="none">No recurring schedule</option>
-                      <option value="daily">Daily</option>
-                      <option value="weekly">Weekly</option>
-                      <option value="custom">Custom (cron expression)</option>
-                    </select>
-
-                    {(parsed.mode === "daily" || parsed.mode === "weekly") && (
-                      <div style={{ display: "flex", gap: "8px" }}>
-                        {parsed.mode === "weekly" && (
-                          <select
-                            value={parsed.weekday}
-                            onChange={(e) => setCron(buildCronSchedule("weekly", parsed.hour, Number(e.target.value)))}
-                            style={{ ...selectStyle, flex: 1 }}
-                          >
-                            {WEEKDAYS.map((d, i) => (
-                              <option key={d} value={i}>{d}</option>
-                            ))}
-                          </select>
-                        )}
-                        <select
-                          value={parsed.hour}
-                          onChange={(e) => setCron(buildCronSchedule(parsed.mode as "daily" | "weekly", Number(e.target.value), parsed.weekday))}
-                          style={{ ...selectStyle, flex: 1 }}
-                        >
-                          {Array.from({ length: 24 }, (_, h) => (
-                            <option key={h} value={h}>{`${String(h).padStart(2, "0")}:00`}</option>
-                          ))}
-                        </select>
-                      </div>
-                    )}
-
-                    {parsed.mode === "custom" && (
-                      <input
-                        value={cron}
-                        onChange={(e) => setCron(e.target.value)}
-                        placeholder="cron expression, e.g. 0 2 * * * — blank disables"
-                        style={{ ...selectStyle, width: "100%", fontFamily: "var(--font-mono)" }}
-                      />
-                    )}
-                  </div>
-                );
-              })()}
-            </div>
+            <OfficialHandlesEditor
+              platforms={platforms}
+              handles={officialHandles}
+              onChange={(platform, value) => setOfficialHandles((prev) => ({ ...prev, [platform]: value }))}
+              disabled={busy}
+            />
 
             <button
               onClick={saveConfig}
