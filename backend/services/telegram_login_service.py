@@ -1,7 +1,7 @@
-"""Interactive Telegram login -- the one auth flow that cannot be a single
+"""Interactive Telegram login, the one auth flow that cannot be a single
 call. MTProto login is inherently multi-step (a code, then optionally a 2FA
-password), and the state in between steps -- a connected-but-unauthorised
-client, plus the phone_code_hash Telegram issues with the code -- has to
+password), and the state in between steps, a connected-but-unauthorised
+client, plus the phone_code_hash Telegram issues with the code, has to
 live somewhere between HTTP requests. This module is that somewhere: one
 pending login at a time, held in memory, torn down on success, failure, or
 a fresh start.
@@ -12,10 +12,11 @@ forwarded straight to Telegram's own sign-in call and never written anywhere.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Optional
 
-from backend.config.settings import settings, write_env
+from backend.config.settings import settings
 from backend.shared.errors import ConflictError, UpstreamPlatformError, ValidationError
 from backend.shared.logging import get_logger
 
@@ -66,7 +67,7 @@ async def send_code(api_id: int, api_hash: str, phone: str) -> dict:
     session_path = settings.session_blob_path / "telegram"
 
     # Every login attempt starts from a clean MTProto handshake. Telethon's
-    # session file caches the DC + auth-key from `client.connect()` alone --
+    # session file caches the DC + auth-key from `client.connect()` alone
     # that succeeds regardless of whether api_id/api_hash are valid, so a
     # rejected attempt (or an abandoned retry) still leaves stale auth state
     # behind. Reusing that file for the next attempt is what Telegram
@@ -90,12 +91,17 @@ async def send_code(api_id: int, api_hash: str, phone: str) -> dict:
     global _pending
     _pending = _Pending(client=client, phone=phone, phone_code_hash=sent.phone_code_hash, api_id=api_id, api_hash=api_hash)
 
-    # Save now, not on success: the Telegram scanner adapter reads these
+    # Set now, not on success: the Telegram scanner adapter reads these
     # from the environment on its next start() regardless of how this login
     # flow ends, and a wrong id/hash is what send_code_request would have
-    # already rejected above.
-    write_env("TELEGRAM_API_ID", str(api_id))
-    write_env("TELEGRAM_API_HASH", api_hash)
+    # already rejected above. In-process only, never written to .env
+    # `_finish()` below persists the real durable copy to Mongo
+    # (save_mtproto_session), and sessions/manager.py::state_for() already
+    # re-hydrates os.environ from Mongo on every startup, so a restart
+    # before login completes just means logging in again, not a lost value
+    # some file was supposed to be keeping safe.
+    os.environ["TELEGRAM_API_ID"] = str(api_id)
+    os.environ["TELEGRAM_API_HASH"] = api_hash
 
     log.info(f"login code requested for {phone}")
     return {"status": "code_sent", "phone": phone}

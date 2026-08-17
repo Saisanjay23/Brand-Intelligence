@@ -1,5 +1,5 @@
 """The scan record: one suspect profile, its raw scraped fields, and its
-derived score -- what a platform's analysis engine builds up field-by-field
+derived score, what a platform's analysis engine builds up field-by-field
 over the course of visiting one profile. Every `platforms/*/analysis_engine.py`
 adapter constructs and mutates one of these directly (`row.mark(...)`,
 `row.note(...)`, `row.has_custom_pic = True`, ...); this exact shape is
@@ -12,8 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from backend.shared.models.scoring import (ACTIVE_WINDOW_DAYS, BASE, NAME_THRESHOLD,
-                                        REACH_AT, W_ACTIVE, W_LOGO, W_NAME, W_REACH)
+from backend.shared.models.scoring import ACTIVE_WINDOW_DAYS, NAME_THRESHOLD, compute_score
 
 
 @dataclass
@@ -36,7 +35,7 @@ class Row:
     profile_pic_url: str = ""
     has_custom_pic: Optional[bool] = None
     # a real platform-issued verification badge, read directly off the
-    # platform's own payload/DOM -- None means "this platform's analysis
+    # platform's own payload/DOM. None means "this platform's analysis
     # engine doesn't check for one", never "not verified".
     verified: Optional[bool] = None
     screenshot: str = ""
@@ -51,7 +50,7 @@ class Row:
     def mark(self, fld: str, source: str) -> None:
         self.src[fld] = source
 
-    # -- derived --
+    # Derived
 
     @property
     def logo_yes(self) -> str:
@@ -78,22 +77,17 @@ class Row:
 
     @property
     def risk(self) -> int:
-        """BASE..MAX_SCORE. A blank field scores nothing, never a penalty --
-        "not visible to this session" is not evidence of innocence."""
-        s = BASE
-        if self.logo_yes == "Yes":
-            s += W_LOGO
-        if self.name_yes == "Yes":
-            s += W_NAME
-        if self.active_yes == "Yes":
-            s += W_ACTIVE
-        if (self.followers or 0) >= REACH_AT:
-            s += W_REACH
-        return s
+        """See scoring.py's `compute_score` for the full tiered rubric."""
+        return compute_score(
+            has_logo=self.logo_yes == "Yes",
+            has_name_match=self.name_yes == "Yes",
+            has_location=bool(self.location.strip()),
+            last_post_iso=self.last_post_iso,
+        )
 
     @property
     def priority(self) -> str:
-        """Driven by the profile photo, not by the total -- lifting the
+        """Driven by the profile photo, not by the total, lifting the
         brand's own photo is the act that makes an impersonation convincing,
         so it sets High on its own."""
         if self.logo_yes == "Yes":

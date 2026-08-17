@@ -1,5 +1,5 @@
 // Live discovery/analysis results, isolated from client configuration
-// (HomeView) onto its own nav page -- results browsing is a different task
+// (HomeView) onto its own nav page, results browsing is a different task
 // from curating a client's search config.
 import type { JobEvent, PlatformHealth, PlatformProgress } from "../api/types";
 import { ResultsGrid } from "../components/ResultsGrid";

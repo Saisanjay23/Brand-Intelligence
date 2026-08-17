@@ -91,6 +91,16 @@ export function PlatformIcon({ platform, size = 20, color }: Props) {
           />
         </svg>
       );
+    case "tiktok":
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+          <rect width="24" height="24" rx="6" fill={color || "#000"} />
+          <path
+            d="M15.5 4h2.1c.13 1.24.83 2.32 2.4 2.66v2.16c-.9-.03-1.7-.32-2.4-.79v5.4c0 2.7-2.02 4.57-4.55 4.57-2.53 0-4.55-1.87-4.55-4.4 0-2.55 2.24-4.42 4.7-4.16v2.2c-1.16-.2-2.4.53-2.4 1.85 0 1.15.98 1.99 2.1 1.99 1.24 0 2.2-.99 2.2-2.4V4z"
+            fill="#fff"
+          />
+        </svg>
+      );
     default:
       return <span>🌐</span>;
   }

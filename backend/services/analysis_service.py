@@ -14,10 +14,10 @@ so a failed check there fails the job outright instead of looping forever.
 
 from __future__ import annotations
 
+import asyncio
 import re
 import traceback
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 
 from backend.database.repositories import profile_repository as profiles_db
@@ -26,6 +26,7 @@ from backend.services import incident_service as incidents_engine
 from backend.sessions import manager as sessions_engine
 from backend.services.job_service import Job
 from backend.shared.models.row import Row
+from backend.shared.resilience import classify_failure, is_transient, retry_async
 from backend.platforms.scan_options import ScanOptions
 from backend.config.settings import settings
 from backend.shared.logging import get_logger
@@ -39,35 +40,23 @@ def _tri(flag: str) -> Optional[bool]:
     The empty string means the scraper could not determine the field, which
     is NOT the same as determining it to be false. Collapsing both to False
     (what this used to do) published "this account is inactive" about
-    profiles whose last-post date was never visible to begin with -- routine
-    on Telegram and Instagram -- and dragged their risk rating down with it.
+    profiles whose last-post date was never visible to begin with, routine
+    on Telegram and Instagram, and dragged their risk rating down with it.
     `save()` drops None rather than writing it, so an unknown stays unknown
     instead of overwriting a value an earlier, more complete run did read.
     """
     return True if flag == "Yes" else False if flag == "No" else None
 
 
-def _relative_screenshot(raw: str) -> str:
-    """An absolute capture path -> the path stored on the profile document,
-    relative to `settings.evidence_path`.
-
-    Never store the absolute path: it leaks the server's filesystem layout
-    through the API, and it breaks the moment the evidence volume is mounted
-    somewhere else. `GET /profiles/{id}/screenshot` re-joins this against
-    the configured root and refuses anything that escapes it.
-    """
-    if not raw:
-        return ""
-    try:
-        return Path(raw).resolve().relative_to(settings.evidence_path.resolve()).as_posix()
-    except (ValueError, OSError):
-        return ""
-
-
 def _row_to_fields(row: Row) -> dict:
     """An analysis Row -> the plain field dict `profile_repository.save` expects,
     carrying the scoring across."""
-    shot = _relative_screenshot(row.screenshot)
+    # `row.screenshot` is already the exact GridFS key a platform's own
+    # screenshot() method wrote the capture under (see evidence_repository.py)
+    #; nothing left to resolve or validate against a filesystem root here,
+    # since a GridFS key is just a string lookup, not a path that can escape
+    # anywhere.
+    shot = (row.screenshot or "").strip()
     fields = {
         "url": row.url, "entity_id": row.profile_id, "keyword": "",
         "display_name": row.profile_name, "entity_type": row.entity_type,
@@ -75,7 +64,15 @@ def _row_to_fields(row: Row) -> dict:
         "followers": row.followers, "followers_exact": row.followers_exact,
         "friends": row.friends, "location": row.location,
         "profile_image_url": row.profile_pic_url,
-        "has_logo": _tri(row.logo_yes), "verified": bool(row.verified),
+        # row.verified is None when this platform's analysis engine never
+        # checked for a badge at all (see shared/models/row.py), passed
+        # through AS-IS, not coerced with bool(), so save()'s existing
+        # None-drops-the-key filter leaves an already-True value (set by
+        # discovery, or an earlier analysis pass) alone instead of every
+        # re-analysis silently stomping it back to False. bool(row.verified)
+        # used to do exactly that for any platform whose analysis phase
+        # doesn't explicitly detect a badge.
+        "has_logo": _tri(row.logo_yes), "verified": row.verified,
         "is_active": _tri(row.active_yes),
         "has_name_match": _tri(row.name_yes), "name_score": row.name_score,
         "last_post_date": row.last_post_iso, "risk_score": row.risk, "priority": row.priority,
@@ -93,7 +90,7 @@ async def run_analysis(job: Job) -> None:
     mgr = JobManager()
     p = job.params
     # force=True: re-analyse every currently-approved profile, including
-    # ones a previous run already scored -- not just the ones still owed
+    # ones a previous run already scored, not just the ones still owed
     # (unanalysed, or failed-and-retryable). This is what makes the
     # analyst-facing "run analysis again" button actually run again, even
     # when the auto-trigger-on-approve or the 20-minute catch-up sweep has
@@ -119,7 +116,7 @@ async def run_analysis(job: Job) -> None:
 
     total_urls = sum(len(urls) for _, urls in targets)
     if total_urls == 0:
-        # a normal, common outcome for a batch run -- several jobs can
+        # a normal, common outcome for a batch run, several jobs can
         # queue behind a platform's lock at once, and by the time a later
         # one runs the first may have already covered everything. Not a
         # real failure: must not raise/FAILED/alert. force=True reaching
@@ -143,7 +140,7 @@ async def run_analysis(job: Job) -> None:
         try:
             saved, new, attempted, reason = await _analyse_platform(job, mgr, platform_id, urls, p)
             # "done" means every URL was actually attempted. A run that
-            # stopped early -- pool exhausted, credentials rejected -- is
+            # stopped early, pool exhausted, credentials rejected, is
             # `partial`, and says why. Reporting it as done (which is what
             # happened before: the wrapper stamped processed=len(urls) on
             # any non-exception return, including the early `break`) told an
@@ -172,16 +169,18 @@ async def run_analysis(job: Job) -> None:
 
 
 def _evidence_dir(client_id: str, platform_id: str) -> Optional[str]:
-    """Where this run's screenshots go, or None when capture is disabled.
+    """The GridFS key prefix this run's screenshots are stored under (see
+    `database/repositories/evidence_repository.py`), or None when capture is
+    disabled.
 
     Partitioned by client and platform so a client-deletion cascade can drop
-    one directory tree, and so a single directory never accumulates every
-    profile the engine has ever visited.
+    every one of that client's captures by key prefix, and so two clients'
+    identically-shaped entity ids can never collide on the same key.
     """
     if not settings.capture_evidence:
         return None
     safe_client = re.sub(r"[^A-Za-z0-9._-]", "_", client_id or "unknown")[:80]
-    return str(settings.evidence_path / safe_client / platform_id)
+    return f"{safe_client}/{platform_id}"
 
 
 async def _analyse_platform(
@@ -213,7 +212,12 @@ async def _analyse_platform(
     saved = new = attempted = 0
     stop_reason = ""
 
-    await mgr.emit(job, "progress", platform=platform_id, platform_status="running", platform_total=len(urls))
+    # `platform_pending_seed` is what an analyst watching Live Activity sees
+    # as "still to analyse" for this platform before a single URL completes
+    await mgr.emit(
+        job, "progress", platform=platform_id, platform_status="running", platform_total=len(urls),
+        platform_pending_seed=list(urls),
+    )
 
     while remaining:
         try:
@@ -237,7 +241,7 @@ async def _analyse_platform(
             if not await scraper.check_session():
                 session_id = session_item.get("id", "")
                 if not session_id:
-                    # key/MTProto-authed: no pool to rotate through -- the
+                    # key/MTProto-authed: no pool to rotate through; the
                     # same credential would just fail again forever
                     log.warning(f"[{platform_id}] credentials invalid or rejected")
                     stop_reason = "credentials invalid or rejected"
@@ -255,76 +259,144 @@ async def _analyse_platform(
             # backoff level it earned during an earlier bad patch
             await sessions_engine.mark_session_ok(platform_id, session_item.get("id", ""))
 
+            # Telegram allows exactly one MTProto connection/session file at
+            # a time (see sessions/manager.py::session_for_job); no
+            # exceptions, regardless of what a caller configured. Every
+            # other platform's `.one()` opens its own fresh page from the
+            # shared browser context per call (confirmed across facebook/
+            # instagram/twitter/tiktok analysis_engine.py), so a handful of
+            # tabs can run against the same logged-in session safely. Capped
+            # at 3 in code, not just by convention, so a bad config value
+            # can never turn this into an unbounded stampede.
+            wave_size = 1 if platform_id == "telegram" else max(1, min(options.concurrency, 3))
+            STAGGER_SECONDS = 1.5
+
+            async def _process_one(idx: int, url: str) -> tuple[str, Optional[Row], Optional[Exception]]:
+                if idx:
+                    # Tabs open a beat apart rather than all at once; the
+                    # same stagger facebook/analysis_engine.py::run_parallel
+                    # already uses for its own (otherwise-unreachable from
+                    # this caller) multi-tab path.
+                    await asyncio.sleep(idx * STAGGER_SECONDS)
+                try:
+                    # A same-session blip (one dropped nav, a slow XHR) gets
+                    # one quick retry before counting as a real failure
+                    # `retryable=is_transient` means anything session-shaped
+                    # (rate limit/checkpoint/auth) skips the retry entirely
+                    # and falls straight to the except below, unretried,
+                    # exactly as before this existed.
+                    row = await retry_async(
+                        lambda: scraper.one(url, target, feed),
+                        attempts=2, base_delay=2.0, max_delay=6.0,
+                        retryable=is_transient,
+                    )
+                    return url, row, None
+                except Exception as e:
+                    return url, None, e
+
             while remaining:
-                url = remaining[0]
-                i = len(urls) - len(remaining) + 1
-                try:
-                    row = await scraper.one(url, target, feed)
-                except Exception as e:
-                    err_str = str(e).lower()
-                    if "rate limit" in err_str or "checkpoint" in err_str or "login" in err_str:
-                        log.warning(f"[{platform_id}] session {session_item.get('identifier')} died/rate limited -- rotating")
-                        # Backoff is now graduated and keyed on this
-                        # session's own consecutive-failure count (see
-                        # sessions/manager.py::mark_session_failed) -- one
-                        # 429 no longer burns a session for a full day, so
-                        # a bad afternoon can't quarantine the whole pool.
-                        await sessions_engine.mark_session_failed(
-                            platform_id, session_item.get("id", ""), "rate_limited",
-                        )
-                        break  # inner loop; outer loop retries with a new session
+                batch = remaining[:wave_size]
+                results = await asyncio.gather(*(_process_one(idx, u) for idx, u in enumerate(batch)))
 
-                    if "navigation failed" in err_str or "timeout" in err_str:
-                        consecutive_timeouts += 1
-                        if consecutive_timeouts >= 10:
-                            import asyncio
-                            asyncio.create_task(incidents_engine.record(
-                                platform_id, "analysis", job.client_id, job.id, "Proxy/IP Block",
-                                "Too many consecutive network timeouts. The proxy pool may be exhausted or local IP blocked.",
-                                url,
-                            ))
+                # A session-shaped failure anywhere in the wave stops the
+                # NEXT wave from being dispatched, but every tab already
+                # in flight for THIS wave already ran by the time `gather`
+                # returns, same tradeoff facebook/analysis_engine.py::
+                # run_parallel already makes; there is no cheaper way to
+                # abort a sibling tab mid-flight. `session_burned` dedupes
+                # mark_session_failed to one call even if several tabs in
+                # the same wave hit it simultaneously.
+                stop_wave = False
+                session_burned = False
+
+                for url, row, e in results:
+                    if e is not None:
+                        reason = classify_failure(e)
+                        if reason:
+                            if not session_burned:
+                                log.warning(f"[{platform_id}] session {session_item.get('identifier')} {reason} -- rotating")
+                                # Backoff is now graduated and keyed on this
+                                # session's own consecutive-failure count (see
+                                # sessions/manager.py::mark_session_failed)
+                                # one 429 no longer burns a session for a full
+                                # day, so a bad afternoon can't quarantine the
+                                # whole pool. `reason` (checkpointed/
+                                # rate_limited/expired) is the SAME classifier
+                                # discovery uses, instead of every one of
+                                # these three shapes previously being forced
+                                # into "rate_limited" regardless, a real
+                                # checkpoint never reached DEAD_STATES or
+                                # fired a SessionInvalid incident under the
+                                # old blanket reason, so it looked like
+                                # ordinary cooldown instead of an account that
+                                # needs fresh cookies.
+                                await sessions_engine.mark_session_failed(
+                                    platform_id, session_item.get("id", ""), reason, detail=str(e),
+                                )
+                                session_burned = True
+                            stop_wave = True
+                            # left in `remaining` on purpose; the next
+                            # session rotation retries it, exactly as before
+                            continue
+
+                        if is_transient(e):
+                            consecutive_timeouts += 1
+                            if consecutive_timeouts >= 10:
+                                asyncio.create_task(incidents_engine.record(
+                                    platform_id, "analysis", job.client_id, job.id, "Proxy/IP Block",
+                                    "Too many consecutive network timeouts even after retrying each one. "
+                                    "The proxy pool may be exhausted or local IP blocked.",
+                                    url,
+                                ))
+                                consecutive_timeouts = 0
+                        else:
                             consecutive_timeouts = 0
-                    else:
+
+                        row = Row(url=url, target=target, original_feed=feed)
+                        row.status = "ERROR"
+                        row.note(f"unexpected: {type(e).__name__}: {e}")
+                        log.error(f"job {job.id}: {url} raised past .one() (after retry if transient): {e}\n{traceback.format_exc()}")
+
+                    rows.append(row)
+                    if row.status != "ERROR":
                         consecutive_timeouts = 0
+                    remaining.remove(url)
+                    attempted += 1
+                    i = attempted
 
-                    row = Row(url=url, target=target, original_feed=feed)
-                    row.status = "ERROR"
-                    row.note(f"unexpected: {type(e).__name__}: {e}")
-                    log.error(f"job {job.id}: {url} raised past .one(): {e}\n{traceback.format_exc()}")
+                    # Save immediately to database so results are visible right away in UI
+                    try:
+                        s, n = await profiles_db.save_many(
+                            job.client_id, platform_id, "analysis", [_row_to_fields(row)]
+                        )
+                        saved += s
+                        new += n
+                        job.new_profiles += n
+                    except Exception as e2:
+                        log.warning(f"job {job.id}: failed to save analyzed profile {url}: {e2}")
 
-                rows.append(row)
-                if row.status != "ERROR":
-                    consecutive_timeouts = 0
-                remaining.pop(0)
-                attempted += 1
+                    try:
+                        health_engine.record(platform_id, row.status, row.notes)
+                    except Exception:
+                        pass
+                    try:
+                        await mgr.emit(
+                            job, "item", f"[{platform_id}] {i}/{len(urls)} {row.profile_name or url} [{row.priority}]",
+                            found=i, platform=platform_id, platform_status="running", platform_processed=i,
+                            platform_item_done=url,
+                        )
+                    except Exception:
+                        pass
 
-                # Save immediately to database so results are visible right away in UI
-                try:
-                    s, n = await profiles_db.save_many(
-                        job.client_id, platform_id, "analysis", [_row_to_fields(row)]
-                    )
-                    saved += s
-                    new += n
-                    job.new_profiles += n
-                except Exception as e:
-                    log.warning(f"job {job.id}: failed to save analyzed profile {url}: {e}")
+                    if row.status == "CHECKPOINT":
+                        if not session_burned:
+                            await sessions_engine.mark_session_failed(
+                                platform_id, session_item.get("id", ""), "checkpointed",
+                            )
+                            session_burned = True
+                        stop_wave = True
 
-                try:
-                    health_engine.record(platform_id, row.status, row.notes)
-                except Exception:
-                    pass
-                try:
-                    await mgr.emit(
-                        job, "item", f"[{platform_id}] {i}/{len(urls)} {row.profile_name or url} [{row.priority}]",
-                        found=i, platform=platform_id, platform_status="running", platform_processed=i,
-                    )
-                except Exception:
-                    pass
-
-                if row.status == "CHECKPOINT":
-                    await sessions_engine.mark_session_failed(
-                        platform_id, session_item.get("id", ""), "checkpointed",
-                    )
+                if stop_wave:
                     break  # inner loop; outer loop retries with a new session
 
                 if remaining:
@@ -345,7 +417,7 @@ def _check_last_post_extraction_health(platform_id: str, job: Job, rows: list[Ro
     """Detect the analysis-phase equivalent of discovery's parser-drift
     canary (see discovery_service.py / shared/extraction.py): a platform
     changing its page or payload shape doesn't raise an exception, it just
-    makes every last-post extraction tier come up empty -- a row that loads
+    makes every last-post extraction tier come up empty, a row that loads
     fine (status OK) but is neither "has posts, dated X" nor "confirmed no
     posts", it is simply unknown. One or two of those on a real run is
     normal (a slow XHR, an odd profile); a majority of an OK batch is the
@@ -384,7 +456,7 @@ def _check_last_post_extraction_health(platform_id: str, job: Job, rows: list[Ro
 
 
 # The exact function an operator should open first for each platform's
-# last-post extraction -- not a dynamic blame trail like discovery's
+# last-post extraction, not a dynamic blame trail like discovery's
 # run_strategies chain (these engines' last-post tiers are plain functions,
 # not registered strategies), but naming the right function directly is
 # still far better than the alert saying only "Facebook broke".

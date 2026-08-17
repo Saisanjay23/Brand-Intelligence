@@ -1,6 +1,7 @@
 import { useState, type CSSProperties, type FC } from "react";
 import { sessionsApi } from "../api/sessionsApi";
-import type { SessionInfo } from "../api/types";
+import type { SessionInfo, SessionItem } from "../api/types";
+import { confirmAction } from "../utils/confirmAction";
 
 interface Props {
   sessions: SessionInfo[];
@@ -21,8 +22,23 @@ function getPlatformIcon(platform: string): string {
     case "twitter": return "𝕏";
     case "youtube": return "▶️";
     case "telegram": return "✈️";
+    case "tiktok": return "🎵";
     default: return "🌐";
   }
+}
+
+// How long these login cookies have left. Only worth showing when it's
+// close enough to act on, a token good for another eight months is noise,
+// one good for three days is the next thing you should deal with.
+const EXPIRY_WARN_DAYS = 14;
+
+function expiryLabel(expiresAt: number | undefined): { text: string; urgent: boolean } | null {
+  if (!expiresAt) return null;
+  const days = (expiresAt * 1000 - Date.now()) / 86400000;
+  if (days <= 0) return { text: "login cookies have expired", urgent: true };
+  if (days > EXPIRY_WARN_DAYS) return null;
+  if (days < 1) return { text: "expires in under a day", urgent: true };
+  return { text: `expires in ${Math.round(days)}d`, urgent: days <= 3 };
 }
 
 function cooldownLabel(rateLimitedUntil: number | undefined): string {
@@ -73,6 +89,26 @@ export function SessionPanel({ sessions, onChanged }: Props) {
   const [activeTabs, setActiveTabs] = useState<Record<string, "pool" | "controls">>({});
   const [busyPlatform, setBusyPlatform] = useState<string>("");
   const [globalError, setGlobalError] = useState<string>("");
+  // which single account is being live-checked right now, and what the last
+  // check said, kept per session id so checking one row doesn't grey out
+  // the whole platform card the way a pool-wide action does
+  const [checkingId, setCheckingId] = useState<string>("");
+  const [checkResult, setCheckResult] = useState<{ id: string; ok: boolean; detail: string } | null>(null);
+
+  const checkOneSession = async (platform: string, sessionId: string) => {
+    setCheckingId(sessionId);
+    setCheckResult(null);
+    setGlobalError("");
+    try {
+      const res = await sessionsApi.checkSessionItem(platform, sessionId);
+      setCheckResult({ id: sessionId, ok: res.ok, detail: res.detail });
+      onChanged();
+    } catch (e) {
+      setGlobalError((e as Error).message);
+    } finally {
+      setCheckingId("");
+    }
+  };
 
   const handleAction = async (fn: () => Promise<unknown>, platform: string) => {
     setBusyPlatform(platform);
@@ -91,6 +127,12 @@ export function SessionPanel({ sessions, onChanged }: Props) {
     setActiveTabs((prev) => ({ ...prev, [platformId]: tab }));
   };
 
+  const expiringSessions = sessions.flatMap((p) =>
+    (p.sessions || [])
+      .map((s) => ({ platform: p.platform, ...s, expiry: expiryLabel(s.expires_at) }))
+      .filter((s) => s.expiry && s.expiry.urgent)
+  );
+
   return (
     <div style={{ padding: "24px", color: "var(--text-main, #f2f4f7)", position: "relative", maxWidth: "1600px", margin: "0 auto" }}>
       <style>{embeddedStyles}</style>
@@ -102,32 +144,48 @@ export function SessionPanel({ sessions, onChanged }: Props) {
             Platform Credential & Session Pool
           </h1>
           <p style={{ fontSize: "13px", color: "var(--text-muted, #98a2b3)", margin: "4px 0 0 0" }}>
-            Manage up to 20 accounts per platform with smart rotation during discovery sweeps.
+            Manage browser sessions, API keys, and cookie storage for all scraping platforms.
           </p>
         </div>
-        {globalError && (
-          <div style={{
-            padding: "10px 16px",
-            background: "var(--bg-surface-alt, #1d2939)",
-            border: "1px solid var(--border-color, #344054)",
-            borderRadius: "8px",
-            color: "var(--text-primary, #ffffff)",
-            fontSize: "13px",
-            fontWeight: 500,
-            display: "flex",
-            alignItems: "center",
-            gap: "10px"
-          }}>
-            <span>⚠️ Notice: {globalError}</span>
-            <button
-              onClick={() => setGlobalError("")}
-              style={{ background: "transparent", border: "none", color: "#fff", cursor: "pointer", fontSize: "14px", fontWeight: 700 }}
-            >
-              ✕
-            </button>
-          </div>
-        )}
       </div>
+
+      {expiringSessions.length > 0 && (
+        <div style={{
+          padding: "12px 16px", background: "rgba(253, 183, 27, 0.1)", border: "1px solid rgba(253, 183, 27, 0.35)",
+          color: "var(--warn-yellow, #FDB71B)", borderRadius: "10px", marginBottom: "20px", fontSize: "13px",
+          display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap",
+        }}>
+          <span style={{ fontSize: "16px" }}>⚠️</span>
+          <span>
+            <strong>{expiringSessions.length} session(s) require attention:</strong>{" "}
+            {expiringSessions.map((s) => `${s.platform} (${s.identifier || "account"} — ${s.expiry?.text})`).join(", ")}
+          </span>
+        </div>
+      )}
+
+      {globalError && (
+        <div style={{
+          padding: "10px 16px",
+          background: "var(--bg-surface-alt, #1d2939)",
+          border: "1px solid var(--border-color, #344054)",
+          borderRadius: "8px",
+          color: "var(--text-primary, #ffffff)",
+          fontSize: "13px",
+          fontWeight: 500,
+          display: "flex",
+          alignItems: "center",
+          gap: "10px",
+          marginBottom: "20px"
+        }}>
+          <span>⚠️ Notice: {globalError}</span>
+          <button
+            onClick={() => setGlobalError("")}
+            style={{ background: "transparent", border: "none", color: "#fff", cursor: "pointer", fontSize: "14px", fontWeight: 700 }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Grid of Uniform Platform Modules */}
       <div style={{
@@ -139,7 +197,21 @@ export function SessionPanel({ sessions, onChanged }: Props) {
         {sessions.map((s) => {
           const tab = activeTabs[s.platform] || "pool";
           const poolCount = s.sessions?.length || 0;
-          const activeCount = s.sessions?.filter(x => x.status === "ready").length || 0;
+          // `available` is the server's own "a job could pick this right
+          // now" (not dead AND past any cooldown, sessions/manager.py::
+          // _is_available), which is what the header count and the platform
+          // rail are derived from too. Counting `status === "ready"` here
+          // instead made this panel disagree with both for a session that
+          // was cooling off. Fall back to the old test only for a server
+          // too old to send the field.
+          // ...except while an auto-login is still running: that row is a
+          // placeholder with no cookies in it yet, and the server's
+          // `available` says true for it (it is neither dead nor cooling
+          // off), which would paint it green before the login has actually
+          // produced anything. It gets its own in-progress badge below.
+          const isUsable = (x: SessionItem) =>
+            x.status !== "running_login" && (x.available ?? x.status === "ready");
+          const activeCount = s.sessions?.filter(isUsable).length || 0;
           const isAtMax = poolCount >= 20;
           const isBusy = busyPlatform === s.platform;
 
@@ -319,8 +391,11 @@ export function SessionPanel({ sessions, onChanged }: Props) {
                       </div>
                     ) : (
                       s.sessions.map((ss, index) => {
-                        const isReady = ss.status === "ready";
+                        const isReady = isUsable(ss);
+                        const loggingIn = ss.status === "running_login";
                         const cooldown = cooldownLabel(ss.rate_limited_until);
+                        const expiry = expiryLabel(ss.expires_at);
+                        const checking = checkingId === ss.id;
 
                         const running = !!ss.in_use;
 
@@ -382,11 +457,66 @@ export function SessionPanel({ sessions, onChanged }: Props) {
                                   </span>
                                 )}
                               </div>
-                              <div style={{ fontSize: "11px", color: "var(--text-muted, #98a2b3)", marginTop: "2px", display: "flex", alignItems: "center", gap: "6px" }}>
+                              <div style={{ fontSize: "11px", color: "var(--text-muted, #98a2b3)", marginTop: "2px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
                                 <span>{ss.cookie_count > 0 ? `${ss.cookie_count} cookies` : s.kind === "api-key" || ss.is_api_key ? "API Key" : "Active"}</span>
-                                {cooldown && <span style={{ color: "var(--text-secondary, #d8d8d8)" }}>• ⌛ {cooldown}</span>}
+                                {cooldown && (
+                                  <span style={{ color: "var(--text-secondary, #d8d8d8)" }}>
+                                    • ⌛ {cooldown}
+                                    {(ss.consecutive_failures ?? 0) > 1 && (
+                                      <span title="Consecutive failures since this account last worked -- the cooldown lengthens each time (15m → 1h → 6h → 24h)">
+                                        {" "}({ss.consecutive_failures} failures in a row)
+                                      </span>
+                                    )}
+                                  </span>
+                                )}
                                 <span title="Total times this session has been picked for a job">• Used {ss.use_count ?? 0}×</span>
+                                {expiry && (
+                                  <span
+                                    title="When the soonest of this account's login cookies lapses. Re-login and paste fresh cookies before then to avoid a failed sweep."
+                                    style={{ color: expiry.urgent ? "var(--danger, #F04438)" : "var(--warning, #F79009)", fontWeight: 600 }}
+                                  >
+                                    • 🔑 {expiry.text}
+                                  </span>
+                                )}
                               </div>
+
+                              {/* Why it stopped working. Without this a dead row is
+                                  just red, and "logged out", "checkpointed" and
+                                  "rate-limited" all need different responses. */}
+                              {checkResult?.id === ss.id && (
+                                <div
+                                  style={{
+                                    fontSize: "11px",
+                                    fontWeight: 600,
+                                    color: checkResult.ok ? "var(--success, #12B76A)" : "var(--danger, #F04438)",
+                                    marginTop: "4px",
+                                  }}
+                                >
+                                  {checkResult.ok
+                                    ? "✅ Checked just now — this account is logged in and working"
+                                    : `❌ Checked just now — ${checkResult.detail || "this account is not usable"}`}
+                                </div>
+                              )}
+
+                              {ss.last_error && !(checkResult?.id === ss.id) && (
+                                <div
+                                  title={ss.last_error}
+                                  style={{
+                                    fontSize: "11px",
+                                    color: "var(--text-secondary, #d8d8d8)",
+                                    background: "rgba(240, 68, 56, 0.10)",
+                                    border: "1px solid rgba(240, 68, 56, 0.35)",
+                                    borderRadius: "4px",
+                                    padding: "3px 6px",
+                                    marginTop: "4px",
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  ⚠️ {ss.last_error}
+                                </div>
+                              )}
                             </div>
 
                             {/* Status & Actions Matching Live Discovery Violet & White Theme */}
@@ -399,18 +529,47 @@ export function SessionPanel({ sessions, onChanged }: Props) {
                                 display: "flex",
                                 flexDirection: "column",
                                 alignItems: "center",
-                                background: isReady ? "var(--success, #12B76A)" : "var(--danger, #F04438)",
+                                background: loggingIn
+                                  ? "var(--warning, #F79009)"
+                                  : isReady ? "var(--success, #12B76A)" : "var(--danger, #F04438)",
                                 color: "#ffffff",
                                 border: "1px solid var(--border-subtle, rgba(255,255,255,0.1))"
                               }}>
-                                <div>LIVE · {isReady ? "ACTIVE" : "EXPIRED"}</div>
+                                <div>{loggingIn ? "LOGGING IN…" : `LIVE · ${isReady ? "ACTIVE" : "INACTIVE"}`}</div>
                                 {ss.last_used > 0 && (
                                   <div style={{ fontSize: "8px", fontWeight: 500, marginTop: "1px", opacity: 0.9 }}>
                                     Last scrape: {new Date(ss.last_used * 1000).toLocaleString()}
                                   </div>
                                 )}
+                                {ss.purge_in_days != null && (
+                                  <div title="Dead accounts are auto-removed after a 7-day grace period unless deleted or rewritten first" style={{ fontSize: "8px", fontWeight: 500, marginTop: "1px", opacity: 0.9 }}>
+                                    {ss.purge_in_days > 0 ? `Auto-removes in ~${ss.purge_in_days}d` : "Auto-removes soon"}
+                                  </div>
+                                )}
                               </div>
 
+                              <button
+                                className="action-btn"
+                                disabled={!!busyPlatform || !!checkingId || !!ss.in_use}
+                                onClick={() => checkOneSession(s.platform, ss.id)}
+                                style={{
+                                  padding: "4px 8px",
+                                  borderRadius: "5px",
+                                  background: "var(--bg-surface-3, #344054)",
+                                  border: "1px solid var(--border-subtle, rgba(255,255,255,0.08))",
+                                  color: "var(--text-body, #ffffff)",
+                                  fontSize: "10px",
+                                  fontWeight: 600,
+                                  cursor: ss.in_use ? "not-allowed" : "pointer"
+                                }}
+                                title={
+                                  ss.in_use
+                                    ? "A job is using this account right now -- checking it at the same time risks a checkpoint"
+                                    : "Log in with this account's saved credentials right now and report back whether it still works"
+                                }
+                              >
+                                {checking ? "…" : "Check"}
+                              </button>
                               <button
                                 className="action-btn"
                                 disabled={!!busyPlatform}
@@ -526,8 +685,8 @@ export function SessionPanel({ sessions, onChanged }: Props) {
                       <button
                         className="action-btn"
                         disabled={!!busyPlatform}
-                        onClick={() => {
-                          if (confirm(`Delete ALL accounts for ${s.name}?`)) {
+                        onClick={async () => {
+                          if (await confirmAction(`Delete ALL accounts for ${s.name}?`)) {
                             handleAction(() => sessionsApi.deleteSessionPool(s.platform), s.platform);
                           }
                         }}
@@ -585,6 +744,10 @@ interface ModalProps {
 const SessionEditModal: FC<ModalProps> = ({ platform, mode, targetSession, onClose, onComplete, onError }) => {
   const isUpdate = mode === "update";
   const [identifier, setIdentifier] = useState<string>(targetSession?.identifier || "");
+  const [authMode, setAuthMode] = useState<"credentials" | "cookies">("credentials");
+  const [username, setUsername] = useState<string>("");
+  const [password, setPassword] = useState<string>("");
+  const [twoFactorSecret, setTwoFactorSecret] = useState<string>("");
   const [cookieBlob, setCookieBlob] = useState<string>("");
   const [apiKey, setApiKey] = useState<string>("");
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
@@ -602,6 +765,13 @@ const SessionEditModal: FC<ModalProps> = ({ platform, mode, targetSession, onClo
       } else {
         if (platform.platform === "youtube" || platform.kind === "api-key") {
           await sessionsApi.saveApiKey(platform.platform, apiKey.trim(), identifier.trim() || "YouTube API Key");
+        } else if (authMode === "credentials") {
+          await sessionsApi.saveCredentials(platform.platform, {
+            identifier: identifier.trim() || "Unnamed Account",
+            username: username.trim(),
+            password,
+            two_factor_secret: twoFactorSecret.trim()
+          });
         } else {
           await sessionsApi.saveCookies(platform.platform, cookieBlob.trim(), identifier.trim() || "Unnamed Account");
         }
@@ -687,24 +857,78 @@ const SessionEditModal: FC<ModalProps> = ({ platform, mode, targetSession, onClo
 
           {/* Field 2: Credentials */}
           <div>
+            {!isApiKeyType && !isUpdate && (
+              <div style={{ display: "flex", gap: "8px", marginBottom: "16px", background: "var(--bg-surface-alt, #1d2939)", padding: "4px", borderRadius: "8px" }}>
+                <button
+                  type="button"
+                  onClick={() => setAuthMode("credentials")}
+                  style={{ flex: 1, padding: "8px", border: "none", borderRadius: "6px", fontSize: "13px", fontWeight: 600, cursor: "pointer", background: authMode === "credentials" ? "var(--bg-surface, #1e2837)" : "transparent", color: authMode === "credentials" ? "var(--text-primary, #fff)" : "var(--text-muted, #98a2b3)", transition: "all 0.2s" }}
+                >
+                  👤 Username / Password (Auto-Login)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAuthMode("cookies")}
+                  style={{ flex: 1, padding: "8px", border: "none", borderRadius: "6px", fontSize: "13px", fontWeight: 600, cursor: "pointer", background: authMode === "cookies" ? "var(--bg-surface, #1e2837)" : "transparent", color: authMode === "cookies" ? "var(--text-primary, #fff)" : "var(--text-muted, #98a2b3)", transition: "all 0.2s" }}
+                >
+                  🍪 Paste JSON Cookies
+                </button>
+              </div>
+            )}
+            
             <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "var(--text-body, #f2f4f7)", marginBottom: "6px" }}>
-              {isApiKeyType ? "API Key" : "Cookies (JSON Array)"}
+              {isApiKeyType ? "API Key" : (authMode === "cookies" || isUpdate) ? "Cookies (JSON Array)" : ""}
             </label>
             {isApiKeyType ? (
               <input
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
-                placeholder="Paste API key here..."
+                placeholder="AIzaSy..."
                 style={modalInputStyle}
                 required={!isUpdate}
               />
+            ) : (!isApiKeyType && authMode === "credentials" && !isUpdate) ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                <div>
+                  <label style={{ display: "block", fontSize: "12px", color: "var(--text-muted, #98a2b3)", marginBottom: "4px" }}>Username / Email / Phone</label>
+                  <input
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    placeholder="e.g. brand_monitor_01@gmail.com"
+                    style={modalInputStyle}
+                    required
+                  />
+                </div>
+                <div>
+                  <label style={{ display: "block", fontSize: "12px", color: "var(--text-muted, #98a2b3)", marginBottom: "4px" }}>Password</label>
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="••••••••••••"
+                    style={modalInputStyle}
+                    required
+                  />
+                </div>
+                <div>
+                  <label style={{ display: "block", fontSize: "12px", color: "var(--text-muted, #98a2b3)", marginBottom: "4px" }}>2FA Secret Key (Optional - for TOTP Auto-fill)</label>
+                  <input
+                    value={twoFactorSecret}
+                    onChange={(e) => setTwoFactorSecret(e.target.value)}
+                    placeholder="e.g. JBSWY3DPEHPK3PXP"
+                    style={modalInputStyle}
+                  />
+                  <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-dim, #667085)" }}>
+                    If 2FA is enabled, enter the 16-character setup key here so the tool can generate the 6-digit code automatically.
+                  </p>
+                </div>
+              </div>
             ) : (
               <textarea
-                rows={6}
                 value={cookieBlob}
                 onChange={(e) => setCookieBlob(e.target.value)}
-                placeholder={'Paste JSON cookies array e.g. [{"domain": ".facebook.com", ...}]'}
-                style={{ ...modalInputStyle, resize: "vertical", fontFamily: "monospace", fontSize: "12px", lineHeight: "1.4" }}
+                placeholder='[{"name": "c_user", "value": "..."}]'
+                style={{ ...modalInputStyle, height: "120px", resize: "vertical", fontFamily: "var(--font-mono, monospace)", fontSize: "12px" }}
                 required={!isUpdate}
               />
             )}

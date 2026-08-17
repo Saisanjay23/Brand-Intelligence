@@ -3,8 +3,9 @@ algorithm every platform's discovery/analysis engine scores every found
 profile against. Had zero direct test coverage despite driving name_yes,
 Row.risk/priority, and the Match Level filter/badge (see the Live Results
 filter fix -- resultsFilter.ts/profile_repository.py both key off this
-score's output range). handle_score (its username-matching sibling) has a
-full test file; this backstops the other half.
+score's output range). It is also the only automated match signal in the
+system: confidence is scored off the client's own search keywords, not off
+any separate handle/username lookup.
 """
 
 from __future__ import annotations

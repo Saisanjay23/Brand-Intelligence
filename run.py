@@ -122,7 +122,7 @@ def setup(force: bool = False) -> bool:
             why="installing the Chromium build for Playwright",
         )
 
-    if shutil.which(npm()) or shutil.which("npm.cmd"):
+    if FRONTEND.is_dir() and (shutil.which(npm()) or shutil.which("npm.cmd")):
         if force or not (FRONTEND / "node_modules").is_dir():
             ok &= run(
                 [npm(), "install", "--no-audit", "--no-fund"],
@@ -131,10 +131,12 @@ def setup(force: bool = False) -> bool:
             )
         if force or not DIST.is_dir():
             ok &= run([npm(), "run", "build"], cwd=FRONTEND, why="building the UI")
+    elif not FRONTEND.is_dir():
+        say(WARN, "frontend directory not found", "running in backend-only API mode; the UI will not be served")
     else:
         say(WARN, "npm not found", "the API will run; the UI will not be served")
 
-    for d in ("session", "runs", "logs"):
+    for d in ("session", "logs"):
         (ROOT / d).mkdir(exist_ok=True)
     return ok
 
@@ -219,7 +221,7 @@ def main() -> None:
         sys.exit(0 if check() else 1)
 
     # first run, or a missing piece: install without being asked
-    if missing_packages() or not DIST.is_dir() or a.build:
+    if missing_packages() or (FRONTEND.is_dir() and not DIST.is_dir()) or a.build:
         print("Brand Intelligence -- first-run setup\n")
         setup(force=a.build)
         print()

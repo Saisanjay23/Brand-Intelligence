@@ -5,8 +5,24 @@ node_modules/
 frontend/dist/
 frontend/test-results/
 frontend/tsconfig.tsbuildinfo
+
+# secrets -- never commit these
 .env
+.env.local
+
+# keep the production template as a reference (it has no real values)
+!.env.production.example
+
 logs/
 runs/
 session/*.json
 session/*.session
+
+# analysis-time evidence screenshots (settings.evidence_path) -- regenerable
+# scrape output, and potentially large: one PNG per analysed profile
+evidence/
+backendengine/
+*.log
+frontend/*.html
+!frontend/index.html
+frontend/test_clip.ts

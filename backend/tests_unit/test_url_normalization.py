@@ -21,6 +21,10 @@ from backend.platforms.telegram.analysis_engine import \
     normalize_url as tg_normalize_url
 from backend.platforms.telegram.analysis_engine import \
     username_of as tg_username_of
+from backend.platforms.tiktok.analysis_engine import \
+    normalize_url as tt_normalize_url
+from backend.platforms.tiktok.analysis_engine import \
+    username_of as tt_username_of
 from backend.platforms.twitter.analysis_engine import \
     handle_of as tw_handle_of
 from backend.platforms.twitter.analysis_engine import \
@@ -62,6 +66,15 @@ class TestFacebook:
 
     def test_no_path_returns_empty_id_not_the_hostname(self):
         assert fb_profile_id("https://www.facebook.com/") == ""
+
+    def test_groups_slash_id_extracts_the_numeric_group_id(self):
+        # the bare /groups directory link (no id) is correctly rejected by
+        # the bad-segments test above -- a REAL group URL has a numeric id
+        # as its second segment, which is a genuine identity, not noise
+        assert fb_profile_id("https://www.facebook.com/groups/152272458887295/") == "152272458887295"
+
+    def test_groups_slash_id_with_no_trailing_slash(self):
+        assert fb_profile_id("https://www.facebook.com/groups/152272458887295") == "152272458887295"
 
 
 class TestInstagram:
@@ -170,3 +183,30 @@ class TestTelegram:
 
     def test_empty_input_returns_empty_username(self):
         assert tg_username_of("") == ""
+
+
+class TestTikTok:
+    def test_scheme_less_input_gets_https(self):
+        assert tt_normalize_url("tiktok.com/@adanigroup") == "https://www.tiktok.com/@adanigroup"
+
+    def test_host_variants_alias_to_www_tiktok_com(self):
+        assert tt_normalize_url("https://m.tiktok.com/@adanigroup") == "https://www.tiktok.com/@adanigroup"
+
+    def test_trailing_slash_is_stripped(self):
+        assert tt_normalize_url("https://www.tiktok.com/@adanigroup/") == "https://www.tiktok.com/@adanigroup"
+
+    def test_empty_input_returns_empty_string(self):
+        assert tt_normalize_url("") == ""
+
+    def test_username_of_strips_at_sign(self):
+        assert tt_username_of("https://www.tiktok.com/@adanigroup") == "adanigroup"
+
+    def test_video_permalink_is_not_mistaken_for_a_username(self):
+        # https://www.tiktok.com/@adanigroup/video/123 -- the first segment
+        # IS the real username here, "video" only rejected as a BAD_SEGMENT
+        # when it's the FIRST path segment (a link with no @user at all)
+        for bad in ("video", "live", "tag", "music", "discover", "upload"):
+            assert tt_username_of(f"https://www.tiktok.com/{bad}") == "", bad
+
+    def test_empty_input_returns_empty_username(self):
+        assert tt_username_of("") == ""

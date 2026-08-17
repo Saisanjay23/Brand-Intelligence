@@ -4,13 +4,13 @@ schema (one `client_id`, one `brand_intel` database, `platform` as a
 document field).
 
 Read-only against the OLD databases (`{prefix}_core.clients`, each
-platform's own `{prefix}_{platform}.profiles` collection) -- this script
+platform's own `{prefix}_{platform}.profiles` collection), this script
 never writes to or deletes from anything there. It only adds to the NEW
 `brand_intel` database's `clients`/`profiles` collections.
 
 The org tier is dropped entirely: every org's clients are flattened into
 one `clients` collection, keyed by the DDD client's own generated `_id`
-(kept as-is -- it's already a stable, unique id). If your SaaS backend
+(kept as-is, it's already a stable, unique id). If your SaaS backend
 wants that id to line up with its own customer id instead, reconcile it
 afterwards with `POST /clients` using the SaaS's id and this client's name.
 
@@ -52,7 +52,7 @@ async def migrate(dry_run: bool) -> None:
         client.close()
         return
 
-    # 1) migrate clients -- org tier dropped, the client's own _id becomes client_id
+    # 1) migrate clients, org tier dropped, the client's own _id becomes client_id
     for old in old_clients:
         client_id = old["_id"]
         existing = await new_db["clients"].find_one({"_id": client_id})

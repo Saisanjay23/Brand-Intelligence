@@ -1,14 +1,14 @@
-// Dedicated Proxy Configuration tab -- pulled out of Sessions on purpose
+// Dedicated Proxy Configuration tab, pulled out of Sessions on purpose
 // (see the app's nav) rather than folded into it, so proxy assignment
 // isn't buried behind the credential-management modal. Every write here
 // goes through the SAME backend routes SessionPanel's proxy fields would
-// have used (PUT/DELETE /sessions/{platform}/{id}/proxy) -- this page adds
+// have used (PUT/DELETE /sessions/{platform}/{id}/proxy), this page adds
 // no new API surface, just a UI for one that existed but had none.
 //
 // "Universal" input: one text box accepts a proxy string in whichever
 // shape the analyst's provider actually handed them (host:port,
-// host:port:user:pass, user:pass@host:port, scheme://host:port, ...) --
-// see services/proxyParser.ts for the exact grammar and
+// host:port:user:pass, user:pass@host:port, scheme://host:port, ...).
+// See services/proxyParser.ts for the exact grammar and
 // backend/sessions/manager.py::_validate_proxy for the server-side
 // backstop on whatever this parses to.
 import { useState } from "react";
@@ -28,12 +28,12 @@ interface Props {
   onChanged: () => void;
 }
 
-// A per-session proxy is a Playwright context-launch option -- it only
+// A per-session proxy is a Playwright context-launch option, it only
 // means anything for the platforms that actually route through
 // sessions/manager.py::session_for_job's cookie branch. YouTube (a REST
 // API call, no browser) and Telegram (Telethon/MTProto, its own separate
 // proxy mechanism) never read this field at all; the backend now refuses
-// to store one for them (see manager.py::set_proxy's kind-gate) -- this
+// to store one for them (see manager.py::set_proxy's kind-gate), this
 // mirrors that gate in the UI so the control is never offered where it
 // would silently do nothing.
 function supportsProxy(kind: SessionInfo["kind"]): boolean {
@@ -110,20 +110,66 @@ export function ProxyPanel({ sessions, onChanged }: Props) {
     run(`check:${platform}`, () => sessionsApi.checkSessionNow(platform));
   };
 
+  const [testingProxies, setTestingProxies] = useState(false);
+  const [proxyLatencies, setProxyLatencies] = useState<Record<string, { ok: boolean; ms?: number; err?: string }>>({});
+
+  const testAllProxies = async () => {
+    setTestingProxies(true);
+    const results: Record<string, { ok: boolean; ms?: number; err?: string }> = {};
+    const tasks: Promise<void>[] = [];
+
+    sessions.forEach((p) => {
+      p.sessions.forEach((s) => {
+        if (!s.proxy_host) return;
+        const key = `${p.platform}:${s.id}`;
+        tasks.push(
+          (async () => {
+            const start = performance.now();
+            try {
+              const res = await sessionsApi.checkSessionNow(p.platform);
+              const elapsed = Math.round(performance.now() - start);
+              results[key] = { ok: res.ok, ms: elapsed, err: res.ok ? undefined : (res.detail || "Failed") };
+            } catch (err) {
+              results[key] = { ok: false, err: (err as Error).message };
+            }
+          })()
+        );
+      });
+    });
+
+    if (!tasks.length) {
+      setTestingProxies(false);
+      return;
+    }
+
+    await Promise.all(tasks);
+    setProxyLatencies(results);
+    setTestingProxies(false);
+  };
+
   const proxyCapable = sessions.filter((s) => supportsProxy(s.kind));
   const notApplicable = sessions.filter((s) => !supportsProxy(s.kind));
 
   return (
     <div style={{ padding: "24px", color: "var(--text-main, #f2f4f7)", maxWidth: "1200px", margin: "0 auto" }}>
-      <div style={{ marginBottom: "20px" }}>
-        <h1 style={{ fontSize: "22px", fontWeight: 700, color: "var(--text-primary, #fff)", margin: 0, letterSpacing: "-0.3px" }}>
-          🌐 Proxy Configuration
-        </h1>
-        <p style={{ fontSize: "13px", color: "var(--text-muted, #98a2b3)", margin: "4px 0 0 0" }}>
-          Each pooled session can exit through its own proxy instead of every account in the pool sharing
-          this machine's IP -- itself a correlation signal across "different" accounts. Paste a proxy
-          string in whatever format your provider gave you.
-        </p>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "20px", flexWrap: "wrap", gap: "12px" }}>
+        <div>
+          <h1 style={{ fontSize: "22px", fontWeight: 700, color: "var(--text-primary, #fff)", margin: 0, letterSpacing: "-0.3px" }}>
+            🌐 Proxy Configuration
+          </h1>
+          <p style={{ fontSize: "13px", color: "var(--text-muted, #98a2b3)", margin: "4px 0 0 0" }}>
+            Each pooled session can exit through its own proxy instead of every account in the pool sharing
+            this machine's IP.
+          </p>
+        </div>
+        <button
+          className="btn-cyber-primary"
+          onClick={testAllProxies}
+          disabled={testingProxies}
+          style={{ width: "auto", padding: "8px 16px", fontSize: "12px", marginTop: 0 }}
+        >
+          {testingProxies ? "⚡ Testing Proxies…" : "⚡ Test All Proxies"}
+        </button>
       </div>
 
       {error && (
@@ -139,7 +185,7 @@ export function ProxyPanel({ sessions, onChanged }: Props) {
         </div>
       )}
 
-      {/* Universal-format help -- collapsed by default, one click away */}
+      {/* Universal-format help, collapsed by default, one click away */}
       <div style={{
         background: "var(--bg-surface, #1e2837)", border: "1px solid var(--border-color, #344054)",
         borderRadius: "10px", marginBottom: "20px", overflow: "hidden",
@@ -169,7 +215,7 @@ export function ProxyPanel({ sessions, onChanged }: Props) {
               </div>
             ))}
             <div style={{ fontSize: "11px", color: "var(--text-muted, #98a2b3)", marginTop: "4px" }}>
-              Scheme defaults to <code>http</code> when omitted. Credentials are never echoed back once saved --
+              Scheme defaults to <code>http</code> when omitted. Credentials are never echoed back once saved,
               only the host is shown afterward.
             </div>
           </div>
@@ -233,6 +279,24 @@ export function ProxyPanel({ sessions, onChanged }: Props) {
                         </span>
                       )}
                       <span style={{ flex: 1 }} />
+                      {proxyLatencies[key] && (
+                        <span
+                          style={{
+                            fontSize: "11px",
+                            fontWeight: 700,
+                            padding: "2px 8px",
+                            borderRadius: "12px",
+                            background: proxyLatencies[key].ok
+                              ? (proxyLatencies[key].ms! < 500 ? "rgba(34, 197, 94, 0.15)" : "rgba(253, 183, 27, 0.15)")
+                              : "rgba(239, 68, 68, 0.15)",
+                            color: proxyLatencies[key].ok
+                              ? (proxyLatencies[key].ms! < 500 ? "var(--success)" : "var(--warn-yellow)")
+                              : "var(--danger)",
+                          }}
+                        >
+                          {proxyLatencies[key].ok ? `🟢 ${proxyLatencies[key].ms}ms` : `🔴 ${proxyLatencies[key].err || "Failed"}`}
+                        </span>
+                      )}
                       <span style={{ fontSize: "12px", color: item.proxy_host ? "var(--text-primary, #fff)" : "var(--text-muted, #98a2b3)" }}>
                         {item.proxy_host ? `🌐 ${item.proxy_host}` : "no proxy set (direct)"}
                       </span>

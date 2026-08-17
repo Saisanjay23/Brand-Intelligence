@@ -1,5 +1,5 @@
 """X/Twitter discovery engine: search, crawling, pagination, and profile
-extraction -- keywords in, candidate accounts out.
+extraction, keywords in, candidate accounts out.
 
 Also owns the browser session (login/checkpoint detection) and the payload
 parsing (TwitterUser + friends): both are produced here first and re-used by
@@ -7,8 +7,8 @@ analysis_engine.py, which imports them rather than redefining them, so there
 is exactly one definition of each across the two files.
 
 Uses the People tab of search (`f=user`) and reads the SearchTimeline payload
-directly. Every result arrives fully hydrated -- handle, name, followers, join
-date -- so unlike Facebook there is no second visit needed to score a profile
+directly. Every result arrives fully hydrated, handle, name, followers, join
+date, so unlike Facebook there is no second visit needed to score a profile
 found here.
 
 Pagination is cursor-driven and, like Facebook's people search, effectively
@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import re
 import sys
 import time
@@ -33,7 +34,7 @@ from backend.shared.text import iter_dicts
 from backend.stealth.browser import Session
 from backend.platforms.facebook.discovery_engine import Hit
 
-# ─────────────────────────── session / login state ─────────────────────────
+# Session / login state
 
 HOME = "https://x.com/home"
 
@@ -53,16 +54,25 @@ RE_GONE = re.compile(
 
 class TwitterSession(Session):
     async def check_session(self) -> bool:  # type: ignore[override]
-        return await super().check_session(HOME, RE_LOGIN, RE_CHECKPOINT)
+        # deny_paths is load-bearing, not decoration: confirmed live
+        # (2026-08-13, a fresh no-cookie context) that a logged-out
+        # `/home` lands on `https://x.com/` with a body reading "Happening
+        # now... Continue with phone / Google / Apple... Email or
+        # username", which matches NEITHER RE_LOGIN (none of its
+        # alternatives appear in that text) NOR the "/login" URL check
+        # (the browser never leaves "/"). Without this, a genuinely dead
+        # Twitter session read as healthy indefinitely, the exact same
+        # false-negative this file's own Session.check_session docstring
+        # documents Instagram having had, just never fixed here too.
+        return await super().check_session(HOME, RE_LOGIN, RE_CHECKPOINT, deny_paths=("/",))
 
 
-# ───────────────────── payload parsing (profile extraction) ────────────────
-#
+# Payload parsing (profile extraction)
 # Reading X/Twitter's own API payloads.
 #
 # `legacy` USED TO carry everything the report needs, but X has been migrating
 # fields out of it one at a time, and a real capture (2026) showed a
-# UserByScreenName response with NO `legacy` key at all -- every field had
+# UserByScreenName response with NO `legacy` key at all, every field had
 # already moved to a sibling object. Every reader below therefore checks
 # `legacy` first (older captures/edge cases may still have it) and falls back
 # to the field's new home, so this keeps working whichever shape a given
@@ -110,8 +120,10 @@ class TwitterUser:
     location: str = ""
     avatar: str = ""
     verified: bool = False
+    verified_type: str = ""
     protected: bool = False
     description: str = ""
+    external_url: str = ""
 
     @property
     def url(self) -> str:
@@ -122,15 +134,15 @@ class TwitterUser:
         return bool(self.avatar) and not RE_DEFAULT_PIC.search(self.avatar)
 
 
-# ── DOM fallback ──────────────────────────────────────────────────────
+# DOM fallback
 # The SearchTimeline payload above is the primary and much richer source.
 # It is also the single point of failure: when X rotates the query id or
 # reshapes the response, `search_state()` recognises nothing, `by_id` stays
-# empty, and the sweep reports 0 results as a clean success -- silent, total,
+# empty, and the sweep reports 0 results as a clean success, silent, total,
 # and indistinguishable from "this keyword genuinely matches nobody".
 #
 # This reads the same result feed off the rendered page instead. It carries
-# strictly less (no follower counts, no join date -- those are not in the
+# strictly less (no follower counts, no join date, those are not in the
 # results feed at all), but it keeps discovery producing profile URLs, which
 # is discovery's actual job; analysis fills the rest in per-profile later.
 #
@@ -172,7 +184,7 @@ JS_DOM_USERS = """
 
 async def dom_users(page) -> list[TwitterUser]:
     """Scrape the rendered results feed. Used only when the network payload
-    yielded nothing -- see Discovery.sweep."""
+    yielded nothing, see Discovery.sweep."""
     rows = await page.evaluate(JS_DOM_USERS)
     users: list[TwitterUser] = []
     for r in rows or []:
@@ -220,7 +232,7 @@ def _user_from_result(res: dict) -> Optional[TwitterUser]:
     if not (handle or rest_id):
         return None
 
-    # X has been migrating fields out of `legacy` one at a time -- confirmed
+    # X has been migrating fields out of `legacy` one at a time, confirmed
     # live (a captured real UserByScreenName response, 2026, carried NO
     # `legacy` key at all): screen_name/name/created_at moved to `core`,
     # location to its own `location.location`, and as of this capture ALSO
@@ -247,6 +259,16 @@ def _user_from_result(res: dict) -> Optional[TwitterUser]:
         posts = tweet_counts.get("tweets")
     description = legacy.get("description") or profile_bio.get("description") or ""
 
+    verified_type = str(
+        legacy.get("verified_type")
+        or verification.get("verified_type")
+        or ("blue" if res.get("is_blue_verified") else "")
+    ).strip().lower()
+
+    raw_entities = legacy.get("entities") or {}
+    url_entities = (raw_entities.get("url") or {}).get("urls") or []
+    external_url = str(url_entities[0].get("expanded_url") or url_entities[0].get("url", "") if url_entities else "").strip()
+
     return TwitterUser(
         entity_id=str(rest_id),
         handle=handle,
@@ -263,8 +285,10 @@ def _user_from_result(res: dict) -> Optional[TwitterUser]:
             or legacy.get("verified")
             or verification.get("verified")
         ),
+        verified_type=verified_type,
         protected=bool(legacy.get("protected") or privacy.get("protected")),
         description=description.strip(),
+        external_url=external_url,
     )
 
 
@@ -288,13 +312,13 @@ def pinned_tweet_ids(blob: Any) -> set[str]:
     response's own pin marker.
 
     Confirmed live (captured UserTweets response, 2026): a pinned tweet is
-    not flagged on the tweet object itself -- it is wrapped by a distinct
+    not flagged on the tweet object itself, it is wrapped by a distinct
     top-level instruction, `instructions[N] == {"type": "TimelinePinEntry",
     "entry": {...tweet...}}`, sitting alongside the normal
     `TimelineAddEntries` instruction that holds the regular timeline. (The
     same account's profile response separately carries
     `data.user.result.pinned_items.tweet_ids_str`, a second, independent
-    confirmation of the same id -- not used here to avoid a race: that's a
+    confirmation of the same id, not used here to avoid a race: that's a
     DIFFERENT network response, and there's no guaranteed ordering between
     it and this one arriving.)
 
@@ -323,9 +347,9 @@ def latest_post(blob: Any, handle: str = "", entity_id: str = "") -> str:
 
     Scoped to the profile's own posts, excluding two things that would make
     a dormant account look active if counted:
-      - retweets/quotes of someone else -- `retweeted_status_result` is the
+      - retweets/quotes of someone else, `retweeted_status_result` is the
         marker, an unambiguous field on the tweet itself.
-      - a pinned tweet -- NOT a marker on the tweet itself (confirmed live:
+      - a pinned tweet. NOT a marker on the tweet itself (confirmed live:
         no key containing "pin" anywhere in a pinned tweet's own `legacy`
         dict), so pinned_tweet_ids() above finds it via its wrapping
         instruction instead, and this function drops any tweet whose id is
@@ -407,7 +431,7 @@ def parse_lines(text: str) -> Iterator[Any]:
                 continue
 
 
-# ───────────────────────────── crawling / pagination ───────────────────────
+# Crawling / pagination
 
 SEARCH_URL = "https://x.com/search?q={q}&src=typed_query&f=user"
 
@@ -423,7 +447,7 @@ class Sweep:
     complete: bool = False
     seconds: float = 0.0
     error: str = ""
-    # which extraction method actually produced `users` -- "graphql" normally,
+    # which extraction method actually produced `users`, "graphql" normally,
     # "dom" when the network payload yielded nothing and the rendered feed
     # had to stand in. Carried onto each Hit so a card can say where it came
     # from rather than implying every field was equally well sourced.
@@ -447,6 +471,22 @@ class Discovery:
     async def sweep(self, keyword: str, tab: str = "people") -> Sweep:
         out = Sweep(keyword=keyword, tab=tab)
         started = time.time()
+        # A client's keyword groups run concurrently (discovery_service.py's
+        # discovery_concurrency, default 2), so two Discovery.sweep() calls
+        # routinely fire their first search request within ~1s of each other
+        # on the SAME logged-in session/IP. Confirmed live (2026-08-13): a
+        # single isolated sweep parses the network payload perfectly,
+        # 20/20 users, every field, but real production runs, which are
+        # always this same concurrency, degrade to the dom:UserCell fallback
+        # on the large majority of sweeps (57 ExtractionDegraded incidents
+        # in one morning). That split, clean in isolation, degraded only
+        # under concurrency, is the signature of X's own anti-automation
+        # throttling reacting to near-simultaneous search requests from one
+        # account, not a payload-shape change; nothing about search_state()
+        # itself needed fixing. This jitter doesn't remove the concurrency
+        # (still worth the throughput), it just keeps two requests from ever
+        # landing in the same instant.
+        await asyncio.sleep(random.uniform(1.5, 4.0))
         page = await self.ctx.new_page()
 
         by_id: dict[str, TwitterUser] = {}
@@ -485,6 +525,17 @@ class Discovery:
                 )
             except Exception:
                 pass
+
+            # Wait for the first SearchTimeline response to arrive. X's
+            # search payload can lag behind the DOM render, especially under
+            # load or when the query requires server-side ranking. Without
+            # this, by_id stays empty, the patience loop stalls out, and
+            # run_strategies falls back to the weaker dom:UserCell method.
+            if not by_id:
+                try:
+                    await asyncio.wait_for(arrived.wait(), timeout=self.a.settle)
+                except asyncio.TimeoutError:
+                    pass
 
             stalls, last_cursor = 0, ""
             while True:
@@ -525,7 +576,7 @@ class Discovery:
 
             # Network payload first (richer), rendered DOM second. The DOM
             # pass only runs when the payload produced nothing at all, so a
-            # healthy sweep never pays for it -- and when the payload shape
+            # healthy sweep never pays for it, and when the payload shape
             # rotates, discovery degrades to "fewer fields" instead of to
             # "zero results, reported as success".
             chain = await run_strategies(
@@ -545,7 +596,7 @@ class Discovery:
                     entity_id=u.entity_id,
                     name=u.name,
                     url=u.url,
-                    avatar=u.avatar,   # already in the SearchTimeline payload
+                    avatar=u.avatar,
                     has_custom_pic=u.has_custom_pic,
                     verified=u.verified,
                     entity_type="profile",
@@ -561,7 +612,7 @@ class Discovery:
                 # Confirmed live: the loop-break check above
                 # (`len(by_id) >= max_results`) only fires at the TOP of the
                 # next iteration, after a whole response page has already
-                # been absorbed into by_id -- X returns ~20 users per
+                # been absorbed into by_id. X returns ~20 users per
                 # response, so a configured cap of 5 still returned 20 hits
                 # with nothing here to trim it back down. The break check
                 # bounds how much MORE gets fetched; it was never what

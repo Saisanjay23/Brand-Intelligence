@@ -10,8 +10,8 @@ account is a real "No".
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
-import pytest
 
 from backend.shared.models.row import Row
 from backend.shared.models.scoring import ACTIVE_WINDOW_DAYS
@@ -61,16 +61,36 @@ class TestUnknownIsNeverCollapsedToAFalsePositive:
 
 
 class TestFeedsIntoScoringCorrectly:
-    def test_active_within_six_months_earns_the_activity_weight(self):
-        from backend.shared.models.scoring import W_ACTIVE
+    """Activity only feeds the score once the username itself is a clear
+    match -- see scoring.py's tiered cascade. These rows all carry a
+    matching name so the activity tier is the thing actually varying."""
 
-        active = _row_with_last_post(30)
-        dormant = _row_with_last_post(200)
-        assert active.risk - dormant.risk == W_ACTIVE
+    @staticmethod
+    def _matched(days_ago: Optional[int]) -> Row:
+        row = Row(url="u", target="Brand", profile_name="Brand Official", name_score=95)
+        if days_ago is not None:
+            row.last_post_iso = _row_with_last_post(days_ago).last_post_iso
+        return row
 
-    def test_unknown_activity_earns_no_weight_either_way(self):
-        # "not visible to this session" must not be scored as either a
-        # positive or negative signal -- see Row.risk's own docstring
-        unknown = Row(url="u", target="t", last_post_iso="", posts_seen="")
-        known_inactive = _row_with_last_post(200)
-        assert unknown.risk == known_inactive.risk
+    def test_active_within_six_months_outscores_dormant(self):
+        active = self._matched(30)
+        dormant = self._matched(200)
+        assert active.risk == 5
+        assert dormant.risk == 4
+
+    def test_dormant_a_known_old_post_outscores_no_post_data_at_all(self):
+        """A profile that demonstrably posted at some point, even long ago,
+        is a more established impersonation than an empty shell -- so
+        "dormant" is NOT collapsed to the same score as "no post data"."""
+        dormant = self._matched(200)
+        no_post_data = self._matched(None)
+        assert dormant.risk == 4
+        assert no_post_data.risk == 3
+        assert dormant.risk > no_post_data.risk
+
+    def test_unparseable_date_scores_the_same_as_no_post_data(self):
+        # extraction failing to produce a usable date must not read as
+        # evidence either way -- same tier as never having found one
+        row = self._matched(None)
+        row.last_post_iso = "not-a-date"
+        assert row.risk == 3

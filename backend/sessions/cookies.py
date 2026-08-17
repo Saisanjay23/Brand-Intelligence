@@ -20,8 +20,8 @@ def normalize_cookies(items: list[dict], domain: str = "") -> list[dict]:
     """Normalise a cookie export into Playwright's shape.
 
     `domain` keeps one platform's cookies out of another's context. It is
-    matched loosely because a single login spans several hosts -- x.com and
-    twitter.com, instagram.com and i.instagram.com -- so callers pass the
+    matched loosely because a single login spans several hosts, x.com and
+    twitter.com, instagram.com and i.instagram.com, so callers pass the
     distinctive stem ("twitter", "instagram") rather than an exact host.
     """
     wanted = [d for d in domain.replace(",", " ").split() if d]

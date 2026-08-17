@@ -8,7 +8,7 @@ WHAT THIS DELIBERATELY DOES NOT DO
     Instagram by not hydrating at all. Less patching survives longer here.
 
 WHAT ACTUALLY HELPS & HAS BEEN HARDENED
-    * a real Google Chrome binary when one is installed -- a genuine build has
+    * a real Google Chrome binary when one is installed, a genuine build has
       a better reputation than bundled Chromium
     * exact synchronization between User-Agent, Sec-CH-UA Client Hints, and JS
       runtime capabilities
@@ -33,16 +33,13 @@ except ImportError:
 from backend.shared.logging import get_logger
 from backend.stealth.human import Human
 from backend.stealth.fingerprint import (
-    UA,
-    VIEWPORTS,
     LAUNCH_ARGS,
-    _pick,
     chrome_binary,
     get_identity,
 )
 from backend.stealth.headers import build_extra_headers
 from backend.stealth.mouse_movement import humanize_interaction
-from backend.stealth.navigator_spoofing import INIT_JS, build_init_js
+from backend.stealth.navigator_spoofing import build_init_js
 from backend.stealth.proxy import build_proxy_config
 from backend.stealth.timezone import resolve_timezone_id
 
@@ -154,7 +151,7 @@ class Session:
         await self.human.pause("between_profiles", scale * mult)
         # Every platform's per-profile pause funnels through here, so this is
         # the one place that needs to fire for should_rest()/maybe_rest() to
-        # actually do anything -- previously computed but never called.
+        # actually do anything, previously computed but never called.
         nap = await self.human.maybe_rest()
         if nap:
             log.info(f"human pacing: taking a {nap:.0f}s break")
@@ -163,17 +160,55 @@ class Session:
         """Executes passive human pointer motion and micro-scrolling on a page."""
         await humanize_interaction(page, scroll=scroll, moves=moves)
 
-    async def warmup(self, page=None) -> None:
-        """Executes initial orientation timing and optional benign page activity."""
-        scale = (
-            getattr(self.o, "delay", 0) / 6.0 if getattr(self.o, "delay", 0) else 1.0
-        )
-        await self.human.warmup_delay(scale=scale)
-        if page and not page.is_closed():
-            await self.interact(page, scroll=False, moves=2)
+    async def wait_for_visible_content(
+        self, page, min_chars: int = 200, timeout_ms: int = 4000, poll_ms: int = 250,
+    ) -> None:
+        """Block until the page has actually PAINTED real content, not just
+        parsed enough DOM to satisfy `domcontentloaded` or a data-readiness
+        check.
+
+        The root cause of every Facebook evidence screenshot this engine
+        had ever captured being the exact same byte-identical loading
+        splash was `build_extra_headers()` forcing `Upgrade-Insecure-
+        Requests` onto every request in the context, including cross-origin
+        CDN subresources. Facebook's CDN rejected the resulting CORS
+        preflight for every JS/CSS bundle its client-side app needs, so the
+        page could never get past its own splash no matter how long
+        anything waited (see headers.py for the fix). This wait is the
+        remaining defense-in-depth once that's fixed: field extraction
+        here still comes from data that can land before the screen finishes
+        painting (embedded JSON script tags, intercepted API responses), so
+        a slow render on an off day could still get shot mid-transition.
+
+        Polls the page's RENDERED text via Playwright's own `inner_text()`,
+        not `page.evaluate("() => document.body.innerText")`, which
+        returns 0 in this headless Chromium configuration even once real
+        content is on screen (confirmed live: the raw DOM property stayed
+        0 for 8+ seconds on a page that Playwright's own accessor read
+        correctly from frame one; `inner_text()` is what the rest of this
+        codebase already uses for exactly this reason, e.g. `visit()`'s own
+        `h.text[tag] = await page.inner_text("body")`). A splash screen
+        carries only its own handful of characters (a logo, "from Meta")
+        while any real profile page's chrome alone (nav, buttons, section
+        labels) clears `min_chars` immediately. Gives up after `timeout_ms`
+        and lets the caller shoot whatever is actually there rather than
+        blocking evidence capture indefinitely on a profile that genuinely
+        never finishes rendering.
+        """
+        elapsed = 0
+        while elapsed < timeout_ms:
+            try:
+                text = await page.inner_text("body")
+            except Exception:
+                return  # page navigated away/closed mid-check, nothing to wait for
+            if len(text) >= min_chars:
+                return
+            await page.wait_for_timeout(poll_ms)
+            elapsed += poll_ms
 
     async def check_session(
         self, probe_url: str, login_re, checkpoint_re, *, expect_path: str = "",
+        deny_paths: tuple[str, ...] = (),
     ) -> bool:
         """Is this cookie set still logged in and unchallenged?
 
@@ -185,7 +220,7 @@ class Session:
         That parameter exists because negative-signal-only detection gave a
         confirmed false positive in production. Instagram's authenticated
         /accounts/edit/ bounces a dead session to `https://www.instagram.com/#`
-        -- a URL containing neither "/login" nor "/checkpoint" -- and the
+       , a URL containing neither "/login" nor "/checkpoint", and the
         wall it renders ("Continue", "Use another profile", "Create new
         account") matches none of the login patterns either. So a logged-out
         session was reported healthy indefinitely: the pool kept handing it
@@ -193,6 +228,16 @@ class Session:
         then blamed the platform for changing its payload shape. Absence of
         a known failure string is not evidence of success; still being on
         the authenticated page is.
+
+        `deny_paths` is the same confirmation for a probe whose AUTHENTICATED
+        destination is not a fixed path, so `expect_path` cannot name it.
+        Facebook's /me is the case: logged in it redirects to the account's
+        own profile (`/<vanity>` or `/profile.php`), which differs per
+        account, but logged out it lands on exactly one of a small, fixed
+        set of doors, `/` or `/index.php`, and landing on one of THOSE
+        is proof the authenticated page was not reachable. Matched on the
+        settled path exactly, never as a prefix, so it cannot swallow a real
+        profile path.
         """
         page = await self.ctx.new_page()
         try:
@@ -211,14 +256,21 @@ class Session:
             if "/login" in page.url or login_re.search(body):
                 log.error("session INVALID -- cookies expired or incomplete")
                 return False
-            if expect_path:
+            if expect_path or deny_paths:
                 from urllib.parse import urlparse
 
                 landed = urlparse(page.url).path.rstrip("/")
-                if expect_path.rstrip("/") not in landed:
+                if expect_path and expect_path.rstrip("/") not in landed:
                     log.error(
                         f"session INVALID -- redirected off {expect_path!r} to {page.url} "
                         "(authenticated page not reachable, so these cookies are not logged in)"
+                    )
+                    return False
+                # "" is the settled path of the site root once rstripped
+                if any(landed == p.rstrip("/") for p in deny_paths):
+                    log.error(
+                        f"session INVALID -- {probe_url} landed on the logged-out "
+                        f"door {page.url} (these cookies are not logged in)"
                     )
                     return False
             log.info(f"session valid -> {page.url}")

@@ -1,15 +1,15 @@
-"""Profile persistence -- the `profiles` collection, one document per
+"""Profile persistence, the `profiles` collection, one document per
 `(client_id, platform, url)`. Every platform's discovery/analysis results
 land in the same collection, distinguished by a `platform` field, so
 "every profile for this client" is one query, not a fan-out across
-per-platform databases (see docs/adr/0004 -- the reasoning for a single
+per-platform databases (see docs/adr/0004, the reasoning for a single
 shared document per profile is unchanged from the original design, just
 the physical storage got simpler).
 
 Writes are field-scoped on purpose: discovery must never blank the analysis
 fields of a profile it rediscovers, and an analyst's approve/reject must
 never be undone by the next sweep. This is the single most important
-invariant in the whole engine -- it's what makes a daily re-sweep safe to
+invariant in the whole engine, it's what makes a daily re-sweep safe to
 run unattended.
 """
 
@@ -40,48 +40,44 @@ PHASE_ANALYSIS = "analysis"
 DISCOVERY_FIELDS = (
     "entity_id", "username", "display_name", "entity_type",
     "discovery_source", "profile_image_url", "has_logo", "verified", "name_score",
-    # handle-vs-official-handle similarity; absent (not 0) when the client
-    # has no official handle configured for the platform -- see
-    # services/discovery_service.py::_hit_to_fields
-    "username_score",
 )
 
 # NOTE: `entity_id` is deliberately NOT here. It is the dedup key, and
 # discovery is the only phase that observes it from an authoritative source
 # (the platform's own search edge, always the canonical numeric/stable id).
 # Analysis derives it from the URL it was handed and only upgrades a vanity
-# slug to a numeric id when the profile page happens to expose one -- when
+# slug to a numeric id when the profile page happens to expose one, when
 # it doesn't, `row.profile_id` stays the slug. Letting that be written back
 # would overwrite a correct numeric id with a slug, after which the next
 # sweep's numeric-id hit no longer matches this document, tries to insert,
 # and collides on the unique url index. Identity upgrades go through
 # `promote_entity_id()` below, which only ever fills a blank or replaces a
-# non-numeric id with a numeric one -- never the reverse.
+# non-numeric id with a numeric one, never the reverse.
 ANALYSIS_FIELDS = (
     "display_name", "entity_type", "target", "official_feed",
     "followers", "followers_exact", "friends", "location", "profile_image_url",
     "has_logo", "verified", "is_active", "has_name_match", "name_score", "last_post_date",
     "risk_score", "priority", "comments", "analysis_status", "sources",
-    # path to this profile's evidence screenshot, RELATIVE to
-    # settings.evidence_path -- never an absolute filesystem path, so the
-    # stored value stays valid across a redeploy/volume remount and can
-    # never be used to read outside the evidence root. Served through
-    # `GET /profiles/{id}/screenshot`; see api/profile_routes.py.
+    # the GridFS key this profile's evidence screenshot is stored under
+    # (see database/repositories/evidence_repository.py), not a filesystem
+    # path, so the stored value stays valid across a redeploy with no volume
+    # to remount. Served through `GET /profiles/{id}/screenshot`; see
+    # api/profile_routes.py.
     "screenshot", "screenshot_at",
 )
 
 # An analysis outcome that means "we did not actually get to look at this
 # profile", as opposed to a real reading. A row in one of these states must
-# stay in the analysis queue rather than being treated as done -- see
+# stay in the analysis queue rather than being treated as done, see
 # `urls_for(exclude_analysed=True)`. ERROR/CHECKPOINT/LOGIN_REQUIRED are all
 # transient environment failures (timeout, dead proxy, session challenged
 # mid-run), not verdicts about the profile.
 #
 # PARTIAL joined this list after a live check: 11 Instagram PARTIAL rows
-# were found stuck at analysis_attempts=0 -- literally never eligible for a
+# were found stuck at analysis_attempts=0, literally never eligible for a
 # second try, because only a RETRYABLE status ever increments that counter.
 # All 11 carried the same "profile payload not seen" note, a timing/render
-# issue on that visit, not a verdict about the profile -- re-running one of
+# issue on that visit, not a verdict about the profile, re-running one of
 # them live (outside this codebase, as a direct check) succeeded cleanly on
 # the very next attempt. PARTIAL was also missing from publish()'s guard, so
 # a row with no name/followers/date/location was eligible to be published as
@@ -98,20 +94,23 @@ RETRYABLE_ANALYSIS_STATUSES = ("ERROR", "CHECKPOINT", "LOGIN_REQUIRED", "PARTIAL
 # sweep forever, spending real page loads under a live session on nothing.
 MAX_ANALYSIS_ATTEMPTS = 4
 
-# what an analyst may correct by hand -- a whitelist, so a stray PATCH cannot
+# what an analyst may correct by hand, a whitelist, so a stray PATCH cannot
 # rewrite scraped evidence unlabelled
 EDITABLE = {
     "has_logo", "is_active", "has_name_match", "risk_score", "priority",
     "comments", "target", "official_feed", "status",
     "display_name", "followers", "location", "last_post_date",
     # an analyst's own visual confirmation that the profile is lifting the
-    # brand's logo/photo and/or username -- distinct from has_logo (which
-    # only says a custom photo exists, not that it matches anything) and
-    # never scored automatically; set via the discovery card's Validate action
-    # and carried through to the analysis-phase record unchanged.
+    # brand's logo/photo and/or username, distinct from has_logo (which
+    # only says a custom photo exists, not that it matches anything).
+    # Outrank the scraper's own has_logo/has_name_match in either direction
+    # (see SCORING_FIELDS below and shared/models/scoring.py::resolve_match).
+    # Only ever written from the ANALYSIS view now: discovery is Validate or
+    # Reject, and validating means both matches hold by default, so these
+    # stay unset until an analyst actually corrects one.
     "logo_match", "username_match",
     # an analyst's hand-edits to the computed published-incident preview
-    # (see services/incident_publisher.py) -- flat dotted-path keys, merged
+    # (see services/incident_publisher.py), flat dotted-path keys, merged
     # into whatever's already stored rather than replacing it wholesale
     # (see the special-casing in patch() below), so editing one field never
     # clobbers another already-saved override.
@@ -121,15 +120,27 @@ EDITABLE = {
 
 
 # each of these carries a `sources.<key>` provenance tag under a DIFFERENT
-# key than the document field -- a manual edit must relabel the matching key
+# key than the document field, a manual edit must relabel the matching key
 PROVENANCE_KEYS = {
     "display_name": "name", "followers": "followers", "location": "location",
     "has_logo": "logo", "last_post_date": "last_post",
 }
 
 # a manual edit to any of these changes what the risk score/priority ought
-# to be, so `patch` must recompute both, not just store the raw value
-SCORING_FIELDS = {"has_logo", "has_name_match", "is_active", "followers"}
+# to be, so `patch` must recompute both, not just store the raw value.
+# logo_match/username_match included since they now feed the score exactly
+# like has_logo/has_name_match do (see compute_risk_score/compute_priority
+# below), an analyst reversing a match in the analysis view must
+# retrigger the same recompute a fresh scrape would.
+#
+# `status` is in here because validating a profile is itself a scoring
+# event now: an approved profile counts as logo- and username-matched by
+# default (scoring.resolve_match), so the moment its status changes its
+# score has to be recomputed against that default, otherwise a profile
+# would sit at its pre-validation score until some other field happened to
+# be edited.
+SCORING_FIELDS = {"has_logo", "has_name_match", "location", "last_post_date",
+                  "logo_match", "username_match", "status"}
 
 
 def _stamp_utc_for_api(doc: dict) -> dict:
@@ -156,7 +167,7 @@ def _is_identity_upgrade(current: str, incoming: str) -> bool:
 
     Only in the two directions that strictly sharpen identity:
       - nothing -> something
-      - a vanity slug -> the platform's canonical numeric id
+      - a vanity slug -> the platform's canonical numeric id / YouTube channel id
 
     Never numeric -> slug, and never one numeric id -> a different one (that
     is two distinct profiles colliding on a URL, which is a genuine
@@ -168,6 +179,8 @@ def _is_identity_upgrade(current: str, incoming: str) -> bool:
         return False
     if not current:
         return True
+    if incoming.startswith("UC") and len(incoming) >= 20 and not current.startswith("UC"):
+        return True
     return incoming.isdigit() and not current.isdigit()
 
 
@@ -177,7 +190,7 @@ async def save(
 ) -> bool:
     """Upsert one profile. Returns True when newly seen.
 
-    Deduplication is by identity, not URL string -- the platform's own id
+    Deduplication is by identity, not URL string, the platform's own id
     wins when available, the URL is the fallback for entities whose id
     could not be resolved. Every URL a profile has been seen at is kept in
     `urls`. Only the fields the calling phase owns (DISCOVERY_FIELDS /
@@ -186,7 +199,7 @@ async def save(
     touches the analyst's `status`.
 
     `initial_status` only ever applies going INTO the doc's very first
-    insert, or on top of a still-undecided "pending" one -- never over an
+    insert, or on top of a still-undecided "pending" one, never over an
     existing "approved"/"rejected" decision (see profile_service.py's
     add_manual_urls, the one caller that passes anything but the default:
     a hand-typed URL is itself the analyst's approval, so it should reach
@@ -202,6 +215,10 @@ async def save(
         keys.append({"entity_id": eid})
     keys.append({"url": url})
     keys.append({"urls": url})
+    canonical_yt = f"https://www.youtube.com/channel/{eid}" if platform == "youtube" and eid and eid.startswith("UC") else ""
+    if canonical_yt:
+        keys.append({"url": canonical_yt})
+        keys.append({"urls": canonical_yt})
     existing = await coll.find_one(
         {**match, "$or": keys},
         {"_id": 1, "url": 1, "status": 1, "entity_id": 1, "analysis_attempts": 1}
@@ -209,12 +226,13 @@ async def save(
 
     owned = ANALYSIS_FIELDS if phase == PHASE_ANALYSIS else DISCOVERY_FIELDS
     now = datetime.now(timezone.utc)
+    add_urls = {"$each": [url, canonical_yt]} if canonical_yt else url
     update: dict[str, Any] = {
         "$set": {k: v for k, v in fields.items() if k in owned and v not in (None, "", {})},
         "$currentDate": {"last_seen": True},
-        "$addToSet": {"urls": url},
+        "$addToSet": {"urls": add_urls},
     }
-    # phase only ever advances -- a sweep that rediscovers an
+    # phase only ever advances, a sweep that rediscovers an
     # already-scored profile must not demote it back to "discovery"
     if phase == PHASE_ANALYSIS:
         update["$set"]["phase"] = PHASE_ANALYSIS
@@ -233,8 +251,8 @@ async def save(
             # reachable again) and starts its publish hold: held back from
             # the client-facing default view for `publish_hold_minutes`, so
             # an analyst who approved a false positive has a window to
-            # revert before anything downstream sees it. See ADR 0007 --
-            # the hold EXPIRES on its own; `published` is only ever set
+            # revert before anything downstream sees it. See ADR 0007.
+            # The hold EXPIRES on its own; `published` is only ever set
             # early, by an explicit Publish.
             update["$set"]["analysis_attempts"] = 0
             update["$set"]["published"] = False
@@ -244,8 +262,8 @@ async def save(
 
     if existing:
         # Identity only ever sharpens: fill a blank, or upgrade a vanity
-        # slug to the platform's canonical numeric id. Never the reverse --
-        # see the note on ANALYSIS_FIELDS for what overwriting a good id
+        # slug to the platform's canonical numeric id. Never the reverse.
+        # See the note on ANALYSIS_FIELDS for what overwriting a good id
         # with a slug does to the next sweep's dedup.
         if eid and _is_identity_upgrade(existing.get("entity_id") or "", eid):
             update["$set"]["entity_id"] = eid
@@ -269,10 +287,10 @@ async def save(
         # and this write. Re-resolve which document actually won the race
         # and apply the update to THAT one.
         #
-        # The old version retried `update_one({**match, "url": url})` --
+        # The old version retried `update_one({**match, "url": url})`
         # which only works when the collision was on the url index. When it
         # was the ENTITY index (the winning document has the same
-        # entity_id under a different url shape -- routine on Facebook,
+        # entity_id under a different url shape, routine on Facebook,
         # where the same profile is reachable as both /vanity and
         # profile.php?id=N), that filter matched zero documents and the
         # scraped result was silently dropped while still being counted as
@@ -311,7 +329,7 @@ async def get_by_ids(client_id: str, ids: list[str]) -> list[dict]:
     """Raw profile docs for a hand-picked set of ids, scoped to one client so
     a stray/foreign id can never leak another client's data into a bulk
     operation. An unparseable id is skipped rather than failing the whole
-    batch -- same "one bad row never sinks it" spirit as save_many."""
+    batch, same "one bad row never sinks it" spirit as save_many."""
     oids = []
     for i in ids:
         try:
@@ -331,22 +349,32 @@ async def find(
     entity_type: Optional[str] = None, priority: Optional[str] = None,
     match_level: Optional[str] = None, keyword_match_type: Optional[str] = None,
     search: Optional[str] = None, client_keywords: Optional[dict] = None,
+    published: Optional[bool] = None,
 ) -> tuple[list[dict], int, dict]:
-    """`include_held=False` (the default -- used by any caller that doesn't
+    """`include_held=False` (the default, used by any caller that doesn't
     explicitly ask otherwise, i.e. the SaaS backend's normal poll) hides a
-    freshly analysed row until its publish hold clears -- see ADR 0007. The
+    freshly analysed row until its publish hold clears, see ADR 0007. The
     analyst-facing frontend always passes `include_held=True` so analysts
     see held rows immediately, flagged with a countdown.
 
+    `published` is the analyst's Published/Unpublished tab (analysis phase
+    only), a separate concern from `include_held`, which only decides
+    whether an unpublished row is visible AT ALL. A document saved before
+    ADR 0007 existed has neither `published` nor `publish_hold_until` at
+    all; `profile_service._to_full` already defaults a missing `published`
+    to `True` for API responses, so `published=True` here matches that same
+    default (`$ne: False`, not `== True`) rather than re-hiding a legacy row
+    the response layer would otherwise call published.
+
     `keyword` matches exactly one entry of the profile's `keywords` array
-    (a scalar-vs-array Mongo query already does "array contains" for free) --
+    (a scalar-vs-array Mongo query already does "array contains" for free),
     an analyst picks one of the client's actual searched keywords from a
     list, not a free-text substring.
 
     EVERY filter here is applied server-side, before `limit`/`offset`.
     `priority`, `match_level`, `keyword_match_type` and `search` used to be
     applied in the browser over whatever page happened to be loaded, while
-    `total` and the pager still came from the unfiltered server query -- so
+    `total` and the pager still came from the unfiltered server query, so
     filtering "High priority" across 500 rows showed only the High rows
     within page 1 and still claimed 500 results. A filter that doesn't
     survive pagination isn't a filter.
@@ -368,14 +396,16 @@ async def find(
         q["entity_type"] = entity_type
     if priority:
         q["priority"] = priority
+    if published is not None:
+        q["published"] = False if published is False else {"$ne": False}
     if match_level:
-        # "high" used to require name_score >= 100 -- effectively unreachable
+        # "high" used to require name_score >= 100, effectively unreachable
         # for real fuzzy-matched names (token_set_ratio rarely lands on a
         # perfect 100 unless the name is byte-identical to the keyword after
         # normalization). Live-checked against real data: 97 profiles scored
-        # 80-99 -- genuinely strong matches by the SAME bar this backend
+        # 80-99, genuinely strong matches by the SAME bar this backend
         # already uses everywhere else (NAME_THRESHOLD, scoring.py) to decide
-        # "does the name match" -- were being silently bucketed into
+        # "does the name match", were being silently bucketed into
         # "Medium" instead, which is what made "High Match" look broken for
         # any keyword whose best hits happened to land in that range.
         if match_level == "high":
@@ -386,12 +416,12 @@ async def find(
             q["name_score"] = {"$lt": 50, "$exists": True, "$ne": None}
     if keyword_match_type and client_keywords is not None:
         # "was this found under one of the client's INDIVIDUAL-name keywords
-        # or one of its DOMAIN/brand keywords" -- the same classification
+        # or one of its DOMAIN/brand keywords", the same classification
         # services/incident_publisher.py uses to pick a category, done as a
         # set-membership query rather than a stored per-profile field.
         bucket = ("name_keywords" if keyword_match_type == "individual" else "domain_keywords")
         wanted = list(client_keywords.get(bucket) or [])
-        # an empty configured list can never match anything -- express that
+        # an empty configured list can never match anything, express that
         # as an impossible clause rather than letting it degrade to "all"
         q["keywords"] = {"$in": wanted} if wanted else {"$in": [None]}
     if search and search.strip():
@@ -399,17 +429,23 @@ async def find(
         clauses.append({"$or": [{"display_name": rx}, {"username": rx}, {"url": rx}]})
     if phase:
         if phase == PHASE_DISCOVERY:
-            clauses.append({"$or": [{"phase": PHASE_DISCOVERY}, {"status": "approved"}]})
+            # A profile that was approved (auto-queuing analysis) and later
+            # reversed to rejected keeps its phase at "analysis", phase
+            # never reverts. Without "rejected" here too, such a profile
+            # vanished from the Discovery view's Rejected tab entirely,
+            # keyword/confidence filters included, the moment it was
+            # reversed post-analysis.
+            clauses.append({"$or": [{"phase": PHASE_DISCOVERY}, {"status": {"$in": ["approved", "rejected"]}}]})
         else:
             q["phase"] = phase
             if not include_held:
                 clauses.append({"$or": [
                     {"published": True},
-                    # the hold has expired on its own -- ADR 0007's actual
+                    # the hold has expired on its own. ADR 0007's actual
                     # behaviour, which nothing implemented before now
                     {"publish_hold_until": {"$lte": datetime.now(timezone.utc)}},
                     # a row analysed before this feature existed has neither
-                    # field at all -- treat it as already published rather
+                    # field at all, treat it as already published rather
                     # than retroactively hiding it
                     {"published": {"$exists": False}, "publish_hold_until": {"$exists": False}},
                 ]})
@@ -420,7 +456,7 @@ async def find(
     total = await coll.count_documents(q)
     if phase == PHASE_DISCOVERY and status == "rejected":
         # Rejected is the one status view that reads newest-decision-first
-        # on purpose -- an analyst reviewing what they've dismissed wants
+        # on purpose, an analyst reviewing what they've dismissed wants
         # the profile they JUST rejected at the top, not buried under
         # everything rejected before it. rejected_at (set only by an actual
         # reject decision in patch(), never by a routine re-discovery
@@ -429,7 +465,7 @@ async def find(
     elif phase == PHASE_DISCOVERY:
         # Every other discovery view (pending, approved, unfiltered) sorts
         # oldest-first (_id is a MongoDB ObjectId, whose leading bytes are
-        # an insertion timestamp -- ascending _id is the same order
+        # an insertion timestamp, ascending _id is the same order
         # documents were saved in, i.e. the order each platform actually
         # returned them, page by page). That makes page 1 of this listing
         # the first results a platform's own search returned and the last
@@ -438,7 +474,7 @@ async def find(
         # most recently."
         sort_field, sort_dir = "_id", 1
     else:
-        # analysis keeps the recency sort -- newest finding first is what
+        # analysis keeps the recency sort, newest finding first is what
         # an analyst reviewing scored results actually wants.
         sort_field, sort_dir = "last_seen", -1
     rows = []
@@ -482,8 +518,8 @@ async def urls_for(
 
     `exclude_analysed` means "skip what we have already READ", not "skip what
     we have already attempted". A profile whose last attempt ended in
-    ERROR/CHECKPOINT/LOGIN_REQUIRED was never actually looked at -- the
-    session was challenged, the proxy died, the page timed out -- so it
+    ERROR/CHECKPOINT/LOGIN_REQUIRED was never actually looked at, the
+    session was challenged, the proxy died, the page timed out, so it
     stays in the queue.
 
     Before this distinction existed, any transient failure wrote
@@ -511,7 +547,7 @@ async def urls_for(
 async def stuck_analysis(client_id: str, platform: Optional[str] = None) -> list[dict]:
     """Profiles that exhausted MAX_ANALYSIS_ATTEMPTS and will never be
     retried automatically. These are exactly the ones an analyst must be
-    told about -- "approved but we could never read it" is a coverage gap,
+    told about, "approved but we could never read it" is a coverage gap,
     not a result, and it is invisible unless something surfaces it."""
     q: dict[str, Any] = {
         "client_id": client_id, "status": "approved",
@@ -536,29 +572,47 @@ async def get_by_id(doc_id: str) -> Optional[dict]:
     return _stamp_utc_for_api(doc)
 
 
-def compute_risk_score(has_logo: bool, has_name_match: bool, is_active: bool, followers) -> int:
+def compute_risk_score(
+    has_logo: bool, has_name_match: bool, location, last_post_date,
+    logo_match: Optional[bool] = None, username_match: Optional[bool] = None,
+    validated: bool = False,
+) -> int:
     """The same rubric used during a live scrape (`shared/models/scoring.py`'s
-    `Row.risk`), applied to a document's already-derived boolean fields --
-    so a hand correction and a fresh scrape can never silently disagree
-    about how the same facts turn into a score."""
-    from backend.shared.models.scoring import BASE, REACH_AT, W_ACTIVE, W_LOGO, W_NAME, W_REACH
+    `Row.risk`), applied to a document's already-derived fields, so a hand
+    correction and a fresh scrape can never silently disagree about how the
+    same facts turn into a score. `logo_match`/`username_match`/`validated`
+    resolve against the scraped signals through `scoring.resolve_match`."""
+    from backend.shared.models.scoring import compute_score
 
-    score = BASE
-    if has_logo:
-        score += W_LOGO
-    if has_name_match:
-        score += W_NAME
-    if is_active:
-        score += W_ACTIVE
-    if (followers or 0) >= REACH_AT:
-        score += W_REACH
-    return score
+    return compute_score(
+        has_logo=bool(has_logo), has_name_match=bool(has_name_match),
+        has_location=bool((location or "").strip()), last_post_iso=last_post_date or "",
+        logo_match=logo_match, username_match=username_match, validated=validated,
+    )
 
 
-def compute_priority(has_logo: bool, has_name_match: bool) -> str:
-    if has_logo:
+def compute_priority(
+    has_logo: bool, has_name_match: bool,
+    logo_match: Optional[bool] = None, username_match: Optional[bool] = None,
+    validated: bool = False,
+) -> str:
+    """High/Medium/Low off the same resolved signals the score uses, an
+    undone logo match has to be able to drop the priority too, or the two
+    would disagree about the same profile.
+
+    Deliberately still High on a logo alone, even where `compute_score`
+    returns its floor of 2 for want of a name match: priority is defined as
+    photo-driven "regardless of score" (see shared/models/row.py::Row
+    .priority, which this must stay identical to, test_scoring.py asserts
+    exactly that parity). So an undone username match floors the score
+    while leaving priority High, and that is the intended reading, not a
+    contradiction.
+    """
+    from backend.shared.models.scoring import resolve_match
+
+    if resolve_match(has_logo, logo_match, validated):
         return "High"
-    return "Medium" if has_name_match else "Low"
+    return "Medium" if resolve_match(has_name_match, username_match, validated) else "Low"
 
 
 async def patch(doc_id: str, fields: dict) -> dict:
@@ -575,7 +629,7 @@ async def patch(doc_id: str, fields: dict) -> dict:
     if overrides:
         if not isinstance(overrides, dict):
             raise ValidationError("incident_overrides must be an object of {field: value}")
-        # dotted-path expansion, not a bare $set of the whole sub-document --
+        # dotted-path expansion, not a bare $set of the whole sub-document,
         # editing one field (e.g. "title") must never wipe out overrides a
         # previous edit already saved for a different field.
         for path, value in overrides.items():
@@ -589,11 +643,16 @@ async def patch(doc_id: str, fields: dict) -> dict:
         if doc is None:
             raise NotFoundError(f"profile {doc_id!r} not found")
         merged = {**doc, **safe}
+        validated = merged.get("status") == "approved"
         safe["risk_score"] = compute_risk_score(
             merged.get("has_logo", False), merged.get("has_name_match", False),
-            merged.get("is_active", False), merged.get("followers"),
+            merged.get("location"), merged.get("last_post_date"),
+            merged.get("logo_match"), merged.get("username_match"), validated,
         )
-        safe["priority"] = compute_priority(merged.get("has_logo", False), merged.get("has_name_match", False))
+        safe["priority"] = compute_priority(
+            merged.get("has_logo", False), merged.get("has_name_match", False),
+            merged.get("logo_match"), merged.get("username_match"), validated,
+        )
 
     for field_name, source_key in PROVENANCE_KEYS.items():
         if field_name in safe:
@@ -601,7 +660,7 @@ async def patch(doc_id: str, fields: dict) -> dict:
     safe["last_seen"] = datetime.now(timezone.utc)
     if safe.get("status") == "rejected":
         # a dedicated timestamp for exactly the moment an analyst rejected
-        # this profile -- last_seen is no good for that ordering since a
+        # this profile, last_seen is no good for that ordering since a
         # routine re-discovery sweep bumps it on ANY already-seen profile,
         # rejected or not, with no analyst action involved. find()'s
         # rejected-list sort depends on this being untouched by anything
@@ -611,7 +670,7 @@ async def patch(doc_id: str, fields: dict) -> dict:
     write: dict[str, Any] = {"$set": safe}
     if "status" in safe:
         # a fresh decision resolves whatever reconsideration flagged this
-        # profile -- the "changed since rejection" label must not outlive it
+        # profile, the "changed since rejection" label must not outlive it
         write["$unset"] = {"changes": "", "changed_at": ""}
 
     res = await db()[PROFILES].update_one({"_id": oid}, write)
@@ -623,13 +682,13 @@ async def patch(doc_id: str, fields: dict) -> dict:
 
 async def publish(doc_id: str) -> dict:
     """An analyst confirming a held analysis result early, before its hold
-    naturally clears -- see ADR 0007. A no-op find()-visibility-wise for a
+    naturally clears, see ADR 0007. A no-op find()-visibility-wise for a
     row that was never held (already published, or not yet analysed).
 
     Guarded against publishing anything that isn't an approved, analysed
     finding: a profile still in `discovery` phase has no scored analysis to
     publish, and a `rejected` profile is an analyst's explicit call that this
-    isn't a genuine impersonation -- an incident must never be raised for it,
+    isn't a genuine impersonation, an incident must never be raised for it,
     even if it was rejected after already clearing analysis. Both are 409s,
     not silent no-ops, so a stale "Publish" click surfaces instead of quietly
     doing nothing (or, before this guard, publishing anyway).
@@ -645,7 +704,7 @@ async def publish(doc_id: str) -> dict:
     if doc.get("analysis_status") in RETRYABLE_ANALYSIS_STATUSES:
         # ERROR/CHECKPOINT/LOGIN_REQUIRED: the analysis run never actually
         # read this profile. PARTIAL: it read SOME of the profile but not
-        # enough to trust -- either way this is queued for another attempt,
+        # enough to trust, either way this is queued for another attempt,
         # not a finding to publish yet.
         raise ConflictError(
             f"profile {doc_id!r} last analysis ended in {doc['analysis_status']} -- "
@@ -669,16 +728,16 @@ async def list_unpublished_ids(
     client_id: str, platform: Optional[str] = None, since: Optional[datetime] = None,
 ) -> list[str]:
     """Every analysis-phase profile for this client not yet flagged
-    `published` -- what a "Publish All" action iterates over, regardless
+    `published`, what a "Publish All" action iterates over, regardless
     of whether each row's own publish hold has already cleared. Excludes
-    rejected profiles -- see publish()'s guard for why those must never
+    rejected profiles, see publish()'s guard for why those must never
     be published. `since`, when set, additionally restricts to profiles
     analysed on/after that time (the Publish filter's Recent/2-Days/Week
-    scopes -- see services/profile_service.py::publish_all_profiles)."""
+    scopes, see services/profile_service.py::publish_all_profiles)."""
     q: dict[str, Any] = {
         "client_id": client_id, "phase": PHASE_ANALYSIS,
         "published": {"$ne": True}, "status": {"$ne": "rejected"},
-        # a failed attempt carries no reading -- see publish()'s guard
+        # a failed attempt carries no reading, see publish()'s guard
         "analysis_status": {"$nin": list(RETRYABLE_ANALYSIS_STATUSES)},
     }
     if platform:
@@ -687,7 +746,7 @@ async def list_unpublished_ids(
         # `analysed_at` only started being written at a certain point (see
         # save()'s PHASE_ANALYSIS branch); rows analysed before that have no
         # such field. Matching on it alone would silently drop every one of
-        # those from a date-scoped publish -- the analyst asks for "last
+        # those from a date-scoped publish, the analyst asks for "last
         # week" and quietly gets less than they asked for, with no error.
         # `last_seen` is written on every save (a $currentDate, so it is
         # present on 100% of rows) and is never later than the analysis that
@@ -717,7 +776,7 @@ async def stats(client_id: str, platform: Optional[str] = None) -> dict:
         ("analysed", {**base, "phase": PHASE_ANALYSIS}),
         # Coverage, not volume. `awaiting_analysis` is approved work the
         # engine still owes; `analysis_failed` is approved work it gave up
-        # on. Both were previously invisible -- an analyst had no way to
+        # on. Both were previously invisible, an analyst had no way to
         # tell "nothing left to do" from "the queue quietly stopped
         # draining", which is exactly the question that decides whether a
         # client report is complete.
@@ -749,19 +808,47 @@ async def delete_for_client(client_id: str) -> int:
     return res.deleted_count
 
 
+async def delete_for_client_platform(client_id: str, platform: str) -> int:
+    """Same as `delete_for_client`, scoped to one platform, the
+    per-platform delete buttons in Discovery/Analysis (see
+    profile_service.delete_for_client_platform). Covers both Discovery and
+    Analysis rows for that platform in one query, since they're the same
+    collection distinguished only by `phase`."""
+    res = await db()[PROFILES].delete_many({"client_id": client_id, "platform": platform})
+    return res.deleted_count
+
+
+async def delete_by_ids(ids: list[str]) -> int:
+    """An analyst's explicit, individually-chosen hard delete, the Live
+    Activity tab's DB browser. Unlike `cleanup_stale_pending`'s age/status
+    gate, this trusts the caller's own selection completely: a malformed id
+    is simply skipped (never a 404 for the whole batch) rather than failing
+    an otherwise-valid bulk delete over one bad entry."""
+    oids = []
+    for doc_id in ids:
+        try:
+            oids.append(ObjectId(doc_id))
+        except (InvalidId, TypeError):
+            continue
+    if not oids:
+        return 0
+    res = await db()[PROFILES].delete_many({"_id": {"$in": oids}})
+    return res.deleted_count
+
+
 async def cleanup_stale_pending(days: int = 60) -> int:
-    """Deletes discovery-phase profiles that have sat in `pending` -- never
-    approved, never rejected -- for `days` without a rediscovery bumping
+    """Deletes discovery-phase profiles that have sat in `pending`, never
+    approved, never rejected, for `days` without a rediscovery bumping
     `last_seen`. Safe to hard-delete: a pending profile has no analyst
     decision recorded, so there is nothing for a future rediscovery to lose
-    by starting over. Scoped to `phase=discovery` on purpose -- a
+    by starting over. Scoped to `phase=discovery` on purpose, a
     pending ANALYSIS-phase profile is either a fresh unpublished finding
     (still actively in the publish-hold review window) or one that just
     bounced back from `rejected` via the reconsideration path (see
     `save()`'s RECONSIDER_FIELDS) and carries a `changes` diff the analyst
     hasn't seen yet; neither should ever be silently deleted.
 
-    Deliberately NOT wired into an automatic cron -- call this from an
+    Deliberately NOT wired into an automatic cron, call this from an
     operator-triggered endpoint or your own external scheduler so a
     misconfigured `days` value can't silently run unattended.
     """
@@ -772,32 +859,32 @@ async def cleanup_stale_pending(days: int = 60) -> int:
     return res.deleted_count
 
 
-# fields stripped by archive_stale_rejected() -- the heavy, purely-cosmetic
+# fields stripped by archive_stale_rejected(), the heavy, purely-cosmetic
 # or search-convenience ones. Never includes anything RECONSIDER_FIELDS
 # reads (display_name, has_logo) or anything the dedup match in save() needs
-# (client_id, platform, url, entity_id) -- an archived rejected profile
+# (client_id, platform, url, entity_id), an archived rejected profile
 # stays exactly as reconsider-able as an unarchived one.
 _ARCHIVE_STRIP_FIELDS = ("profile_image_url", "keywords", "comments", "sources", "urls")
 
 
 async def archive_stale_rejected(days: int = 180) -> int:
-    """Shrinks (does NOT delete) rejected profiles untouched for `days` --
+    """Shrinks (does NOT delete) rejected profiles untouched for `days`,
     strips the signed CDN avatar URL (500-800 chars, and expired within
     hours of being scraped anyway), the keywords array, free-text comments,
     and provenance metadata, while keeping status/display_name/has_logo/url/
     entity_id fully intact. A rediscovery of an archived profile still goes
     through the exact same reconsideration check in save() as an
-    unarchived one -- this only reduces document size, it never changes
+    unarchived one, this only reduces document size, it never changes
     triage behavior.
 
     Trade-off, by design: an archived rejected profile's avatar renders as
     a fallback initial-circle instead of its real photo if an analyst ever
     filters back to it (ProfileAvatar already handles a missing image
-    gracefully -- no error, no broken UI), and it drops out of the
+    gracefully, no error, no broken UI), and it drops out of the
     discovery keyword-filter dropdown for keywords that were only ever
     tracked in the now-stripped `keywords` array. Both are judged
     acceptable specifically because this only ever touches profiles a
-    human already rejected AND then didn't revisit for `days` -- opt-in,
+    human already rejected AND then didn't revisit for `days`, opt-in,
     not run automatically, so you're accepting this trade-off deliberately
     each time you call it, not by default.
     """
@@ -842,8 +929,8 @@ async def ensure_indexes() -> None:
     in the collection must NOT stop the process from starting.
 
     Previously this raised straight out of the FastAPI lifespan, so one
-    pre-existing duplicate -- exactly what the old `entity_id` overwrite bug
-    could produce -- meant the whole engine refused to boot, with a
+    pre-existing duplicate, exactly what the old `entity_id` overwrite bug
+    could produce, meant the whole engine refused to boot, with a
     DuplicateKeyError as the only clue. The engine now starts, logs loudly,
     and points at `GET /health/data-integrity`, which names the offending
     documents. Degraded-but-running beats dead, and the non-unique indexes

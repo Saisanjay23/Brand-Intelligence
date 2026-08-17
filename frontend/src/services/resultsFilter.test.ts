@@ -63,7 +63,7 @@ describe("filterResults", () => {
 
   it("High Match includes a strong fuzzy match, not only a byte-perfect 100", () => {
     // Confirmed live against real data: this used to require name_score
-    // >= 100 -- reachable only by a literal name match -- so genuinely
+    // >= 100, reachable only by a literal name match, so genuinely
     // strong matches (token_set_ratio in the 80s/90s) were silently
     // bucketed into "Medium" instead. 80 mirrors backend's own
     // NAME_THRESHOLD, the same bar used everywhere else to decide "does
@@ -227,7 +227,7 @@ describe("sortResults", () => {
   });
 
   it("falls back to the internal score when a row has no incident preview", () => {
-    // happens when the client record is gone -- build_incident_doc returns
+    // happens when the client record is gone, build_incident_doc returns
     // null there, so there is no riskRating to sort on
     const rows = [
       makeProfile({ phase: "analysis", risk_score: 3 }),
@@ -257,7 +257,7 @@ describe("emptyLabel blames the right thing", () => {
   });
 
   it("a blocked run outranks the platform-limitation label", () => {
-    // Telegram genuinely has no location -- but if the run never got in,
+    // Telegram genuinely has no location, but if the run never got in,
     // that is the reason this cell is empty, not the platform.
     const row = makeProfile({ phase: "analysis", analysis_status: "CHECKPOINT" });
     expect(emptyLabel(row, "telegram", "location")).toBe(
@@ -348,7 +348,7 @@ describe("keywordRelevance / discovery sort", () => {
 
   it("sortResults leaves discovery rows in exactly the order the server returned them", () => {
     // Discovery deliberately does NOT re-sort by relevance (that's what
-    // keywordRelevance's own tests above cover as a standalone utility) --
+    // keywordRelevance's own tests above cover as a standalone utility),
     // the server's order already IS Facebook's own top-to-bottom render
     // order (see profile_repository.py::find + the Facebook discovery
     // engine's sweep() ordering fix), and the whole point of this view is

@@ -3,7 +3,7 @@
 Job state (the Job objects, per-platform locks) lives in memory in THIS
 process, so run a single API server. The actual scraping (Playwright
 automation, CPU-bound JSON/regex parsing) runs in a SEPARATE child process
-per job, not on this process's event loop -- that parsing alone can hold
+per job, not on this process's event loop; that parsing alone can hold
 the event loop busy for ~30-40% of a CPU core continuously while scraping,
 which would otherwise make a simple PATCH or results poll take seconds
 instead of being near-instant.
@@ -13,14 +13,14 @@ progress, numbered so a reconnect after a gap never misses anything; an
 optional `callback_url` gets POSTed the final state once the job reaches a
 terminal status, so a caller doesn't have to poll aggressively either.
 
-A discovery job always sweeps every ready platform for a client -- there's
+A discovery job always sweeps every ready platform for a client, there's
 no per-platform discovery call. An analysis job's `platform` is either one
 specific platform (the auto-trigger-on-approval path batches by the
 approved profile's own platform) or None (the manual catch-up trigger,
 which analyses every approved-but-unanalysed profile across every platform).
 
 NOTE: this module's fully-qualified import path (`backend.services.job_service`)
-is itself part of a runtime contract on Windows -- `multiprocessing`'s
+is itself part of a runtime contract on Windows, `multiprocessing`'s
 "spawn" start method re-imports this exact module in the child process and
 looks up `_child_entry` by that qualified name. Moving this file requires
 that import path to resolve correctly in the child, which it does as long
@@ -48,7 +48,7 @@ log = get_logger("services.jobs")
 # Dedicated to the per-job IPC pump ONLY. Each running job parks one thread
 # here for its whole duration, so this must not be the default executor that
 # `asyncio.to_thread` callers (the avatar media-proxy) also draw from. Sized
-# well above any plausible number of concurrent jobs -- these threads are
+# well above any plausible number of concurrent jobs, these threads are
 # blocked on a queue, not doing work, so they cost almost nothing.
 _IPC_POOL = ThreadPoolExecutor(max_workers=64, thread_name_prefix="job-ipc")
 
@@ -56,19 +56,28 @@ QUEUED, RUNNING, DONE, FAILED, CANCELLED = "queued", "running", "done", "failed"
 TERMINAL = {DONE, FAILED, CANCELLED}
 DISCOVERY, ANALYSIS = "discovery", "analysis"
 
-# a job stays in memory once terminal -- a long-running process running
+# a job stays in memory once terminal, a long-running process running
 # daily cron sweeps needs a cap or this grows forever. Well above what any
 # realistic polling/listing use needs to see at once.
 MAX_JOBS_IN_MEMORY = 2000
 
 # Per-job event ring. A discovery sweep emits one "item" event per saved
-# page of results, so a long multi-keyword run produces thousands -- times
+# page of results, so a long multi-keyword run produces thousands, times
 # MAX_JOBS_IN_MEMORY jobs, that is real memory held forever for scrollback
 # nobody reads. Callers poll with `after_seq`, and the frontend keeps only
 # the last 200 anyway; older events falling off is invisible to a caller
 # that is keeping up, and `last_seq` still tells one that isn't that it
 # missed a range rather than silently renumbering.
 MAX_EVENTS_PER_JOB = 500
+
+# How many keyword/URL labels a platform's live "what's done / what's next"
+# view keeps verbatim. A client with thousands of approved URLs would
+# otherwise mean thousands of strings held in memory per running job (times
+# however many jobs are in flight) for a preview nobody scrolls that far
+# into, `processed`/`total` already give the exact count either way, this
+# is only ever a representative window into it, never the source of truth
+# for "how many".
+ITEM_PREVIEW_CAP = 50
 
 
 def _now_iso() -> str:
@@ -84,7 +93,7 @@ class Event:
     found: int = 0
     total: int = 0
     ts: str = ""
-    # which client this job (and therefore this event) belongs to -- lets a
+    # which client this job (and therefore this event) belongs to, lets a
     # caller filter the global event stream down to one client's live
     # progress (see the Scheduler admin tab) without cross-referencing the
     # job list separately.
@@ -115,19 +124,19 @@ class Job:
     task: Optional[Any] = None  # asyncio.Task
     process: Optional["multiprocessing.Process"] = None
     callback_url: str = ""
-    # per-platform breakdown -- {platform_id: {status, processed, total,
+    # per-platform breakdown, {platform_id: {status, processed, total,
     # started (epoch seconds), updated (epoch seconds)}}. status is
     # pending|running|done|failed, mirroring the job's own status values.
     # Populated via emit()'s platform=... kwargs; see discovery_service.py /
     # analysis_service.py for where each platform's entries get updated.
     platform_progress: dict[str, dict] = field(default_factory=dict)
     # Which pooled session this job is holding right now, and which
-    # platform it belongs to -- set via emit()'s session_id= kwarg at the
+    # platform it belongs to, set via emit()'s session_id= kwarg at the
     # moment discovery_service.py/analysis_service.py acquire one, cleared
     # implicitly the instant job.status leaves "running" (nothing has to
     # explicitly release it). This is what sessions/manager.py's
     # _session_in_use() checks to show "currently running" in the Sessions
-    # panel -- see that function's docstring for why deriving it from the
+    # panel, see that function's docstring for why deriving it from the
     # job's own lifecycle is more robust than a separately-tracked flag.
     session_id: str = ""
     session_platform: str = ""
@@ -143,14 +152,18 @@ class Job:
             ):
                 rate = (now - p["started"]) / p["processed"]
                 eta_seconds = round(rate * (p["total"] - p["processed"]))
-            platforms_out[pid] = {**p, "eta_seconds": eta_seconds}
+            # wall-clock time this platform has actually taken, ticks
+            # live while running (against "now"), freezes at whatever it
+            # was the moment it stopped (against its own last "updated").
+            elapsed_seconds = round((now if p["status"] == "running" else (p["updated"] or now)) - p["started"]) if p["started"] else None
+            platforms_out[pid] = {**p, "eta_seconds": eta_seconds, "elapsed_seconds": elapsed_seconds}
         return {
             "id": self.id, "kind": self.kind, "client_id": self.client_id, "platform": self.platform,
             "params": self.params, "status": self.status, "message": self.message,
             "found": self.found, "total": self.total, "new_profiles": self.new_profiles,
             "error": self.error, "started": self.started, "finished": self.finished,
             "last_seq": self.events[-1].seq if self.events else 0,
-            # oldest event still retained (see MAX_EVENTS_PER_JOB) -- a
+            # oldest event still retained (see MAX_EVENTS_PER_JOB), a
             # caller resuming from `after_seq` below this knows it missed a
             # range instead of silently receiving a truncated stream
             "first_seq": self.events[0].seq if self.events else 0,
@@ -161,7 +174,7 @@ class Job:
 def _kill_process_tree(proc: "multiprocessing.Process") -> None:
     """Terminate a job's worker AND whatever it launched (Chrome).
     proc.terminate() alone only stops the Python child, orphaning any
-    browser it launched -- Windows needs `taskkill /T` to kill the whole
+    browser it launched. Windows needs `taskkill /T` to kill the whole
     tree in one call; elsewhere terminate() is enough."""
     import sys
 
@@ -180,7 +193,7 @@ def _kill_process_tree(proc: "multiprocessing.Process") -> None:
         pass
 
 
-# Set only inside a spawned child process -- when set, emit() forwards to
+# Set only inside a spawned child process, when set, emit() forwards to
 # this queue instead of touching job.events, because a child process has
 # no access to the parent's Job object at all.
 _ipc_queue: Optional["multiprocessing.Queue"] = None
@@ -210,7 +223,7 @@ class JobManager:
 
     def blocking_job(self, job: Job) -> Optional[Job]:
         """The currently RUNNING job holding a lock a QUEUED job needs, if
-        any. `status=queued` alone doesn't tell an analyst why -- it looks
+        any. `status=queued` alone doesn't tell an analyst why; it looks
         identical whether a job hasn't started yet or is stuck behind
         someone else's sweep. Exposing what it's actually blocked on (see
         job_controller.py) turns "queued" into "waiting on client X's
@@ -226,8 +239,8 @@ class JobManager:
     def _lock_keys(self, job: Job) -> list:
         """Every lock this job must hold, sorted.
 
-        The lock has to name the RESOURCE being contended -- a platform's
-        session pool -- not the shape of the job. The previous scheme keyed
+        The lock has to name the RESOURCE being contended, a platform's
+        session pool, not the shape of the job. The previous scheme keyed
         on (platform, kind), which meant these three never collided:
 
             discovery      platform=None      -> ("all-platforms","discovery")
@@ -268,6 +281,7 @@ class JobManager:
         *, platform: Optional[str] = None, platform_status: Optional[str] = None,
         platform_processed: Optional[int] = None, platform_total: Optional[int] = None,
         new_profiles: Optional[int] = None, session_id: Optional[str] = None,
+        platform_item_done: Optional[str] = None, platform_pending_seed: Optional[list[str]] = None,
     ) -> None:
         if _ipc_queue is not None:
             try:
@@ -276,14 +290,18 @@ class JobManager:
                     "platform": platform, "platform_status": platform_status,
                     "platform_processed": platform_processed, "platform_total": platform_total,
                     # Without this the counter only ever incremented on the
-                    # CHILD's copy of the Job -- the parent, which is what
+                    # CHILD's copy of the Job; the parent, which is what
                     # `GET /jobs/{id}` serializes, never saw it, so every
                     # job in the API reported new_profiles: 0 no matter how
                     # many profiles it actually discovered.
                     "new_profiles": new_profiles if new_profiles is not None else job.new_profiles,
                     # same cross-process gap, for "which session is this job
-                    # using right now" -- see Job.session_id's own comment
+                    # using right now", see Job.session_id's own comment
                     "session_id": session_id if session_id is not None else job.session_id,
+                    # the live "what's done / what's next" preview, same
+                    # cross-process gap as the two fields above
+                    "platform_item_done": platform_item_done,
+                    "platform_pending_seed": platform_pending_seed,
                 })
             except Exception:
                 pass
@@ -302,7 +320,16 @@ class JobManager:
             job.message = message
         if platform is not None:
             entry = job.platform_progress.setdefault(
-                platform, {"status": "pending", "processed": 0, "total": 0, "started": None, "updated": None},
+                platform, {
+                    "status": "pending", "processed": 0, "total": 0, "started": None, "updated": None,
+                    # a bounded LIVE PREVIEW of which keywords (discovery)
+                    # or URLs (analysis) are next up / just finished for
+                    # this platform, see ITEM_PREVIEW_CAP. `processed`/
+                    # `total` above remain the source of truth for exact
+                    # counts; these two lists are a representative sample,
+                    # not a complete inventory, once a run exceeds the cap.
+                    "pending_items": [], "done_items": [], "pending_overflow": 0,
+                },
             )
             if platform_status is not None:
                 entry["status"] = platform_status
@@ -312,6 +339,21 @@ class JobManager:
                 entry["processed"] = platform_processed
             if platform_total is not None:
                 entry["total"] = platform_total
+            if platform_pending_seed is not None:
+                entry["pending_items"] = list(platform_pending_seed[:ITEM_PREVIEW_CAP])
+                entry["pending_overflow"] = max(0, len(platform_pending_seed) - ITEM_PREVIEW_CAP)
+            if platform_item_done:
+                entry["done_items"].append(platform_item_done)
+                if len(entry["done_items"]) > ITEM_PREVIEW_CAP:
+                    del entry["done_items"][:-ITEM_PREVIEW_CAP]
+                # remove by value, not by popping the front, discovery
+                # runs several (keyword, tab) sweeps concurrently (see
+                # discovery_service._run_incremental's semaphore), so
+                # completions don't arrive in the same order they were seeded
+                try:
+                    entry["pending_items"].remove(platform_item_done)
+                except ValueError:
+                    pass
             entry["updated"] = time.time()
         job.events.append(Event(seq=self._seq, job_id=job.id, type=type_, message=job.message,
                                  found=job.found, total=job.total, ts=_now_iso(), client_id=job.client_id))
@@ -323,7 +365,7 @@ class JobManager:
         this request needs, if any.
 
         A plain (force=False) analysis job re-reads the current
-        approved-and-unanalysed set when it starts -- so a second plain
+        approved-and-unanalysed set when it starts; so a second plain
         request for the same (client, platform) is redundant with the
         first: whichever runs first analyses everything owed, and the rest
         would find nothing to do. That's what this coalescing exists for:
@@ -334,7 +376,7 @@ class JobManager:
         the per-card path did not, and that is the path the UI actually
         uses.)
 
-        force=True is NOT interchangeable with a plain job -- it means
+        force=True is NOT interchangeable with a plain job; it means
         "re-analyse everything approved, even what a previous run already
         scored," which is strictly more work. So:
           - an incoming force=True request is NEVER coalesced: reusing an
@@ -344,7 +386,7 @@ class JobManager:
             parameter exists to fix.
           - an incoming plain request MAY coalesce into an already-queued
             force job, since a full re-analysis is a superset of "whatever
-            is still owed" -- it will do at least as much as the plain
+            is still owed"; it will do at least as much as the plain
             request needed.
 
         Deliberately only matches QUEUED, never RUNNING: a job already in
@@ -363,7 +405,7 @@ class JobManager:
 
     def create(self, kind: str, client_id: str, params: dict, *, platform: Optional[str] = None, callback_url: str = "") -> Job:
         # A callback_url makes a job individually observable to its caller,
-        # so never coalesce one away -- the caller is waiting for that exact
+        # so never coalesce one away; the caller is waiting for that exact
         # job id to report back.
         force = bool(params.get("force")) if kind == ANALYSIS else False
         if not callback_url:
@@ -443,8 +485,8 @@ class JobManager:
                     # for the ENTIRE lifetime of the job, so on the shared
                     # pool each running job permanently consumes one of the
                     # default (min(32, cpu+4)) worker threads. Anything else
-                    # using asyncio.to_thread -- notably the avatar
-                    # media-proxy -- would then silently stop responding
+                    # using asyncio.to_thread, notably the avatar
+                    # media-proxy, would then silently stop responding
                     # once enough jobs were in flight, with no error
                     # anywhere to explain it.
                     item = await loop.run_in_executor(_IPC_POOL, _get_next)
@@ -471,6 +513,8 @@ class JobManager:
                         platform=item.get("platform"), platform_status=item.get("platform_status"),
                         platform_processed=item.get("platform_processed"), platform_total=item.get("platform_total"),
                         new_profiles=item.get("new_profiles"), session_id=item.get("session_id"),
+                        platform_item_done=item.get("platform_item_done"),
+                        platform_pending_seed=item.get("platform_pending_seed"),
                     )
             except asyncio.CancelledError:
                 _kill_process_tree(proc)
@@ -483,6 +527,22 @@ class JobManager:
                 proc.join(timeout=5)
                 if proc.is_alive():
                     _kill_process_tree(proc)
+                # An unclosed multiprocessing.Queue leaves its background
+                # feeder thread (and the OS pipe/handle backing it) running
+                # forever, one leaked per job, never freed for the life of
+                # this process. On Windows that's what turned into the
+                # spawn-failure storms round_robin_service.py's own backoff
+                # exists to survive: enough leaked handles and the NEXT
+                # multiprocessing.Process() call itself starts failing.
+                # close() stops the feeder thread from accepting more
+                # writes; join_thread() actually waits for it to exit so the
+                # handle is released before this coroutine moves on, not at
+                # some later, unpredictable GC pass.
+                try:
+                    ipc_queue.close()
+                    ipc_queue.join_thread()
+                except Exception:
+                    pass
                 if job.status in TERMINAL and job.callback_url:
                     from backend.services.webhook_service import dispatch
                     # keep a strong reference: a bare create_task is only
@@ -520,7 +580,7 @@ class JobManager:
 
 def _child_entry(job_id: str, kind: str, client_id: str, platform: Optional[str], params: dict, ipc_queue: "multiprocessing.Queue") -> None:
     """The actual entry point of a job's worker process. Must stay a plain
-    module-level function -- Windows' multiprocessing "spawn" start method
+    module-level function. Windows' multiprocessing "spawn" start method
     re-imports this module in the child and looks the target up by its
     qualified name, so a bound method or closure here would fail to pickle.
 

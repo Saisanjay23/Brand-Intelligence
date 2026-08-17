@@ -11,7 +11,7 @@ import asyncio
 
 import pytest
 
-from backend.shared.extraction import (ExtractionResult, run_strategies,
+from backend.shared.extraction import (run_strategies,
                                         _default_is_empty)
 
 

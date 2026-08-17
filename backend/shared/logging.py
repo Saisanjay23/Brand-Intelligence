@@ -1,7 +1,7 @@
 """Structured logging: JSON records to stdout and a JSONL audit file.
 
 A scrape must stay auditable weeks later when a report drives a takedown
-and someone asks where a field came from -- that's what the JSONL file is
+and someone asks where a field came from, that's what the JSONL file is
 for, alongside the normal stdout stream an operator actually watches.
 """
 
@@ -33,7 +33,7 @@ class _JsonFormatter(logging.Formatter):
 
 
 class _JsonLinesFile(logging.Handler):
-    """Best-effort audit trail on disk -- logging must never take down a job."""
+    """Best-effort audit trail on disk, logging must never take down a job."""
 
     def emit(self, record: logging.LogRecord) -> None:
         try:

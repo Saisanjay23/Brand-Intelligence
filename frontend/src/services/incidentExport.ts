@@ -1,7 +1,7 @@
 /**
  * Flattens a Profile's `incident` preview (backend/services/incident_publisher.py's
  * build_incident_doc, see api/types.ts's PublishedIncidentPreview) into the
- * one row shape CSV/JSON/Excel export all share for the analysis view --
+ * one row shape CSV/JSON/Excel export all share for the analysis view,
  * the exact column set/order/labels the client-facing takedown-report
  * Excel template expects. A discovery-phase Profile has no `incident` and
  * is not exportable through this path (see ResultsGrid.tsx's handleExport,
@@ -32,7 +32,7 @@ export type IncidentExportColumn = (typeof INCIDENT_EXPORT_COLUMNS)[number];
 export type IncidentExportRow = Record<IncidentExportColumn, string>;
 
 // "2026-07-16" -> "16-07-2026". Passes through unrecognised/empty input
-// rather than guessing -- a blank date must stay blank, not become "NaN".
+// rather than guessing, a blank date must stay blank, not become "NaN".
 function toDDMMYYYY(iso: string | null | undefined): string {
   if (!iso) return "";
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);

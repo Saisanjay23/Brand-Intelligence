@@ -65,3 +65,52 @@ class TestCapIsActuallyEnforcedOnTheReturnedHits:
         d = _discovery(max_results=3, api_page=page)
         out = await d.sweep("adani", "channels")
         assert [h.entity_id for h in out.hits] == ["c0", "c1", "c2"]
+
+
+class TestYouTubeAPIQuotaAndErrorHandling:
+    @pytest.mark.asyncio
+    async def test_http_429_quota_exceeded_raises_quota_exceeded(self, monkeypatch):
+        import io
+        import urllib.error
+        import urllib.request
+        from backend.platforms.youtube.discovery_engine import YouTubeAPI, QuotaExceeded
+
+        body = '{"error": {"code": 429, "message": "Quota exceeded for quota metric Search Queries"}}'
+        err = urllib.error.HTTPError("http://example.com", 429, "Too Many Requests", {}, io.BytesIO(body.encode("utf-8")))
+
+        from unittest.mock import MagicMock
+        api = YouTubeAPI(key="dummy-key")
+        monkeypatch.setattr(urllib.request, "urlopen", MagicMock(side_effect=err))
+
+        with pytest.raises(QuotaExceeded):
+            await api.search_channels("test")
+
+    @pytest.mark.asyncio
+    async def test_http_403_invalid_key_raises_runtime_error(self, monkeypatch):
+        import io
+        import urllib.error
+        import urllib.request
+        from unittest.mock import MagicMock
+        from backend.platforms.youtube.discovery_engine import YouTubeAPI
+
+        body = '{"error": {"code": 403, "message": "API key not valid"}}'
+        err = urllib.error.HTTPError("http://example.com", 403, "Forbidden", {}, io.BytesIO(body.encode("utf-8")))
+
+        api = YouTubeAPI(key="dummy-key")
+        monkeypatch.setattr(urllib.request, "urlopen", MagicMock(side_effect=err))
+
+        with pytest.raises(RuntimeError, match="API key invalid"):
+            await api.get("search", q="test")
+
+    @pytest.mark.asyncio
+    async def test_sweep_stops_with_quota_on_quota_exceeded(self):
+        from backend.platforms.youtube.discovery_engine import QuotaExceeded
+        d = Discovery.__new__(Discovery)
+        d.a = SimpleNamespace(max_results=50, max_seconds=60)
+        d.api = SimpleNamespace(
+            search_channels=AsyncMock(side_effect=QuotaExceeded("YouTube daily quota exhausted")),
+        )
+        out = await d.sweep("adani", "channels")
+        assert out.stopped == "quota"
+        assert "quota" in out.error.lower()
+

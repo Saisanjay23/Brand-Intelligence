@@ -1,4 +1,4 @@
-"""YouTube analysis engine: validation -- channel URL -> scored Row, via the
+"""YouTube analysis engine: validation, channel URL -> scored Row, via the
 official API.
 
 The API client (`YouTubeAPI`) and the default-picture check live in
@@ -14,13 +14,11 @@ no-ops kept only to satisfy the same interface as the browser platforms.
 
 from __future__ import annotations
 
-import sys
 from urllib.parse import unquote, urlparse
 
 from backend.shared.models.row import Row
-from backend.shared.text import fmt_created, name_score, normalized_host, parse_normalized_url
-from backend.platforms.youtube.discovery_engine import (CHANNEL_URL,
-                                                         RE_DEFAULT_PIC,
+from backend.shared.text import name_score, normalized_host, parse_normalized_url
+from backend.platforms.youtube.discovery_engine import (RE_DEFAULT_PIC,
                                                          QuotaExceeded,
                                                          YouTubeAPI)
 
@@ -47,6 +45,8 @@ def channel_ref(url: str) -> tuple[str, str]:
         return "handle", seg[0]
     if seg[0] in ("c", "user") and len(seg) > 1:
         return "handle", seg[1]
+    if seg[0].startswith("UC") and len(seg[0]) >= 20:
+        return "id", seg[0]
     return "handle", seg[0]
 
 
@@ -56,7 +56,7 @@ class Scraper:
     normalize_url = staticmethod(normalize_url)
 
     def __init__(self, args, cookies=None, session_id: str = "", proxy=None):
-        # API-key authed, no browser -- session_id/proxy exist only so
+        # API-key authed, no browser, session_id/proxy exist only so
         # jobs.py can call every platform's Scraper with the same signature.
         self.a = args
         self.api = YouTubeAPI()
@@ -71,17 +71,46 @@ class Scraper:
         return None  # quota-bound, not rate-bound: no pacing needed
 
     async def check_session(self) -> bool:
-        """A key with no quota left is as unusable as an expired cookie."""
+        """False means the KEY ITSELF is conclusively rejected, the
+        YouTube-API equivalent of a browser landing on a login wall.
+
+        Daily quota exhaustion is NOT that: it is a normal, expected state
+        (see discovery_engine.py's module docstring, 10,000 units/day,
+        resets on its own) that says nothing about whether the key is
+        valid. This used to return False for it too, which wrongly
+        quarantined a perfectly good key and fired a SessionInvalid alert
+        telling someone to replace credentials that were never the
+        problem, every single day the quota happened to run out first.
+
+        A network/timeout error during the check is likewise not evidence
+        the key is bad, and is left to propagate as a raised exception
+        (via classify_failure's `None` result below) rather than being
+        swallowed into "rejected", same conclusive-vs-inconclusive
+        contract every other platform's check_session follows (see
+        stealth/browser.py's docstring); the caller
+        (sessions/manager.py::verify_session_item) treats a raised
+        exception as inconclusive and leaves the session's status
+        untouched instead of recording a blip as "this key is now dead."
+        """
+        from backend.shared.logging import get_logger as _gl
+        from backend.shared.resilience import classify_failure
+        _log = _gl("platforms.youtube.analysis")
         try:
-            await self.api.get("channels", part="id", forHandle="youtube")
-            print("SESSION: API key valid", file=sys.stderr)
+            await self.api.get("channels", part="id", forHandle="@youtube")
+            _log.info("SESSION: API key valid")
             return True
         except QuotaExceeded as e:
-            print(f"SESSION: {e}", file=sys.stderr)
-            return False
+            _log.info(f"SESSION: quota exhausted for today -- key itself still valid ({e})")
+            return True
         except Exception as e:
-            print(f"SESSION: API key rejected -- {e}", file=sys.stderr)
-            return False
+            reason = classify_failure(e)
+            if reason in ("expired", "checkpointed"):
+                _log.warning(f"SESSION: API key rejected -- {e}")
+                return False
+            # rate_limited (a 429/"too many requests" distinct from daily
+            # quota), or unclassified/transient, not conclusive evidence
+            # the key itself is bad
+            raise
 
     # ───────────────────────────── per URL ────────────────────────────── #
 
@@ -129,8 +158,13 @@ class Scraper:
         stats = ch.get("statistics") or {}
 
         row.profile_id = ch.get("id", "")
-        row.url = CHANNEL_URL.format(cid=row.profile_id) if row.profile_id else row.url
-        row.profile_name = (snip.get("title") or "").strip()
+        row.profile_name = (
+            snip.get("title")
+            or snip.get("channelTitle")
+            or (ch.get("brandingSettings") or {}).get("channel", {}).get("title")
+            or snip.get("customUrl")
+            or ""
+        ).strip()
         row.mark("name", "api")
         row.name_score = name_score(row.profile_name, row.target)
 
@@ -177,14 +211,11 @@ class Scraper:
 
     @staticmethod
     def report(i: int, total: int, u: str, row: Row) -> None:
-        print(f"[{i}/{total}] {u}", file=sys.stderr)
-        print(
-            f"    {row.status:<14} name={row.profile_name[:22]:<22} "
-            f"created={fmt_created(row.created_iso) or '-':<10} "
-            f"subs={row.followers if row.followers is not None else '-':<10} "
-            f"active={row.active_yes or '-':<3} "
-            f"risk={row.risk} {row.priority}",
-            file=sys.stderr,
+        from backend.shared.logging import get_logger as _gl
+        _gl("platforms.youtube.analysis").info(
+            f"[{i}/{total}] {u} | {row.status} name={row.profile_name[:22]} "
+            f"subs={row.followers if row.followers is not None else '-'} "
+            f"active={row.active_yes or '-'} risk={row.risk} {row.priority}"
         )
 
     async def run(self, jobs: list[tuple[str, str, str]]) -> list[Row]:
@@ -194,6 +225,7 @@ class Scraper:
             rows.append(row)
             self.report(i, len(jobs), u, row)
             if row.status == "CHECKPOINT":
-                print("\nQUOTA EXHAUSTED -- stopping.", file=sys.stderr)
+                from backend.shared.logging import get_logger as _gl
+                _gl("platforms.youtube.analysis").warning("QUOTA EXHAUSTED -- stopping.")
                 break
         return rows

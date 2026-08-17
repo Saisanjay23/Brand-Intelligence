@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import toast from "react-hot-toast";
+import { analysisApi } from "../api/analysisApi";
 import { clientsApi } from "../api/clientsApi";
 import { discoveryApi } from "../api/discoveryApi";
 import { jobsApi } from "../api/jobsApi";
@@ -12,12 +13,17 @@ import {
   computeIncidentRiskScorePreview,
   emptyLabel,
   filterResults,
+  logoMatchOf,
+  riskLabel,
   sortResults,
+  usernameMatchOf,
   type ExtraFilters,
   type ResultFilters,
 } from "../services/resultsFilter";
 import { toIncidentExportRows } from "../services/incidentExport";
+import { toLegacyExportRows } from "../services/legacyExport";
 import { download, downloadBlob, rowsToCsv, rowsToTsv } from "../utils/download";
+import { confirmAction } from "../utils/confirmAction";
 
 interface Props {
   clientId: string;
@@ -32,13 +38,13 @@ interface Props {
 }
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 200] as const;
-const EXPORT_LIMIT = 5000;
+const EXPORT_LIMIT = 1000;
 // how long an approve/reject/validate stays undo-able before the toast
-// disappears -- long enough to catch a misclick, short enough that "undo"
+// disappears, long enough to catch a misclick, short enough that "undo"
 // never becomes a second, confusing source of truth for a profile's status
 const UNDO_WINDOW_MS = 8000;
 
-// "5s" / "2m 30s" / "1h 5m" -- never both units at zero, never blank.
+// "5s" / "2m 30s" / "1h 5m", never both units at zero, never blank.
 function formatEta(seconds: number | null): string {
   if (seconds === null || seconds < 0) return "";
   if (seconds < 5) return "almost done";
@@ -61,7 +67,7 @@ const PLATFORM_STATUS_LOOK: Record<PlatformProgress["status"], { icon: string; c
   // and nothing anywhere contradicted it.
   partial: { icon: "🟡", color: "var(--warn-yellow)" },
   failed: { icon: "⚠️", color: "var(--danger)" },
-  // never attempted at all (session wasn't ready when the sweep started) --
+  // never attempted at all (session wasn't ready when the sweep started),
   // distinct from "failed" so the fix is obvious: check Sessions, not retry
   // and hope. Previously a skipped platform had no progress entry
   // whatsoever, so it just silently vanished from the sweep with nothing
@@ -144,8 +150,8 @@ function LiveFeed({ title, log }: { title: string; log: JobEvent[] }) {
 
 
 // A profile only ever reappears in "pending" after being rejected if a
-// rediscovery actually observed a real change (display name and/or logo --
-// see backend's RECONSIDER_FIELDS) -- this turns that raw {field: {old,
+// rediscovery actually observed a real change (display name and/or logo,
+// see backend's RECONSIDER_FIELDS), this turns that raw {field: {old,
 // new}} diff into a readable one-liner, so the analyst sees WHY it's back
 // instead of having to trust the queue blindly.
 const CHANGE_FIELD_LABELS: Record<string, string> = { display_name: "name", has_logo: "logo" };
@@ -154,6 +160,267 @@ function changeSummary(changes?: Record<string, { old: unknown; new: unknown }> 
   return Object.entries(changes)
     .map(([f, { old, new: next }]) => `${CHANGE_FIELD_LABELS[f] ?? f}: ${old ?? "—"} → ${next ?? "—"}`)
     .join("; ");
+}
+
+function VisualDiffModal({ profile, onClose }: { profile: Profile; onClose: () => void }) {
+  if (!profile.changes) return null;
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, background: "rgba(8,15,30,0.8)",
+        backdropFilter: "blur(8px)", zIndex: 10000, display: "flex",
+        alignItems: "center", justifyContent: "center", padding: "20px",
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="dashboard-card-box"
+        style={{ width: "min(560px, 100%)", background: "var(--bg-card)" }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px", borderBottom: "1px solid var(--border-subtle)", paddingBottom: "10px" }}>
+          <div style={{ fontSize: "15px", fontWeight: 700, display: "flex", alignItems: "center", gap: "8px" }}>
+            <span>🔄 Change History</span>
+            <span style={{ fontSize: "12px", color: "var(--text-dim)", fontWeight: 400 }}>({profile.profile_name || profile.username || "Profile"})</span>
+          </div>
+          <button onClick={onClose} style={{ background: "transparent", border: "none", color: "var(--text-muted)", fontSize: "16px", cursor: "pointer" }}>✕</button>
+        </div>
+
+        <div style={{ fontSize: "12px", color: "var(--text-dim)", marginBottom: "12px" }}>
+          This profile was previously rejected. A rediscovery detected the following updates:
+        </div>
+
+        <table className="diff-table">
+          <thead>
+            <tr>
+              <th>Field</th>
+              <th>Previous Value</th>
+              <th>New Detected Value</th>
+            </tr>
+          </thead>
+          <tbody>
+            {Object.entries(profile.changes).map(([field, { old, new: next }]) => (
+              <tr key={field}>
+                <td style={{ fontWeight: 600, color: "var(--text-main)", textTransform: "capitalize" }}>
+                  {CHANGE_FIELD_LABELS[field] ?? field.replace(/_/g, " ")}
+                </td>
+                <td>
+                  <span className="diff-old-val">
+                    {old === true ? "Yes" : old === false ? "No" : String(old ?? "None")}
+                  </span>
+                </td>
+                <td>
+                  <span className="diff-new-val">
+                    {next === true ? "Yes" : next === false ? "No" : String(next ?? "None")}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "16px" }}>
+          <button type="button" onClick={onClose} className="btn-cyber-primary" style={{ width: "auto", padding: "7px 18px", fontSize: "12px" }}>
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ShortcutsModal({ onClose }: { onClose: () => void }) {
+  const shortcuts = [
+    { key: "J / ↓", desc: "Move focus to next row/card" },
+    { key: "K / ↑", desc: "Move focus to previous row/card" },
+    { key: "Space", desc: "Toggle selection checkbox for focused row" },
+    { key: "V", desc: "Validate focused profile (Discovery)" },
+    { key: "X", desc: "Reject focused profile" },
+    { key: "E", desc: "Open incident Edit Drawer (Analysis)" },
+    { key: "P", desc: "Publish focused finding (Analysis)" },
+    { key: "I", desc: "Toggle side-by-side Live Inspection pane" },
+    { key: "Ctrl + Z", desc: "Undo last triage decision" },
+    { key: "Esc", desc: "Close modals / clear selection" },
+    { key: "?", desc: "Toggle this shortcuts guide" },
+  ];
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, background: "rgba(8,15,30,0.8)",
+        backdropFilter: "blur(8px)", zIndex: 10000, display: "flex",
+        alignItems: "center", justifyContent: "center", padding: "20px",
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="dashboard-card-box"
+        style={{ width: "min(480px, 100%)", background: "var(--bg-card)" }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px", borderBottom: "1px solid var(--border-subtle)", paddingBottom: "10px" }}>
+          <div style={{ fontSize: "15px", fontWeight: 700, display: "flex", alignItems: "center", gap: "8px" }}>
+            <span>⌨️ Keyboard Shortcuts</span>
+          </div>
+          <button onClick={onClose} style={{ background: "transparent", border: "none", color: "var(--text-muted)", fontSize: "16px", cursor: "pointer" }}>✕</button>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px", margin: "10px 0 16px" }}>
+          {shortcuts.map((s) => (
+            <div key={s.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "12px", borderBottom: "1px solid var(--border-subtle)", paddingBottom: "6px" }}>
+              <span style={{ color: "var(--text-muted)" }}>{s.desc}</span>
+              <span className="kbd-badge">{s.key}</span>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <button type="button" onClick={onClose} className="btn-cyber-primary" style={{ width: "auto", padding: "7px 18px", fontSize: "12px" }}>
+            Got it
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LiveInspectionPane({
+  profile,
+  isAnalysisView,
+  onValidate,
+  onReject,
+  onEdit,
+  onClose,
+}: {
+  profile: Profile;
+  isAnalysisView: boolean;
+  onValidate: (id: string) => void;
+  onReject: (id: string) => void;
+  onEdit: (id: string) => void;
+  onClose: () => void;
+}) {
+  const inc = profile.incident;
+  const name = isAnalysisView && inc ? inc.title : profile.profile_name || profile.username || profile.url;
+  const linkUrl = isAnalysisView && inc ? inc.source : profile.url;
+
+  return (
+    <div className="live-inspection-pane">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+        <div style={{ fontSize: "11px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--cyan)" }}>
+          🖥️ Live Inspection
+        </div>
+        <button
+          onClick={onClose}
+          style={{ background: "transparent", border: "none", color: "var(--text-dim)", cursor: "pointer", fontSize: "14px" }}
+          title="Close split inspection pane"
+        >
+          ✕
+        </button>
+      </div>
+
+      <div className="inspection-header">
+        <div style={{ width: "40px", height: "40px", flexShrink: 0 }}>
+          <ProfileAvatar r={profile} size={40} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--text-main)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {name}
+          </div>
+          <div style={{ fontSize: "11px", color: "var(--text-dim)", display: "flex", alignItems: "center", gap: "6px", marginTop: "2px" }}>
+            <span style={{ textTransform: "capitalize" }}>{profile.platform}</span>
+            {profile.username && <span>@{profile.username}</span>}
+          </div>
+        </div>
+        <a
+          href={linkUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            background: "rgba(0, 229, 255, 0.1)",
+            border: "1px solid rgba(0, 229, 255, 0.3)",
+            color: "var(--cyan)",
+            padding: "4px 8px",
+            borderRadius: "6px",
+            fontSize: "11px",
+            fontWeight: 600,
+            textDecoration: "none",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "4px",
+            whiteSpace: "nowrap",
+          }}
+          title="Open in new browser tab"
+        >
+          🔗 Open ↗
+        </a>
+      </div>
+
+      <div className="inspection-stat-grid">
+        <div className="inspection-stat-box">
+          <div className="inspection-stat-label">Followers</div>
+          <div className="inspection-stat-val">
+            {profile.followers !== null && profile.followers !== undefined ? Number(profile.followers).toLocaleString() : "—"}
+          </div>
+        </div>
+        <div className="inspection-stat-box">
+          <div className="inspection-stat-label">{isAnalysisView ? "Risk Score" : "Match Score"}</div>
+          <div className="inspection-stat-val" style={{ color: isAnalysisView ? (Number(inc?.riskRating || 0) >= 8 ? "var(--alert-red)" : "var(--warn-yellow)") : "var(--cyan)" }}>
+            {isAnalysisView ? (inc?.riskRating || "—") : (profile.name_score !== null && profile.name_score !== undefined ? `${profile.name_score}%` : "—")}
+          </div>
+        </div>
+        <div className="inspection-stat-box">
+          <div className="inspection-stat-label">Status</div>
+          <div className="inspection-stat-val" style={{ fontSize: "11px", textTransform: "uppercase" }}>
+            {profile.status}
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div className="inspection-stat-label" style={{ marginBottom: "4px" }}>Bio / Description</div>
+        <div className="inspection-bio-box">
+          {((profile as unknown as Record<string, unknown>).bio as string) || profile.comments || profile.incident?.description || "(No bio or description extracted)"}
+        </div>
+      </div>
+
+      <div style={{ fontSize: "11px", color: "var(--text-dim)", display: "flex", flexDirection: "column", gap: "4px", padding: "4px 2px" }}>
+        <div><strong>Keyword:</strong> {profile.keyword || "—"}</div>
+        {profile.location && <div><strong>Location:</strong> {profile.location}</div>}
+        {profile.last_post_date && <div><strong>Last Post:</strong> {profile.last_post_date}</div>}
+        {profile.analysed_at && <div><strong>Analysed:</strong> {new Date(profile.analysed_at).toLocaleString()}</div>}
+      </div>
+
+      <div className="inspection-actions-row">
+        {!isAnalysisView ? (
+          <>
+            <button
+              className="btn-accept"
+              onClick={() => onValidate(profile.id)}
+              style={{ fontSize: "12px", padding: "6px 0" }}
+            >
+              ✓ Validate (V)
+            </button>
+            <button
+              className="btn-reject"
+              onClick={() => onReject(profile.id)}
+              style={{ fontSize: "12px", padding: "6px 0" }}
+            >
+              ✕ Reject (X)
+            </button>
+          </>
+        ) : (
+          <button
+            className="action-btn"
+            onClick={() => onEdit(profile.id)}
+            style={{ flex: 1, fontSize: "12px", padding: "6px 0" }}
+          >
+            ✏️ Edit Finding (E)
+          </button>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function ProfileAvatar({ r, size, style }: { r: Profile; size?: number; style?: React.CSSProperties }) {
@@ -188,7 +455,7 @@ function ProfileAvatar({ r, size, style }: { r: Profile; size?: number; style?: 
   );
 }
 
-// Direct "jump to page N" input -- Prev/Next alone means clicking dozens of
+// Direct "jump to page N" input. Prev/Next alone means clicking dozens of
 // times to cross a 1000-profile, 40-page listing. Commits on Enter/blur
 // (not on every keystroke) so a half-typed number never jumps mid-edit.
 function PageJumpInput({ currentPage, pageCount, onJump }: { currentPage: number; pageCount: number; onJump: (page: number) => void }) {
@@ -229,7 +496,7 @@ function PageJumpInput({ currentPage, pageCount, onJump }: { currentPage: number
 
 // One inline-editable text/number field bound to one dotted path in a
 // profile's incident_overrides (see backend/services/incident_publisher.py
-// -- build_incident_doc merges these onto the computed preview, and
+//, build_incident_doc merges these onto the computed preview, and
 // Publish writes the merged result). Uncontrolled + onBlur, same pattern
 // as the table view's saveField inputs, so a keystroke doesn't PATCH.
 function IncidentField({
@@ -255,7 +522,7 @@ function IncidentField({
 
 // Asset Name field, sourced from the client's standalone `drk_keywords`
 // list (see HomeView.tsx's "Asset Names" tab) so an analyst picks a
-// pre-approved name instead of retyping one -- but always falls back to
+// pre-approved name instead of retyping one, but always falls back to
 // free text, both when the client has no drk_keywords configured yet and
 // via the explicit "Custom…" option, so nothing already saved is ever
 // clobbered by an empty options list.
@@ -438,7 +705,94 @@ function EvidenceShot({ r }: { r: Profile }) {
   );
 }
 
-// The full client-facing published-incident record -- this IS the analysis
+// Platforms this engine can actually capture a screenshot on. YouTube and
+// Telegram are read through an API, never a browser page, so there is never
+// anything to show there (see EvidenceShot's own empty-state reasoning
+// above). A dedicated, always-visible popup for the analysis table, distinct
+// from EvidenceShot's copy inside the full incident-edit drawer, an
+// analyst shouldn't have to open Edit just to glance at the evidence.
+const SCREENSHOT_POPUP_PLATFORMS = new Set(["facebook", "twitter", "instagram", "tiktok"]);
+
+function ScreenshotCell({ r }: { r: Profile }) {
+  const [open, setOpen] = useState(false);
+  const [broken, setBroken] = useState(false);
+
+  if (!SCREENSHOT_POPUP_PLATFORMS.has(r.platform)) {
+    return <span style={{ color: "var(--text-dim)" }}>—</span>;
+  }
+
+  const src = profilesApi.screenshotUrl(r);
+  if (!src || broken) {
+    const reason = broken
+      ? "Screenshot is recorded for this profile but the image file is missing from the evidence store."
+      : analysisWasBlocked(r)
+        ? `No screenshot — analysis could not open this profile (${r.analysis_status}).`
+        : r.phase !== "analysis"
+          ? "No screenshot — this profile hasn't been analysed yet."
+          : "No screenshot captured for this profile.";
+    return (
+      <span style={{ color: "var(--text-dim)", fontSize: "11px" }} title={reason}>
+        —
+      </span>
+    );
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen(true);
+        }}
+        onMouseDown={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
+        title="View the evidence screenshot captured during analysis"
+        style={{
+          padding: 0, border: "1px solid var(--border-color)", borderRadius: "6px",
+          overflow: "hidden", cursor: "pointer", background: "none", width: "44px", height: "44px",
+          display: "block", flexShrink: 0,
+        }}
+      >
+        <img
+          src={src}
+          alt={`Screenshot of ${r.profile_name || r.url}`}
+          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+          decoding="async"
+          onError={() => setBroken(true)}
+        />
+      </button>
+      {open && (
+        <div
+          className="evidence-lightbox"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Evidence screenshot, full size"
+          onClick={(e) => {
+            e.stopPropagation();
+            setOpen(false);
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <img src={src} alt={`Full-size screenshot of ${r.profile_name || r.url}`} />
+          <button
+            className="evidence-close"
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpen(false);
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+            aria-label="Close"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+// The full client-facing published-incident record, this IS the analysis
 // view's field set now (the old profile_name/username/followers/location/
 // last_post_date/risk_score/priority/comments fields are gone from this
 // view entirely, replaced by this exact shape). Always expanded: these
@@ -492,12 +846,15 @@ function IncidentEditPanel({
             label="Active" value={inc.socialProfileInfo.isActive}
             path="socialProfileInfo.isActive" onSave={onSave}
           />
+          {/* Both default to matched on a validated profile and are undone
+              here, which is the only place they can be changed now, see
+              usernameMatchOf/logoMatchOf for how the shown value resolves. */}
           <IncidentCheckField
-            label="Username Match" value={r.username_match ?? inc.socialProfileInfo.isSimilarName}
+            label="Username Match" value={usernameMatchOf(r)}
             path="socialProfileInfo.isSimilarName" onSave={(_, val) => onToggleMatch ? onToggleMatch("username_match", val === "true") : onSave("socialProfileInfo.isSimilarName", val)}
           />
           <IncidentCheckField
-            label="Logo Match" value={r.logo_match ?? inc.socialProfileInfo.isSimilarLogo}
+            label="Logo Match" value={logoMatchOf(r)}
             path="socialProfileInfo.isSimilarLogo" onSave={(_, val) => onToggleMatch ? onToggleMatch("logo_match", val === "true") : onSave("socialProfileInfo.isSimilarLogo", val)}
           />
           <IncidentCheckField label="Third Party" value={inc.thirdParty} path="thirdParty" onSave={onSave} />
@@ -512,52 +869,60 @@ interface CardProps {
   isAnalysisView: boolean;
   savingId: string | null;
   onDecide: (id: string, next: Status) => void;
-  onValidate: (id: string, logoMatch: boolean, usernameMatch: boolean) => void;
+  onValidate: (id: string) => void;
   onSaveIncidentField: (id: string, path: string, value: string) => void;
   drkOptions?: string[];
-  // bulk-triage selection -- discovery cards only (see the bulk action bar
+  // bulk-triage selection, discovery cards only (see the bulk action bar
   // in the main component); undefined/no-op for an analysis card.
   selected?: boolean;
   onToggleSelected?: (id: string) => void;
   // drag-to-select: mousedown+drag across cards adds each one to the
-  // selection -- see dragSelectHandlers() in the main component.
+  // selection, see dragSelectHandlers() in the main component.
   dragHandlers?: { onMouseDown: (e: ReactMouseEvent) => void; onMouseEnter: () => void };
+  onOpenDiff?: (p: Profile) => void;
 }
 
-// Mirrors backend shared/models/scoring.py::NAME_THRESHOLD (80) -- this used
+// Mirrors backend shared/models/scoring.py::NAME_THRESHOLD (80), this used
 // to be 100, which only a byte-perfect name match could ever reach, so the
 // "High Match" badge/filter silently excluded every genuinely strong fuzzy
 // match (confirmed live: profiles scoring 80-99 against their keyword).
 const MATCH_EXACT_THRESHOLD = 80;
 const MATCH_MEDIUM_THRESHOLD = 50;
 
-// Risk-tier colour bands for the analysis card's Risk badge -- same three
-// bands as the old High/Medium/Low priority badge it replaces, just keyed
-// off the numeric riskRating (backend/shared/models/incident_scoring.py)
-// instead of the tool's own internal priority field.
+// Risk-tier colour bands for the analysis card's Risk badge, two tiers
+// only (High/Low), keyed off the numeric riskRating
+// (backend/shared/models/incident_scoring.py) rather than the tool's own
+// internal priority field.
+// Colors keyed by the shared riskLabel() so the badge's color and text
+// can never drift apart the way the label logic itself used to drift from
+// exports before riskLabel() became the one place that owns the thresholds.
+const RISK_BADGE_COLORS: Record<string, { color: string; bg: string }> = {
+  High: { color: "#FF8000", bg: "rgba(255, 128, 0, 0.25)" },
+  Low: { color: "#12B76A", bg: "rgba(18, 183, 106, 0.25)" },
+  "—": { color: "#667085", bg: "rgba(102, 112, 133, 0.2)" },
+};
+
+function getRiskBadgeDetails(riskRating?: string | number | null) {
+  const label = riskLabel(riskRating);
+  const { color, bg } = RISK_BADGE_COLORS[label];
+  if (label === "—") return { score: "—", label, color, bg };
+  const num = parseFloat(String(riskRating).trim());
+  const score = !isNaN(num) ? Math.round(num) : label === "High" ? 8 : 3;
+  return { score, label, color, bg };
+}
+
 function riskBadgeColor(riskRating: string): string {
-  const n = Number(riskRating);
-  if (!Number.isFinite(n)) return "rgba(102,112,133,0.85)";
-  if (n >= 7) return "rgba(233,80,83,0.85)";
-  if (n >= 4) return "rgba(255,128,0,0.85)";
-  return "rgba(102,112,133,0.85)";
+  return getRiskBadgeDetails(riskRating).color;
 }
 
 function ProfileCard({
-  r, isAnalysisView, savingId, onDecide, onValidate, onSaveIncidentField, drkOptions, selected, onToggleSelected, dragHandlers,
+  r, isAnalysisView, savingId, onDecide, onValidate, onSaveIncidentField, drkOptions, selected, onToggleSelected, dragHandlers, onOpenDiff,
 }: CardProps) {
   const inc = r.incident;
   const name = isAnalysisView && inc ? inc.title : r.profile_name || r.username || r.url;
   const linkUrl = isAnalysisView && inc ? inc.source : r.url;
   const isHeld = isAnalysisView && r.published === false;
   const isDiscovery = !isAnalysisView;
-  const [logoMatch, setLogoMatch] = useState(r.logo_match ?? false);
-  const [usernameMatch, setUsernameMatch] = useState(r.username_match ?? false);
-
-  useEffect(() => {
-    setLogoMatch(r.logo_match ?? false);
-    setUsernameMatch(r.username_match ?? false);
-  }, [r.id, r.logo_match, r.username_match]);
 
   return (
     <div
@@ -620,18 +985,13 @@ function ProfileCard({
           {r.platform}
         </span>
       </div>
+
       <div className="profile-card-body">
-        <div className="profile-name-row">
-          <a href={linkUrl} target="_blank" rel="noreferrer" className="profile-display-name" style={{ color: "var(--text-main)" }}>
-            {name}
-          </a>
-          {r.verified && (
-            <span className="verified-check" title="Verified account on this platform">
-              ✓
-            </span>
-          )}
-        </div>
+        <a href={linkUrl} target="_blank" rel="noreferrer" className="profile-display-name" style={{ color: "var(--text-main)" }} title={name}>
+          {name}
+        </a>
         {isAnalysisView && inc && <div className="profile-handle">{inc.category} · {inc.subCategory}</div>}
+
         {isDiscovery && !!r.keywords?.length && (
           <div className="card-keyword-tags">
             {r.keywords.map((kw) => (
@@ -647,9 +1007,9 @@ function ProfileCard({
             style={{
               fontSize: "11px", color: "var(--warn-yellow, #FDB71B)", background: "rgba(255,193,7,0.1)",
               border: "1px solid rgba(255,193,7,0.3)", borderRadius: "6px",
-              padding: "4px 8px", marginTop: "4px",
+              padding: "4px 8px", marginTop: "2px",
             }}
-            title="This profile was previously rejected -- a rediscovery found a real change (not just a re-signed CDN image link), so it's back for another look"
+            title="This profile was previously rejected -- a rediscovery found a real change, so it's back for another look"
           >
             🔄 Back for review — {changeSummary(r.changes)}
           </div>
@@ -660,7 +1020,7 @@ function ProfileCard({
             style={{
               fontSize: "11px", color: "var(--purple)", background: "rgba(136,56,221,0.1)",
               border: "1px solid rgba(136,56,221,0.3)", borderRadius: "6px",
-              padding: "4px 8px", marginTop: "4px",
+              padding: "4px 8px", marginTop: "2px",
             }}
             title="Not yet published — only visible inside this tool until explicitly published"
           >
@@ -668,75 +1028,17 @@ function ProfileCard({
           </div>
         )}
 
-        {/* Automated handle-vs-official-handle signal. Only rendered when it
-            was actually measured (null = the client has no official handle
-            configured for this platform) -- showing "0" for an unmeasured
-            profile would read as "checked, no match", which is a different
-            and much stronger claim than "never checked". */}
-        {r.username_score !== null && r.username_score !== undefined && (
-          <div className="card-detail-row">
-            <span
-              title={`This profile's @handle scores ${r.username_score}/100 against the brand's own official handle on this platform. Automated -- distinct from the Username-match box you tick by hand.`}
-              style={{
-                color:
-                  r.username_score >= 90 ? "var(--danger)"
-                    : r.username_score >= 70 ? "var(--warn-yellow, #fdb71b)"
-                      : "var(--text-dim)",
-                fontWeight: r.username_score >= 70 ? 700 : 400,
-              }}
-            >
-              🪪 Handle {r.username_score}/100
-              {r.username_score >= 90 ? " — near-identical" : r.username_score >= 70 ? " — similar" : ""}
-            </span>
-          </div>
-        )}
-
-        {(r.logo_match || r.username_match) && (
-          <div className="card-detail-row">
-            {r.logo_match && <span>🖼️ Logo match</span>}
-            {r.username_match && <span>🔖 Username match</span>}
-          </div>
-        )}
-
-        {isDiscovery && r.status !== "approved" && r.status !== "rejected" && (
-          <div className="card-validate-row" title="Tap what you visually confirmed matches the brand, then Validate">
-            {/* Big tap-target toggle buttons, not tiny native checkboxes --
-                this is pure local state (no network round trip), so the
-                only thing standing between a fast click and it registering
-                was ever the hit target itself. touch-action: manipulation
-                (see styles.css) drops the mobile browser's ~300ms tap
-                delay on top of that. */}
-            <button
-              type="button"
-              className={`match-toggle${logoMatch ? " on" : ""}`}
-              onClick={() => setLogoMatch((v) => !v)}
-            >
-              {logoMatch ? "✅" : "⬜"} Logo match
-            </button>
-            <button
-              type="button"
-              className={`match-toggle${usernameMatch ? " on" : ""}`}
-              onClick={() => setUsernameMatch((v) => !v)}
-            >
-              {usernameMatch ? "✅" : "⬜"} Username match
-            </button>
-          </div>
-        )}
-
         {isAnalysisView && (
           <IncidentEditPanel r={r} onSave={(path, value) => onSaveIncidentField(r.id, path, value)} drkOptions={drkOptions} />
         )}
 
-        {/* This card is discovery-only -- analysis always renders as a
-            table (see ResultsGrid's viewMode logic), so there's no
-            analysis-phase Validate/Publish path to handle here. */}
         <div className="card-actions-row">
           {r.status !== "approved" && (
             <button
               className="btn-accept"
               disabled={savingId === r.id}
-              onClick={() => onValidate(r.id, logoMatch, usernameMatch)}
-              title="Validates this profile and records the logo/username match confirmation, carried through to analysis"
+              onClick={() => onValidate(r.id)}
+              title="Confirms this profile is impersonating the client and sends it to analysis, where logo and username both count as matched unless you undo them"
             >
               ✅ Validate
             </button>
@@ -770,11 +1072,41 @@ export function ResultsGrid({
   const [sortOrder, setSortOrder] = useState<"recent" | "past">("recent");
   const [keywordFilter, setKeywordFilter] = useState("");
   const [matchLevel, setMatchLevel] = useState<"" | "high" | "medium" | "low">("");
-  const [entityType, setEntityType] = useState<"" | "profile" | "page">("");
+  const [entityType, setEntityType] = useState<"" | "profile" | "page" | "group">("");
   const [keywordMatchType, setKeywordMatchType] = useState<"" | "individual" | "domain">("");
+  // Which column layout the Export/Copy buttons use, analysis view only,
+  // "incident" is the Platform Format shape (OrgId, Domain, AssetType, ...);
+  // "legacy" is the tool's original raw-field layout (Original Name, IMPERSONATED, Profile name, ...)
+  const [exportFormat, setExportFormat] = useState<"incident" | "legacy">("incident");
+  const [copyMenuOpen, setCopyMenuOpen] = useState(false);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const [focusedIndex, setFocusedIndex] = useState<number>(-1);
+  const [shortcutsHelpOpen, setShortcutsHelpOpen] = useState(false);
+  const [diffProfile, setDiffProfile] = useState<Profile | null>(null);
+  const copyMenuRef = useRef<HTMLDivElement>(null);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close menus on click outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (copyMenuRef.current && !copyMenuRef.current.contains(event.target as Node)) {
+        setCopyMenuOpen(false);
+      }
+      if (exportMenuRef.current && !exportMenuRef.current.contains(event.target as Node)) {
+        setExportMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+  // Analysis-only Published/Unpublished tab, always exactly one, same
+  // as the Discovery/Analysis phase tabs. Defaults to Unpublished: that's
+  // the queue an analyst actually needs to work (still on hold, or awaiting
+  // an explicit Publish), not the findings already out the door.
+  const [publishedFilter, setPublishedFilter] = useState<"published" | "unpublished">("unpublished");
   const [searchQuery, setSearchQuery] = useState("");
   // Search is now a server query (it has to be, or it only ever searches
-  // the page you happen to be on) -- so the raw keystroke value must not
+  // the page you happen to be on), so the raw keystroke value must not
   // drive it directly, or every character fires a request. `searchQuery`
   // stays the controlled input value; `debouncedSearch` is what load() uses.
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -796,7 +1128,7 @@ export function ResultsGrid({
   const [loading, setLoading] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
-  // Analysis-phase row currently open in the full-field edit drawer -- see
+  // Analysis-phase row currently open in the full-field edit drawer, see
   // the modal near the bottom of this component's JSX. Replaces having all
   // 18 incident fields permanently inline-editable in the table (a wall of
   // 50-160px-wide <input>s the analyst had to horizontal-scroll through);
@@ -806,18 +1138,28 @@ export function ResultsGrid({
   const [copyUrlState, setCopyUrlState] = useState<"idle" | "copied" | "failed">("idle");
   const [copyDataCache, setCopyDataCache] = useState<string | null>(null);
 
-  // Manual URL entry -- an analyst who already has a specific profile
+  // Manual URL entry, an analyst who already has a specific profile
   // link (a tip, a report, something an earlier sweep never turned up)
   // shouldn't have to invent a keyword just to get it into the pipeline.
   // See profilesApi.addManualUrls: each URL goes straight to "approved"
   // and analysis is auto-queued, same as any other approved card.
+  //
+  // Two separate boxes, not one, an analyst says up front whether a URL
+  // is an executive/individual impersonation or a brand/domain one, so
+  // incident_publisher's person-vs-brand classification doesn't depend on
+  // the URL text happening to fuzzy-match a keyword the client has
+  // configured (see profile_service.py::add_manual_urls's docstring for
+  // the bug this closes: an executive not yet in the client's own
+  // name_keywords had no way to land in the individual bucket at all).
   const [manualUrlsOpen, setManualUrlsOpen] = useState(false);
-  const [manualUrlsText, setManualUrlsText] = useState("");
+  const [manualUrlTab, setManualUrlTab] = useState<"individual" | "domain">("individual");
+  const [manualIndividualUrlsText, setManualIndividualUrlsText] = useState("");
+  const [manualDomainUrlsText, setManualDomainUrlsText] = useState("");
   const [manualUrlsBusy, setManualUrlsBusy] = useState(false);
 
 
   // The client's own configured keyword lists + standalone DRK asset-name
-  // options -- fetched once per client, used for the individual/domain
+  // options, fetched once per client, used for the individual/domain
   // match filter (resultsFilter.ts's keywordMatchType) and the Asset Name
   // dropdown (see IncidentEditPanel), not re-fetched per profile.
   const [clientNameKeywords, setClientNameKeywords] = useState<string[]>([]);
@@ -858,21 +1200,79 @@ export function ResultsGrid({
     [clientNameKeywords, clientDomainKeywords],
   );
 
-  // discovery-only multi-select for bulk approve/reject -- keyed by profile
+  // discovery-only multi-select for bulk approve/reject, keyed by profile
   // id so it survives a re-render/re-sort of the same underlying rows.
   // Cleared on any filter/page/client change so a selection never silently
   // carries over onto a different set of rows than the analyst was looking
   // at when they made it.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
-  // Re-resolving name/photo for the current selection (Facebook only) --
+  const [undoStack, setUndoStack] = useState<Array<{ description: string; items: Array<{ id: string; prevStatus: Status }> }>>([]);
+  const [splitViewOpen, setSplitViewOpen] = useState<boolean>(() => {
+    try {
+      return typeof window !== "undefined" && typeof localStorage !== "undefined" && typeof localStorage.getItem === "function"
+        ? localStorage.getItem("brand_intel_split_view") === "true"
+        : false;
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleSplitView = () => {
+    setSplitViewOpen((v) => {
+      const next = !v;
+      if (next && focusedIndex === -1 && displayed.length > 0) {
+        setFocusedIndex(0);
+      }
+      try {
+        if (typeof window !== "undefined" && typeof localStorage !== "undefined" && typeof localStorage.setItem === "function") {
+          localStorage.setItem("brand_intel_split_view", String(next));
+        }
+      } catch {}
+      if (next) {
+        toast.success("Split view enabled — live inspection active", { id: "split-toggle", icon: "🖥️" });
+      } else {
+        toast("Split view closed", { id: "split-toggle", icon: "✖️" });
+      }
+      return next;
+    });
+  };
+
+  const pushUndo = (description: string, items: Array<{ id: string; prevStatus: Status }>) => {
+    setUndoStack((prev) => [...prev.slice(-14), { description, items }]);
+  };
+
+  const handleUndo = async () => {
+    if (!undoStack.length) {
+      toast("No recent actions to undo", { icon: "ℹ️" });
+      return;
+    }
+    const last = undoStack[undoStack.length - 1];
+    setUndoStack((prev) => prev.slice(0, -1));
+
+    const statusMap = new Map(last.items.map((i) => [i.id, i.prevStatus]));
+    setProfiles((rows) =>
+      rows.map((r) => (statusMap.has(r.id) ? { ...r, status: statusMap.get(r.id)! } : r))
+    );
+
+    try {
+      await Promise.all(
+        last.items.map((item) => profilesApi.patchProfile(item.id, { status: item.prevStatus }))
+      );
+      toast.success(`Undid: ${last.description}`, { icon: "🔄" });
+      await load(false);
+    } catch (e) {
+      onError?.((e as Error).message);
+    }
+  };
+  // Re-resolving name/photo for the current selection (Facebook only),
   // separate from bulkBusy since it can run alongside a still-open
   // selection (unlike approve/reject, it doesn't clear it) and takes much
   // longer (a real page visit per profile, not a single PATCH).
   const [resweepBusy, setResweepBusy] = useState(false);
 
   // Drag-to-select: mousedown on a card/row (outside its buttons/links)
-  // starts a paint gesture -- every card/row the cursor then passes over
+  // starts a paint gesture, every card/row the cursor then passes over
   // while the button stays down joins the selection, so an analyst can
   // sweep the cursor down a page of discovery results and then hit
   // Validate/Reject once for the whole swath, instead of clicking each
@@ -886,7 +1286,7 @@ export function ResultsGrid({
   // every approve/reject/validate/publish. Those requests can resolve out
   // of order (a fast small query can land after a slower earlier one), and
   // without guarding against that, whichever response happens to arrive
-  // LAST wins -- even if it's the stale one -- silently reverting a card
+  // LAST wins, even if it's the stale one, silently reverting a card
   // that had just been acted on and making the rest of the grid look like
   // it never moved. This ref tracks the most recently ISSUED request; a
   // response only gets applied to state if it's still the latest one by
@@ -911,20 +1311,25 @@ export function ResultsGrid({
           phase,
           // this backend's `keywords` field is the same underlying array
           // regardless of phase (analysis just also joins it into a display
-          // string) -- the server-side filter works for analysis rows too,
+          // string), the server-side filter works for analysis rows too,
           // it just wasn't being sent there before.
           keyword: keywordFilter || undefined,
-          entity_type: !isAnalysisView && platform === "facebook" && entityType ? entityType : undefined,
+          // entity_type persists from discovery onto the same doc through
+          // analysis (profile_repository.py never blanks a field a later
+          // phase doesn't mention), so this filter is just as meaningful
+          // against analysis-phase rows, not discovery-only.
+          entity_type: platform === "facebook" && entityType ? entityType : undefined,
           // These four used to be applied only in the browser, over
           // whatever page had been fetched, while `total` and the pager
           // still came from the unfiltered query. Filtering 500 analysis
           // rows to "High" therefore showed the High rows inside page 1 and
-          // still claimed 500 results -- which reads as the tool having
+          // still claimed 500 results, which reads as the tool having
           // lost data. They are now real query parameters.
           priority: isAnalysisView && priority ? priority : undefined,
           match_level: !isAnalysisView && matchLevel ? matchLevel : undefined,
           keyword_match_type: keywordMatchType || undefined,
           search: debouncedSearch || undefined,
+          published: isAnalysisView ? publishedFilter === "published" : undefined,
           limit: pageSize,
           offset,
         });
@@ -948,10 +1353,10 @@ export function ResultsGrid({
         if (showLoading && seq === requestSeq.current) setLoading(false);
       }
     },
-    // priority / matchLevel / keywordMatchType / debouncedSearch are query
-    // parameters now, so load() must re-run when any of them changes
+    // priority / matchLevel / keywordMatchType / debouncedSearch / published
+    // are query parameters now, so load() must re-run when any of them changes
     [clientId, platform, status, phase, keywordFilter, entityType, isAnalysisView,
-     priority, matchLevel, keywordMatchType, debouncedSearch, offset, pageSize, onError],
+     priority, matchLevel, keywordMatchType, publishedFilter, debouncedSearch, offset, pageSize, onError],
   );
 
   // Any filter change invalidates the current page number: page 4 of the
@@ -960,24 +1365,25 @@ export function ResultsGrid({
   useEffect(() => {
     setOffset(0);
   }, [clientId, platform, status, phase, keywordFilter, entityType, keywordMatchType,
-      priority, matchLevel, debouncedSearch, pageSize]);
+      priority, matchLevel, publishedFilter, debouncedSearch, pageSize]);
 
-  // Client-scoped filters must reset on a client switch -- a leftover
+  // Client-scoped filters must reset on a client switch, a leftover
   // Individual/Domain match selection from a different client's keyword
   // lists would silently misclassify (or blank out) results here.
   useEffect(() => {
     setKeywordMatchType("");
+    setPublishedFilter("unpublished");
   }, [clientId]);
 
   // A selection only ever makes sense against the rows the analyst was
-  // looking at when they made it -- clear it whenever the underlying set
+  // looking at when they made it, clear it whenever the underlying set
   // changes so a stale selection can't silently bulk-act on different rows.
   useEffect(() => {
     setSelectedIds(new Set());
   }, [clientId, platform, status, phase, keywordFilter, entityType, keywordMatchType,
-      priority, matchLevel, debouncedSearch, offset, pageSize]);
+      priority, matchLevel, publishedFilter, debouncedSearch, offset, pageSize]);
 
-  // Neither Discovery nor Analysis has an "All Platforms" tab -- whenever we
+  // Neither Discovery nor Analysis has an "All Platforms" tab, whenever we
   // end up with no platform selected (e.g., landing here fresh before platforms
   // finish loading), fall back to the first platform rather than showing an
   // unfiltered grid with no tab highlighted as active.
@@ -992,7 +1398,7 @@ export function ResultsGrid({
   }, [load]);
 
   // Live preview polling while either engine runs, same cadence the old
-  // WebSocket-driven view refreshed at -- this backend polls for progress
+  // WebSocket-driven view refreshed at, this backend polls for progress
   // too now (see docs/adr/0002), so results polling matches that rhythm.
   useEffect(() => {
     if (!discoveryRunning && !analysisRunning) return;
@@ -1000,9 +1406,30 @@ export function ResultsGrid({
     return () => clearInterval(interval);
   }, [discoveryRunning, analysisRunning, load]);
 
+  // ...and one more load the moment a run ENDS. The interval above is torn
+  // down as soon as `running` flips false, so anything the job wrote in the
+  // last few seconds of its life, which for analysis is typically the
+  // final profile's scores and its published-incident preview, would sit
+  // unshown until the next thing to touch the grid. The ref guard means
+  // this fires only on the true→false transition, not on every filter
+  // change that gives `load` a new identity.
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    const running = discoveryRunning || analysisRunning;
+    if (wasRunning.current && !running) load(false);
+    wasRunning.current = running;
+  }, [discoveryRunning, analysisRunning, load]);
+
+  // discovery-only: the id-backfill re-sweep button (line ~2146) reruns a
+  // discovery-phase operation, so it stays gated to discovery specifically
   const isFacebook = !isAnalysisView && platform === "facebook";
+  // the People/Pages/Groups filter, by contrast, applies to BOTH views,
+  // entity_type persists on a profile's doc from discovery straight
+  // through analysis (nothing blanks it), so filtering by it is just as
+  // meaningful once a profile has been analysed
+  const isFacebookPlatform = platform === "facebook";
   // status and priority each only have a picker UI in one view (status:
-  // Discovery, priority: Analysis) -- both must be blanked in the other
+  // Discovery, priority: Analysis), both must be blanked in the other
   // view, or a value picked before switching tabs silently keeps filtering
   // the tab that has no control to see or clear it.
   const filters: ResultFilters = {
@@ -1013,45 +1440,143 @@ export function ResultsGrid({
   const extra: ExtraFilters = {
     keywordFilter,
     // the debounced value, matching what the server was actually queried
-    // with -- using the raw input here would blank the grid mid-keystroke
+    // with, using the raw input here would blank the grid mid-keystroke
     // while the request for those characters is still in flight
     searchQuery: debouncedSearch,
     matchLevel: !isAnalysisView ? matchLevel : "",
-    entityType: !isAnalysisView && isFacebook ? entityType : "",
+    entityType: isFacebookPlatform ? entityType : "",
     keywordMatchType,
   };
+  const prevRowOrderRef = useRef<string[]>([]);
+
+  // Reset stable row order sequence whenever user explicitly changes filters or sort order
+  useEffect(() => {
+    prevRowOrderRef.current = [];
+  }, [sortOrder, phase, debouncedSearch, platform, keywordFilter, status, matchLevel, entityType]);
+
   // The server has already applied all of these before pagination (see
   // load()); this pass only reconciles rows whose local state is ahead of
-  // the server -- an optimistic status change not yet PATCHed, or rows
+  // the server, an optimistic status change not yet PATCHed, or rows
   // still in memory from a live-poll refresh.
   const displayed = useMemo(
-    () =>
-      sortResults(
+    () => {
+      const sorted = sortResults(
         filterResults(profiles, filters, extra, isAnalysisView ? "" : platform, clientKeywordSets),
         sortOrder,
         phase,
         keywordFilter,
         status,
-      ),
+      );
+
+      const currentIds = sorted.map((r) => r.id);
+      const prevIds = prevRowOrderRef.current;
+
+      // If we have an existing row order for this exact set of profiles, preserve it
+      // so toggling Username Match or Logo Match never causes rows to jump up and down.
+      if (
+        prevIds.length > 0 &&
+        prevIds.length === currentIds.length &&
+        prevIds.every((id) => currentIds.includes(id))
+      ) {
+        const rowMap = new Map(sorted.map((r) => [r.id, r]));
+        return prevIds.map((id) => rowMap.get(id)!).filter(Boolean);
+      }
+
+      prevRowOrderRef.current = currentIds;
+      return sorted;
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [profiles, status, priority, phase, keywordFilter, matchLevel, entityType, keywordMatchType, clientKeywordSets, debouncedSearch, sortOrder, platform, isAnalysisView],
   );
 
   const decide = async (id: string, next: Status) => {
     const prev = profiles.find((r) => r.id === id);
+    if (prev) {
+      pushUndo(`${next === "approved" ? "Validate" : "Reject"} "${prev.profile_name || prev.username || "profile"}"`, [
+        { id: prev.id, prevStatus: prev.status },
+      ]);
+    }
     setProfiles((rows) => {
       const updated = rows.map((r) => (r.id === id ? { ...r, status: next } : r));
-      // `status` is the Discovery-tab status filter -- it has no meaning
-      // (and no UI to clear it) in Analysis view, where it can still hold
-      // a leftover value from before the tab switch. Applying it there
-      // would prune every other currently-loaded analysis row out of local
-      // state on every approve/reject, not just the one just decided.
       return !isAnalysisView && status ? updated.filter((r) => r.status === status) : updated;
     });
     setSavingId(id);
     try {
       await profilesApi.patchProfile(id, { status: next });
-      // Automatically pull next items from page 2 into page 1 without needing manual navigation
+      if (next === "approved" && !isAnalysisView) {
+        toast.custom(
+          (t) => (
+            <div
+              className="undo-toast-box"
+              style={{
+                background: "var(--bg-card, #151d2a)",
+                color: "#fff",
+                border: "1px solid var(--cyan, #00E5FF)",
+                padding: "10px 14px",
+                borderRadius: "8px",
+                boxShadow: "0 4px 14px rgba(0, 0, 0, 0.4)",
+                display: "flex",
+                alignItems: "center",
+                gap: "10px",
+                fontSize: "13px",
+              }}
+            >
+              <span>✅ Validated — queued for analysis</span>
+              <button
+                className="toast-action-link"
+                onClick={() => {
+                  toast.dismiss(t.id);
+                  setPhase("analysis");
+                }}
+              >
+                View in Analysis →
+              </button>
+              <button
+                className="undo-toast-btn"
+                onClick={() => {
+                  toast.dismiss(t.id);
+                  handleUndo();
+                }}
+              >
+                🔄 Undo
+              </button>
+            </div>
+          ),
+          { duration: 5000, id: `validate-${id}` }
+        );
+      } else if (next === "rejected" && !isAnalysisView) {
+        toast.custom(
+          (t) => (
+            <div
+              className="undo-toast-box"
+              style={{
+                background: "var(--bg-card, #151d2a)",
+                color: "#fff",
+                border: "1px solid var(--border-subtle)",
+                padding: "10px 14px",
+                borderRadius: "8px",
+                boxShadow: "0 4px 14px rgba(0, 0, 0, 0.4)",
+                display: "flex",
+                alignItems: "center",
+                gap: "10px",
+                fontSize: "13px",
+              }}
+            >
+              <span>✕ Rejected profile</span>
+              <button
+                className="undo-toast-btn"
+                onClick={() => {
+                  toast.dismiss(t.id);
+                  handleUndo();
+                }}
+              >
+                🔄 Undo
+              </button>
+            </div>
+          ),
+          { duration: 4000, id: `reject-${id}` }
+        );
+      }
       await load(false);
     } catch (e) {
       if (prev) setProfiles((rows) => [...rows.filter((r) => r.id !== prev.id), prev]);
@@ -1061,22 +1586,64 @@ export function ResultsGrid({
     }
   };
 
-  // Validates the profile the same way `decide(id, "approved")` does, but
-  // also records the analyst's own visual confirmation of a logo/username
-  // impersonation match -- saved to the DB and carried through unchanged
-  // onto the analysis-phase record (see backend/services/profile_service.py).
-  const validate = async (id: string, logoMatch: boolean, usernameMatch: boolean) => {
+  const validate = async (id: string) => {
     const prev = profiles.find((r) => r.id === id);
+    if (prev) {
+      pushUndo(`Validate "${prev.profile_name || prev.username || "profile"}"`, [
+        { id: prev.id, prevStatus: prev.status },
+      ]);
+    }
     setProfiles((rows) => {
       const updated = rows.map((r) =>
-        r.id === id ? { ...r, status: "approved" as Status, logo_match: logoMatch, username_match: usernameMatch } : r,
+        r.id === id ? { ...r, status: "approved" as Status } : r,
       );
-      // see decide()'s identical guard above -- `status` is Discovery-only
       return !isAnalysisView && status ? updated.filter((r) => r.status === status) : updated;
     });
     setSavingId(id);
     try {
-      await profilesApi.patchProfile(id, { status: "approved", logo_match: logoMatch, username_match: usernameMatch });
+      await profilesApi.patchProfile(id, { status: "approved" });
+      if (!isAnalysisView) {
+        toast.custom(
+          (t) => (
+            <div
+              className="undo-toast-box"
+              style={{
+                background: "var(--bg-card, #151d2a)",
+                color: "#fff",
+                border: "1px solid var(--cyan, #00E5FF)",
+                padding: "10px 14px",
+                borderRadius: "8px",
+                boxShadow: "0 4px 14px rgba(0, 0, 0, 0.4)",
+                display: "flex",
+                alignItems: "center",
+                gap: "10px",
+                fontSize: "13px",
+              }}
+            >
+              <span>✅ Validated — queued for analysis</span>
+              <button
+                className="toast-action-link"
+                onClick={() => {
+                  toast.dismiss(t.id);
+                  setPhase("analysis");
+                }}
+              >
+                View in Analysis →
+              </button>
+              <button
+                className="undo-toast-btn"
+                onClick={() => {
+                  toast.dismiss(t.id);
+                  handleUndo();
+                }}
+              >
+                🔄 Undo
+              </button>
+            </div>
+          ),
+          { duration: 5000, id: `validate-${id}` }
+        );
+      }
       await load(false);
     } catch (e) {
       if (prev) setProfiles((rows) => [...rows.filter((r) => r.id !== prev.id), prev]);
@@ -1100,7 +1667,7 @@ export function ResultsGrid({
     }
   };
 
-  // "Did we actually check everything?" -- see GET /profiles/coverage.
+  // "Did we actually check everything?", see GET /profiles/coverage.
   // Refreshed alongside the grid so the banner can't outlive the state it
   // describes (an analyst re-running analysis should see it clear).
   const [coverage, setCoverage] = useState<Coverage | null>(null);
@@ -1123,6 +1690,40 @@ export function ResultsGrid({
 
   const [publishingAll, setPublishingAll] = useState(false);
   const [publishScope, setPublishScope] = useState<"all" | "recent" | "2days" | "week">("all");
+  const [deletingPlatformData, setDeletingPlatformData] = useState(false);
+
+  // Irreversible hard delete of every profile (both Discovery and Analysis
+  // phase), evidence screenshot, and published incident for the currently
+  // selected client + platform, see
+  // backend/services/profile_service.py::delete_for_client_platform.
+  // Neither view ever has an ambiguous "all platforms" state (see the
+  // platform-selection effect above), so `platform` is always a single,
+  // unambiguous target at the moment this is called.
+  const handleDeletePlatformData = async () => {
+    if (!clientId || !platform) return;
+    const platformName = platforms.find((p) => p.platform === platform)?.name || platform;
+    const ok = await confirmAction(
+      `Permanently delete ALL ${platformName} data for client "${clientId}"? This removes every ` +
+      `Discovery and Analysis profile, evidence screenshot, and published incident for this platform ` +
+      `from the database. This cannot be undone.`,
+    );
+    if (!ok) return;
+    setDeletingPlatformData(true);
+    try {
+      const res = await profilesApi.deletePlatformData(clientId, platform);
+      toast.success(
+        `Deleted ${res.deleted_profiles} profile(s), ${res.deleted_evidence} screenshot(s), ` +
+        `${res.deleted_published_incidents} published incident(s) for ${platformName}`,
+        { icon: "🗑" },
+      );
+      await load(false);
+    } catch (e) {
+      toast.error((e as Error).message);
+      onError?.((e as Error).message);
+    } finally {
+      setDeletingPlatformData(false);
+    }
+  };
 
   const PUBLISH_SCOPE_LABELS: Record<typeof publishScope, string> = {
     all: "All",
@@ -1147,7 +1748,7 @@ export function ResultsGrid({
   };
 
   // Applies a dotted-path edit (e.g. "socialProfileInfo.location") to a
-  // profile's own `incident` preview object, immutably -- the same shape
+  // profile's own `incident` preview object, immutably, the same shape
   // profile_repository.patch() expands `incident_overrides` into server-side.
   const withIncidentPath = (r: Profile, path: string, value: unknown): Profile => {
     if (!r.incident) return r;
@@ -1162,15 +1763,33 @@ export function ResultsGrid({
   // Export re-fetches from the server rather than exporting local state
   // (see handleExport below), so it's only "immediate" if every edit the
   // analyst just made has actually landed in Mongo before that fetch
-  // fires -- a save is only a fire-and-forget onBlur/onChange, so a very
-  // fast "edit a field, then immediately click Excel" could otherwise
-  // race ahead of its own PATCH. This set tracks every in-flight
-  // incident-field save; handleExport awaits all of them first.
-  const pendingIncidentSaves = useRef<Set<Promise<void>>>(new Set());
+  // fires, a save is only a fire-and-forget onBlur/onChange/click, so a
+  // very fast "edit a field, then immediately click Excel" could otherwise
+  // race ahead of its own PATCH. This set tracks every in-flight save on
+  // ANY profile field (incident overrides AND the Match toggles below);
+  // handleExport/handleCopyUrls await all of them first.
+  const pendingSaves = useRef<Set<Promise<void>>>(new Set());
+
+  // Guards every profile-row mutation (a Match toggle click, an incident
+  // field's onBlur) against a STALE response landing after a NEWER one for
+  // the SAME row. Without this, two edits fired close together on one row
+  //, a fast double-click, tabbing through two fields before the first
+  // save lands, can have their PATCH responses resolve out of order, and
+  // whichever happened to land last would silently win even if it was the
+  // older edit, quietly reverting the newer one. Confirmed as a real gap:
+  // neither save path checked this before applying its response.
+  const rowSaveSeq = useRef<Map<string, number>>(new Map());
+  const nextRowSeq = (id: string): number => {
+    const n = (rowSaveSeq.current.get(id) ?? 0) + 1;
+    rowSaveSeq.current.set(id, n);
+    return n;
+  };
+  const isLatestRowSeq = (id: string, seq: number): boolean => rowSaveSeq.current.get(id) === seq;
 
   const saveIncidentField = (id: string, path: string, rawValue: string): void => {
     const prev = profiles.find((r) => r.id === id);
-    // booleans/numbers travel through the DOM as strings -- coerce back
+    const seq = nextRowSeq(id);
+    // booleans/numbers travel through the DOM as strings, coerce back
     // before both the optimistic update and the PATCH payload
     const value: unknown =
       rawValue === "true" || rawValue === "false" ? rawValue === "true"
@@ -1181,8 +1800,8 @@ export function ResultsGrid({
       const updatedR = withIncidentPath(r, path, value);
       const inc = updatedR.incident?.socialProfileInfo;
       const previewScore = computeIncidentRiskScorePreview({
-        logoMatch: !!(inc?.isSimilarLogo ?? r.logo_match),
-        usernameMatch: !!(inc?.isSimilarName ?? r.username_match),
+        logoMatch: inc?.isSimilarLogo ?? logoMatchOf(r),
+        usernameMatch: inc?.isSimilarName ?? usernameMatchOf(r),
         followers: inc?.numberOfFollowers ?? r.followers,
         location: inc?.location ?? r.location,
         lastPostDate: inc?.lastPostDate ?? r.last_post_date,
@@ -1192,30 +1811,46 @@ export function ResultsGrid({
     }));
     const task = (async () => {
       try {
-        await profilesApi.patchProfile(id, { incident_overrides: { [path]: value } });
+        const updated = await profilesApi.patchProfile(id, { incident_overrides: { [path]: value } });
+        // A newer edit on this SAME row has started since this one fired,
+        // applying this (older) response now would silently revert it.
+        // Reconciling with the server's own response (not just trusting the
+        // local optimistic guess forever) is what makes the table and any
+        // export actually match Mongo, not just "look right" until the next
+        // full reload.
+        if (isLatestRowSeq(id, seq)) setProfiles((rows) => rows.map((r) => (r.id === id ? updated : r)));
       } catch (e) {
-        if (prev) setProfiles((rows) => rows.map((r) => (r.id === id ? prev : r)));
+        if (prev && isLatestRowSeq(id, seq)) setProfiles((rows) => rows.map((r) => (r.id === id ? prev : r)));
         onError?.((e as Error).message);
       }
     })();
-    pendingIncidentSaves.current.add(task);
-    task.finally(() => pendingIncidentSaves.current.delete(task));
+    pendingSaves.current.add(task);
+    task.finally(() => pendingSaves.current.delete(task));
   };
 
   // Editing the RAW username_match/logo_match fields (not the incident
   // preview's cosmetic socialProfileInfo.isSimilarName/isSimilarLogo
-  // overrides -- see saveIncidentField above) is what actually feeds
+  // overrides, see saveIncidentField above) is what actually feeds
   // compute_incident_risk_score server-side, so the Risk badge only ever
   // changes from editing these. Recomputes the score locally right away
   // (computeIncidentRiskScorePreview mirrors the backend formula exactly)
   // instead of waiting on the PATCH round trip or the 3s live-poll, then
   // reconciles with the server's authoritative response when it lands.
+  //
+  // `savingId` is set for the duration of this row's own save and checked
+  // by the Match buttons' `disabled` below, a second click on the SAME
+  // button (or the other Match button on the SAME row) before the first
+  // PATCH resolves is exactly what let two overlapping saves race each
+  // other; disabling the row's own controls while its save is in flight
+  // makes that race impossible to trigger in the first place, rather than
+  // just resolved gracefully after the fact.
   const saveProfileField = async (id: string, field: "username_match" | "logo_match", value: boolean): Promise<void> => {
     const prev = profiles.find((r) => r.id === id);
     if (!prev) return;
+    const seq = nextRowSeq(id);
     const inc = prev.incident?.socialProfileInfo;
-    const logoMatch = field === "logo_match" ? value : !!(inc?.isSimilarLogo ?? prev.logo_match);
-    const usernameMatch = field === "username_match" ? value : !!(inc?.isSimilarName ?? prev.username_match);
+    const logoMatch = field === "logo_match" ? value : (inc?.isSimilarLogo ?? logoMatchOf(prev));
+    const usernameMatch = field === "username_match" ? value : (inc?.isSimilarName ?? usernameMatchOf(prev));
     const followers = inc?.numberOfFollowers ?? prev.followers;
     const location = inc?.location ?? prev.location;
     const lastPostDate = inc?.lastPostDate ?? prev.last_post_date;
@@ -1242,19 +1877,30 @@ export function ResultsGrid({
         };
       }),
     );
-    try {
-      const updated = await profilesApi.patchProfile(id, { [field]: value });
-      setProfiles((rows) => rows.map((r) => (r.id === id ? updated : r)));
-    } catch (e) {
-      setProfiles((rows) => rows.map((r) => (r.id === id ? prev : r)));
-      onError?.((e as Error).message);
-    }
+    setSavingId(id);
+    const task = (async () => {
+      try {
+        const updated = await profilesApi.patchProfile(id, { [field]: value });
+        if (isLatestRowSeq(id, seq)) setProfiles((rows) => rows.map((r) => (r.id === id ? updated : r)));
+      } catch (e) {
+        if (isLatestRowSeq(id, seq)) setProfiles((rows) => rows.map((r) => (r.id === id ? prev : r)));
+        onError?.((e as Error).message);
+      } finally {
+        // only the LATEST save on this row clears the busy state, an
+        // older, slower request finishing after a newer one started must
+        // not un-disable the row while the newer save is still in flight
+        if (isLatestRowSeq(id, seq)) setSavingId((cur) => (cur === id ? null : cur));
+      }
+    })();
+    pendingSaves.current.add(task);
+    task.finally(() => pendingSaves.current.delete(task));
+    await task;
   };
 
   // Analysis-only bulk apply: sets the same assetName override across every
   // selected profile in one action, reusing saveIncidentField's existing
   // optimistic-update + PATCH + rollback-on-error machinery per profile
-  // rather than a new backend endpoint -- this is exactly what a single
+  // rather than a new backend endpoint, this is exactly what a single
   // card's Asset Name dropdown already does, just looped over a selection.
   const [bulkAssetNameBusy, setBulkAssetNameBusy] = useState(false);
   const bulkSetAssetName = async (assetName: string) => {
@@ -1262,115 +1908,150 @@ export function ResultsGrid({
     setBulkAssetNameBusy(true);
     try {
       for (const id of selectedIds) saveIncidentField(id, "assetName", assetName);
-      if (pendingIncidentSaves.current.size) await Promise.all(pendingIncidentSaves.current);
+      if (pendingSaves.current.size) await Promise.all(pendingSaves.current);
     } finally {
       setBulkAssetNameBusy(false);
     }
   };
 
-  const handleCopyUrls = async () => {
+  const handleCopy = async (type: "urls" | "table", formatOverride?: "incident" | "legacy") => {
     if (!clientId) return;
     setCopyUrlState("idle");
+    setCopyMenuOpen(false);
 
-    const fetchBlob = async (): Promise<Blob> => {
-      if (pendingIncidentSaves.current.size) {
-        await Promise.all(pendingIncidentSaves.current);
+    const fmt = formatOverride || exportFormat;
+
+    const fetchText = async (): Promise<{ text: string; count: number; label: string }> => {
+      if (pendingSaves.current.size) {
+        await Promise.all(pendingSaves.current);
       }
-      const res = await profilesApi.profiles({
-        client_id: clientId,
-        platform: platform || undefined,
-        status: !isAnalysisView && status ? status : undefined,
-        keyword: keywordFilter || undefined,
-        phase,
-        limit: EXPORT_LIMIT,
-        offset: 0,
-      });
-      const filtered = filterResults(res.items, filters, extra, platform, clientKeywordSets);
 
-      if (isAnalysisView) {
-        const rows = toIncidentExportRows(filtered);
-        if (!rows.length) throw new Error("No analysis table data to copy.");
-        return new Blob([rowsToTsv(rows)], { type: "text/plain" });
+      // Checkbox selection is an explicit, row-level override, when
+      // anything is selected, copy exactly those rows
+      const selected = selectedIds.size > 0 ? displayed.filter((r) => selectedIds.has(r.id)) : null;
+
+      let filtered: Profile[];
+      let scopeLabel: string;
+      if (selected) {
+        filtered = selected;
+        scopeLabel = ` (${selected.length} selected)`;
       } else {
-        const targetProfiles = status ? filtered.filter((r) => r.status === status) : filtered;
+        const res = await profilesApi.profiles({
+          client_id: clientId,
+          platform: platform || undefined,
+          status: !isAnalysisView && status ? status : undefined,
+          keyword: keywordFilter || undefined,
+          keyword_match_type: keywordMatchType || undefined,
+          phase,
+          published: isAnalysisView ? publishedFilter === "published" : undefined,
+          limit: EXPORT_LIMIT,
+          offset: 0,
+        });
+        filtered = filterResults(res.items, filters, extra, platform, clientKeywordSets);
+        scopeLabel = "";
+      }
+
+      if (type === "urls") {
+        const targetProfiles = selected ? filtered : !isAnalysisView && status ? filtered.filter((r) => r.status === status) : filtered;
         const urls = targetProfiles.map((r) => r.url).filter(Boolean);
         if (!urls.length) {
-          const label = status === "approved" ? "validated" : status === "rejected" ? "rejected" : status ? status : "matching";
-          throw new Error(`No ${label} profiles to copy.`);
+          throw new Error(`No profile URLs found to copy${scopeLabel}.`);
         }
-        return new Blob([urls.join("\n")], { type: "text/plain" });
+        return { text: urls.join("\n"), count: urls.length, label: "URLs" };
+      } else {
+        // Table copy (TSV)
+        if (isAnalysisView) {
+          const rows = fmt === "legacy" ? toLegacyExportRows(filtered) : toIncidentExportRows(filtered);
+          if (!rows.length) throw new Error(`No analysis table data to copy${scopeLabel}.`);
+          const label = fmt === "legacy" ? "Legacy Table" : "Platform Format Table";
+          return { text: rowsToTsv(rows), count: rows.length, label };
+        } else {
+          const discoveryRows = filtered.map((r) => Object.fromEntries(DISCOVERY_EXPORT_COLS.map((c) => [c, r[c]])));
+          if (!discoveryRows.length) throw new Error(`No discovery table data to copy${scopeLabel}.`);
+          return { text: rowsToTsv(discoveryRows), count: discoveryRows.length, label: "Table Data" };
+        }
       }
     };
 
     try {
-      const blob = await fetchBlob();
-      const text = await blob.text();
+      const { text, count, label } = await fetchText();
       try {
         await navigator.clipboard.writeText(text);
         setCopyUrlState("copied");
-        setTimeout(() => setCopyUrlState("idle"), 2000);
+        toast.success(`Copied ${count} ${label} to clipboard`);
+        setTimeout(() => setCopyUrlState("idle"), 2500);
       } catch {
-        // Fallback: browser blocked async clipboard copy. Show modal to get a synchronous click.
         setCopyDataCache(text);
       }
     } catch (e) {
       onError?.((e as Error).message || "Copy failed");
       setCopyUrlState("failed");
-      setTimeout(() => setCopyUrlState("idle"), 2000);
+      toast.error((e as Error).message || "Copy failed");
+      setTimeout(() => setCopyUrlState("idle"), 2500);
     }
   };
 
   // Fetches everything matching the current filters (not just this page) for
-  // export -- this backend has no export endpoint, so the conversion happens
+  // export, this backend has no export endpoint, so the conversion happens
   // entirely client-side.
-  // Discovery-phase export keeps the old raw-Profile field set (there's no
-  // incident record before analysis); analysis-phase export always goes
-  // through the same incident-row shaping as the published-incident record
-  // itself (services/incidentExport.ts), so CSV/JSON/Excel and what
-  // Publish actually writes never drift apart.
   const DISCOVERY_EXPORT_COLS = [
     "id", "platform", "status", "phase", "url", "profile_name", "username", "keyword",
   ] as const;
 
-  const handleExport = async (fmt: "csv" | "json" | "xlsx") => {
+  const handleExport = async (fmt: "csv" | "json" | "xlsx", formatOverride?: "incident" | "legacy") => {
     if (!clientId) return;
     setExporting(true);
+    setExportMenuOpen(false);
+    const chosenFormat = formatOverride || exportFormat;
     try {
-      // let every incident-field edit already in flight land before
-      // fetching -- otherwise a save fired moments ago could still be
-      // mid-PATCH when this export's own fetch races past it
-      if (pendingIncidentSaves.current.size) {
-        await Promise.all(pendingIncidentSaves.current);
+      if (pendingSaves.current.size) {
+        await Promise.all(pendingSaves.current);
       }
-      const res = await profilesApi.profiles({
-        client_id: clientId,
-        platform: platform || undefined,
-        status: !isAnalysisView && status ? status : undefined,
-        keyword: keywordFilter || undefined,
-        phase,
-        limit: EXPORT_LIMIT,
-        offset: 0,
-      });
-      const filtered = filterResults(res.items, filters, extra, platform);
+      const selected = selectedIds.size > 0 ? displayed.filter((r) => selectedIds.has(r.id)) : null;
+
+      let filtered: Profile[];
+      if (selected) {
+        filtered = selected;
+      } else {
+        const res = await profilesApi.profiles({
+          client_id: clientId,
+          platform: platform || undefined,
+          status: !isAnalysisView && status ? status : undefined,
+          keyword: keywordFilter || undefined,
+          keyword_match_type: keywordMatchType || undefined,
+          phase,
+          published: isAnalysisView ? publishedFilter === "published" : undefined,
+          limit: EXPORT_LIMIT,
+          offset: 0,
+        });
+        filtered = filterResults(res.items, filters, extra, platform, clientKeywordSets);
+      }
+
+      if (!filtered.length) {
+        throw new Error(`No profiles match the current filters to export.`);
+      }
       const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
       const rows: Record<string, unknown>[] = isAnalysisView
-        ? toIncidentExportRows(filtered)
+        ? chosenFormat === "legacy"
+          ? toLegacyExportRows(filtered)
+          : toIncidentExportRows(filtered)
         : filtered.map((r) => Object.fromEntries(DISCOVERY_EXPORT_COLS.map((c) => [c, r[c]])));
+
+      const formatSuffix = isAnalysisView ? `-${chosenFormat === "legacy" ? "legacy" : "platform-format"}` : "";
+      const stem = `${(filtered[0]?.client_name || clientId).replace(/[/\\:*?"<>|]/g, "_")}-${phase}${formatSuffix}-${stamp}`;
       if (fmt === "csv") {
-        download(`${clientId}-${phase}-${stamp}.csv`, rowsToCsv(rows), "text/csv");
+        download(`${stem}.csv`, rowsToCsv(rows), "text/csv");
       } else if (fmt === "xlsx") {
-        // a real .xlsx binary, built server-side via openpyxl -- not the
-        // old HTML-table-with-an-Excel-MIME-type trick (see download.ts's
-        // git history), which loses formatting/column types and can
-        // trigger an "unreadable content" security warning on open.
-        const filename = `${clientId}-${phase}-${stamp}.xlsx`;
+        const filename = `${stem}.xlsx`;
         const fileBlob = await profilesApi.exportXlsx(filename, rows);
         downloadBlob(filename, fileBlob);
       } else {
-        download(`${clientId}-${phase}-${stamp}.json`, JSON.stringify(rows, null, 2), "application/json");
+        download(`${stem}.json`, JSON.stringify(rows, null, 2), "application/json");
       }
+      toast.success(`Exported ${rows.length} profiles (${fmt.toUpperCase()})`);
     } catch (e) {
       onError?.((e as Error).message);
+      toast.error((e as Error).message || "Export failed");
     } finally {
       setExporting(false);
     }
@@ -1378,10 +2059,15 @@ export function ResultsGrid({
 
   // `ids` defaults to the current checkbox selection (the bulk action bar);
   // page-wide Validate All/Reject All pass their own id list directly so
-  // they work with nothing selected at all -- see the toolbar buttons below.
+  // they work with nothing selected at all, see the toolbar buttons below.
   const bulkDecide = async (next: Status, ids?: string[]) => {
     const targetIds = ids ?? [...selectedIds];
     if (!targetIds.length) return;
+    const prevItems = targetIds.map((id) => {
+      const p = profiles.find((r) => r.id === id);
+      return { id, prevStatus: p?.status || ("pending" as Status) };
+    });
+    pushUndo(`${next === "approved" ? "Validate" : "Reject"} ${targetIds.length} profiles`, prevItems);
     setBulkBusy(true);
     try {
       const res = await profilesApi.bulkPatch(targetIds, next);
@@ -1390,7 +2076,80 @@ export function ResultsGrid({
         toast.error(`${res.failed.length} of ${targetIds.length} profile(s) failed to update.`);
         onError?.(`${res.failed.length} of ${targetIds.length} profile(s) failed to update.`);
       } else {
-        toast.success(`${targetIds.length} incidents successfully ${next === "approved" ? "validated" : "rejected"}`, { icon: next === "approved" ? "✅" : "✕" });
+        if (next === "approved" && !isAnalysisView) {
+          toast.custom(
+            (t) => (
+              <div
+                className="undo-toast-box"
+                style={{
+                  background: "var(--bg-card, #151d2a)",
+                  color: "#fff",
+                  border: "1px solid var(--cyan, #00E5FF)",
+                  padding: "10px 14px",
+                  borderRadius: "8px",
+                  boxShadow: "0 4px 14px rgba(0, 0, 0, 0.4)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "10px",
+                  fontSize: "13px",
+                }}
+              >
+                <span>✅ {targetIds.length} profiles validated — queued for analysis</span>
+                <button
+                  className="toast-action-link"
+                  onClick={() => {
+                    toast.dismiss(t.id);
+                    setPhase("analysis");
+                  }}
+                >
+                  View in Analysis →
+                </button>
+                <button
+                  className="undo-toast-btn"
+                  onClick={() => {
+                    toast.dismiss(t.id);
+                    handleUndo();
+                  }}
+                >
+                  🔄 Undo
+                </button>
+              </div>
+            ),
+            { duration: 5000 }
+          );
+        } else {
+          toast.custom(
+            (t) => (
+              <div
+                className="undo-toast-box"
+                style={{
+                  background: "var(--bg-card, #151d2a)",
+                  color: "#fff",
+                  border: "1px solid var(--border-subtle)",
+                  padding: "10px 14px",
+                  borderRadius: "8px",
+                  boxShadow: "0 4px 14px rgba(0, 0, 0, 0.4)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "10px",
+                  fontSize: "13px",
+                }}
+              >
+                <span>{targetIds.length} incidents {next === "approved" ? "validated" : "rejected"}</span>
+                <button
+                  className="undo-toast-btn"
+                  onClick={() => {
+                    toast.dismiss(t.id);
+                    handleUndo();
+                  }}
+                >
+                  🔄 Undo
+                </button>
+              </div>
+            ),
+            { duration: 5000 }
+          );
+        }
       }
       await load(false);
     } catch (e) {
@@ -1401,7 +2160,7 @@ export function ResultsGrid({
     }
   };
 
-  // Re-resolves name/photo for just the selected profiles -- no keyword
+  // Re-resolves name/photo for just the selected profiles, no keyword
   // search, one page visit per profile (Facebook only; see
   // discoveryApi.resweepSelected / backend's _resweep_selected). The direct
   // fix for a card stuck showing a bare numeric id/no photo: point this at
@@ -1429,17 +2188,19 @@ export function ResultsGrid({
     }
   };
 
+  const splitUrls = (text: string): string[] =>
+    text.split(/[\n,]+/).map((u) => u.trim()).filter(Boolean);
+
   const submitManualUrls = async () => {
     if (!clientId) return;
-    const urls = manualUrlsText
-      .split(/[\n,]+/)
-      .map((u) => u.trim())
-      .filter(Boolean);
-    if (!urls.length) return;
+    const individualUrls = splitUrls(manualIndividualUrlsText);
+    const domainUrls = splitUrls(manualDomainUrlsText);
+    if (!individualUrls.length && !domainUrls.length) return;
     setManualUrlsBusy(true);
     try {
-      const res = await profilesApi.addManualUrls(clientId, urls);
-      setManualUrlsText("");
+      const res = await profilesApi.addManualUrls(clientId, { individualUrls, domainUrls });
+      setManualIndividualUrlsText("");
+      setManualDomainUrlsText("");
       if (res.skipped.length) {
         onError?.(`${res.added} added. ${res.skipped.length} skipped (unrecognized platform): ${res.skipped.join(", ")}`);
       }
@@ -1476,7 +2237,7 @@ export function ResultsGrid({
 
   // Kept in sync below purely so the window-level drag handlers (registered
   // once, see the effect after this) can read the CURRENT selection
-  // without going stale -- they close over refs, not state, on purpose.
+  // without going stale, they close over refs, not state, on purpose.
   const selectedIdsRef = useRef<Set<string>>(selectedIds);
   useEffect(() => {
     selectedIdsRef.current = selectedIds;
@@ -1484,8 +2245,8 @@ export function ResultsGrid({
 
   // The previous version armed drag-select on the mousedown itself, so any
   // click that so much as twitched a couple pixels onto a neighbouring
-  // card -- resting a finger on a trackpad, a slightly imprecise click near
-  // a card edge -- would silently sweep that neighbour into the selection
+  // card, resting a finger on a trackpad, a slightly imprecise click near
+  // a card edge, would silently sweep that neighbour into the selection
   // too, with no visible cue it had happened. Fixed with a movement
   // threshold: a plain click (mousedown+mouseup with no meaningful
   // movement) toggles just the one card it landed on; only real movement
@@ -1495,14 +2256,14 @@ export function ResultsGrid({
   // moving forward over a not-yet-visited card selects it; backtracking
   // over a card THIS SAME DRAG already selected un-selects it, as if the
   // cursor were physically erasing the mark it just made. `dragPath` is
-  // the ordered trail of cards this one continuous drag has touched --
+  // the ordered trail of cards this one continuous drag has touched,
   // re-entering any earlier point in that trail rewinds (deselects)
   // everything painted after it, however far back the retrace goes, not
   // just the immediately-previous card. Deliberately still one-directional
   // with respect to anything selected BEFORE this drag started
   // (`dragStartSelection`, snapshotted the instant the drag arms): a card
   // that was already selected coming in is never touched by this drag,
-  // forward or backward -- retracing over it doesn't un-select a decision
+  // forward or backward, retracing over it doesn't un-select a decision
   // some earlier action made, only ones this gesture itself made.
   const DRAG_THRESHOLD_PX = 6;
   const dragOrigin = useRef<{ id: string; x: number; y: number } | null>(null);
@@ -1522,7 +2283,7 @@ export function ResultsGrid({
         dragPath.current.push(id);
         addSelected(id);
       } else if (idx < dragPath.current.length - 1) {
-        // retraced back to an earlier point in this drag's own trail --
+        // retraced back to an earlier point in this drag's own trail:
         // erase everything painted after it (but never anything that was
         // already selected before this drag began)
         const toErase = dragPath.current.slice(idx + 1).filter((pid) => !dragStartSelection.current.has(pid));
@@ -1530,7 +2291,7 @@ export function ResultsGrid({
         removeSelected(toErase);
       }
       // idx === last index: re-entering the card already at the head of
-      // the trail (e.g. a wobble within its own bounds) -- no-op
+      // the trail (e.g. a wobble within its own bounds), no-op
     },
   });
 
@@ -1539,7 +2300,7 @@ export function ResultsGrid({
       const origin = dragOrigin.current;
       if (!origin || dragSelectActive.current) return;
       if (Math.hypot(e.clientX - origin.x, e.clientY - origin.y) < DRAG_THRESHOLD_PX) return;
-      // threshold crossed -- this is a genuine drag, not a click; select
+      // threshold crossed, this is a genuine drag, not a click; select
       // the card the drag started on and start painting from here
       dragSelectActive.current = true;
       document.body.style.userSelect = "none";
@@ -1548,7 +2309,7 @@ export function ResultsGrid({
       addSelected(origin.id);
     };
     const endDrag = () => {
-      // armed but never crossed the movement threshold -- a plain click,
+      // armed but never crossed the movement threshold, a plain click,
       // toggle exactly the one card it landed on
       if (dragOrigin.current && !dragSelectActive.current) toggleSelected(dragOrigin.current.id);
       dragOrigin.current = null;
@@ -1557,7 +2318,7 @@ export function ResultsGrid({
       document.body.style.userSelect = "";
     };
     // an interrupted gesture (focus lost, tab hidden, cursor left the
-    // document entirely) -- abort without guessing at single-click intent
+    // document entirely), abort without guessing at single-click intent
     const abortDrag = () => {
       dragOrigin.current = null;
       dragSelectActive.current = false;
@@ -1565,10 +2326,10 @@ export function ResultsGrid({
       document.body.style.userSelect = "";
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      // fastest possible "undo that" -- clears the whole selection and any
+      // fastest possible "undo that", clears the whole selection and any
       // in-flight drag with one keypress, no need to reach for a mouse.
       // Unconditional (no "is there anything to clear" guard) so this
-      // effect never needs `selectedIds` as a dependency -- an empty-Set
+      // effect never needs `selectedIds` as a dependency, an empty-Set
       // update when nothing was selected is a harmless no-op re-render,
       // not worth re-subscribing all these listeners on every drag tick to avoid.
       if (e.key === "Escape") {
@@ -1593,7 +2354,111 @@ export function ResultsGrid({
     };
   }, []);
 
-  // "select all" only ever means "every row currently on screen" -- not
+  // Keyboard navigation & triage shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target && target.closest("input, textarea, select")) return;
+      if (editingId || manualUrlsOpen || diffProfile || copyDataCache !== null) {
+        if (e.key === "Escape") {
+          setEditingId(null);
+          setManualUrlsOpen(false);
+          setDiffProfile(null);
+          setShortcutsHelpOpen(false);
+          setCopyDataCache(null);
+        }
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        handleUndo();
+        return;
+      }
+
+      if (e.key === "i" || e.key === "I") {
+        e.preventDefault();
+        toggleSplitView();
+        return;
+      }
+
+      if (e.key === "?" || (e.key === "/" && e.shiftKey)) {
+        e.preventDefault();
+        setShortcutsHelpOpen((v) => !v);
+        return;
+      }
+
+      if (e.key === "Escape") {
+        if (shortcutsHelpOpen) {
+          setShortcutsHelpOpen(false);
+          return;
+        }
+        setSelectedIds(new Set());
+        setFocusedIndex(-1);
+        return;
+      }
+
+      if (!displayed.length) return;
+
+      if (e.key === "j" || e.key === "ArrowDown") {
+        e.preventDefault();
+        setFocusedIndex((prev) => (prev < displayed.length - 1 ? prev + 1 : 0));
+        return;
+      }
+      if (e.key === "k" || e.key === "ArrowUp") {
+        e.preventDefault();
+        setFocusedIndex((prev) => (prev > 0 ? prev - 1 : displayed.length - 1));
+        return;
+      }
+
+      const activeRow = focusedIndex >= 0 && focusedIndex < displayed.length ? displayed[focusedIndex] : null;
+      if (!activeRow) return;
+
+      if (e.key === " " && !e.repeat) {
+        e.preventDefault();
+        toggleSelected(activeRow.id);
+        return;
+      }
+
+      if (e.key === "v" || e.key === "V") {
+        e.preventDefault();
+        if (!isAnalysisView && activeRow.status !== "approved") {
+          validate(activeRow.id);
+        }
+        return;
+      }
+
+      if (e.key === "x" || e.key === "X") {
+        e.preventDefault();
+        if (activeRow.status !== "rejected") {
+          decide(activeRow.id, "rejected");
+        }
+        return;
+      }
+
+      if (e.key === "e" || e.key === "E") {
+        e.preventDefault();
+        if (isAnalysisView && activeRow.incident) {
+          setEditingId(activeRow.id);
+        }
+        return;
+      }
+
+      if (e.key === "p" || e.key === "P") {
+        e.preventDefault();
+        if (isAnalysisView && activeRow.published === false && !analysisWasBlocked(activeRow)) {
+          publish(activeRow.id);
+          toast.success("Published finding via shortcut [P]!", { icon: "🚀" });
+        }
+        return;
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [displayed, focusedIndex, isAnalysisView, editingId, manualUrlsOpen, diffProfile, shortcutsHelpOpen, copyDataCache]);
+
+  // "select all" only ever means "every row currently on screen", not
   // every row matching the filter across all pages, which the analyst
   // can't see and shouldn't be bulk-deciding blind.
   const allOnPageSelected = displayed.length > 0 && displayed.every((r) => selectedIds.has(r.id));
@@ -1664,12 +2529,10 @@ export function ResultsGrid({
             ))}
           </div>
 
-
-
-          {/* Platform filter rail -- view-only. Discovery/analysis on this
+          {/* Platform filter rail, view-only. Discovery/analysis on this
               backend always run across every ready platform at once, so
               there is nothing per-platform to launch from here anymore. */}
-          <div className="platform-rail-grid">
+          <div className="platform-rail-grid" style={{ gridTemplateColumns: `repeat(${platforms.length}, 1fr)` }}>
             {platforms.map((p) => {
               const count = counts.platforms[p.platform] || 0;
               return (
@@ -1796,6 +2659,33 @@ export function ResultsGrid({
                         ({formatEta(prog.eta_seconds)})
                       </span>
                     )}
+                    {prog.status === "failed" && !discoveryRunning && (
+                      <button
+                        type="button"
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          try {
+                            await discoveryApi.discover({ client_id: clientId, keywords: clientNameKeywords.concat(clientDomainKeywords), platform: plat });
+                            toast.success(`Started discovery retry for ${plat}`);
+                          } catch (err) {
+                            onError?.((err as Error).message);
+                          }
+                        }}
+                        style={{
+                          background: "rgba(239, 68, 68, 0.2)",
+                          border: "1px solid rgba(239, 68, 68, 0.4)",
+                          color: "#fca5a5",
+                          borderRadius: "6px",
+                          padding: "2px 6px",
+                          fontSize: "10px",
+                          cursor: "pointer",
+                          fontWeight: 600,
+                        }}
+                        title={`Retry discovery for ${plat}`}
+                      >
+                        🔄 Retry
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
@@ -1847,6 +2737,33 @@ export function ResultsGrid({
                       <span style={{ fontSize: "11px", color: "var(--text-dim)", marginLeft: "4px" }}>
                         ({formatEta(prog.eta_seconds)})
                       </span>
+                    )}
+                    {prog.status === "failed" && !analysisRunning && (
+                      <button
+                        type="button"
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          try {
+                            await analysisApi.analyse({ client_id: clientId, platform: plat });
+                            toast.success(`Started analysis retry for ${plat}`);
+                          } catch (err) {
+                            onError?.((err as Error).message);
+                          }
+                        }}
+                        style={{
+                          background: "rgba(239, 68, 68, 0.2)",
+                          border: "1px solid rgba(239, 68, 68, 0.4)",
+                          color: "#fca5a5",
+                          borderRadius: "6px",
+                          padding: "2px 6px",
+                          fontSize: "10px",
+                          cursor: "pointer",
+                          fontWeight: 600,
+                        }}
+                        title={`Retry analysis for ${plat}`}
+                      >
+                        🔄 Retry
+                      </button>
                     )}
                   </div>
                 ))}
@@ -1905,14 +2822,14 @@ export function ResultsGrid({
             </div>
           )}
 
-          {/* Page-wide "clear the queue" fast path -- no selection needed at
+          {/* Page-wide "clear the queue" fast path, no selection needed at
               all. Deliberately scoped to PENDING rows on this page only:
               it decides what's still awaiting a call, it never silently
               overrides a decision already made (an already-approved or
               already-rejected row on the same page is left untouched). If
               the analyst has the Pending status chip active, `displayed`
               is already only pending rows, so this reads as "decide
-              everything on screen" -- exactly the one-click-per-page
+              everything on screen", exactly the one-click-per-page
               workflow that was missing. */}
           {!isAnalysisView && displayed.length > 0 && (() => {
             const pendingOnPage = displayed.filter((r) => r.status === "pending").map((r) => r.id);
@@ -1950,8 +2867,8 @@ export function ResultsGrid({
             );
           })()}
 
-          {/* Bulk triage bar -- for a targeted subset instead of the whole
-              page: check specific cards (or drag across them -- see
+          {/* Bulk triage bar, for a targeted subset instead of the whole
+              page: check specific cards (or drag across them, see
               dragSelectHandlers) and decide just those. "select all" only
               ever means "on this page" (see toggleSelectAllOnPage), so
               this never silently acts on rows the analyst hasn't actually
@@ -2004,7 +2921,7 @@ export function ResultsGrid({
             </div>
           )}
 
-          {/* Analysis-phase multi-select bulk apply -- lets an analyst pick
+          {/* Analysis-phase multi-select bulk apply, lets an analyst pick
               several profiles at once and set the same Asset Name across
               all of them in one action, sourced from the client's
               standalone drk_keywords list (see IncidentAssetNameField). */}
@@ -2058,7 +2975,7 @@ export function ResultsGrid({
 
           {/* Filter toolbar */}
           <div className="filter-toolbar" style={{ marginTop: "12px" }}>
-            {/* Same exact-match dropdown in both views now -- this used to be
+            {/* Same exact-match dropdown in both views now, this used to be
                 freetext in analysis view because the server-side filter
                 wasn't being sent there (see load()), so it only ever
                 filtered whatever page happened to already be loaded: typing
@@ -2105,16 +3022,17 @@ export function ResultsGrid({
                 <option value="low">🎯 Low Match</option>
               </select>
             )}
-            {!isAnalysisView && isFacebook && (
+            {isFacebookPlatform && (
               <select
                 value={entityType}
-                onChange={(e) => setEntityType(e.target.value as "" | "profile" | "page")}
+                onChange={(e) => setEntityType(e.target.value as "" | "profile" | "page" | "group")}
                 className="select-filter"
-                title="Facebook only distinguishes people profiles from Pages -- filter to just one"
+                title="Facebook discovery distinguishes people, Pages, and Groups -- filter to just one"
               >
-                <option value="">People + Pages</option>
+                <option value="">People + Pages + Groups</option>
                 <option value="profile">👤 People Only</option>
                 <option value="page">📄 Pages Only</option>
+                <option value="group">👥 Groups Only</option>
               </select>
             )}
             {isAnalysisView && (
@@ -2138,7 +3056,7 @@ export function ResultsGrid({
               className="input-filter"
               style={{ flex: 1, minWidth: "160px" }}
             />
-            {/* Card view is discovery-only -- an analysis card is the full
+            {/* Card view is discovery-only, an analysis card is the full
                 incident-edit panel (~15 fields) permanently expanded, which
                 makes a card grid unwieldy compared to the table's one-row-
                 per-profile density. Analysis always renders as a table;
@@ -2176,51 +3094,246 @@ export function ResultsGrid({
                 </button>
               </div>
             )}
-            <button className="btn-cyber-primary" style={{ padding: "7px 11px", fontSize: "11px", marginTop: 0, width: "auto" }} onClick={() => handleExport("csv")} disabled={exporting || !clientId}>
-              {exporting ? "…" : "CSV"}
-            </button>
-            <button className="btn-cyber-primary" style={{ padding: "7px 11px", fontSize: "11px", marginTop: 0, width: "auto" }} onClick={() => handleExport("json")} disabled={exporting || !clientId}>
-              {exporting ? "…" : "JSON"}
-            </button>
             <button
-              className="btn-cyber-primary"
-              style={{ padding: "7px 11px", fontSize: "11px", marginTop: 0, width: "auto" }}
-              onClick={() => handleExport("xlsx")}
-              disabled={exporting || !clientId}
-              title={isAnalysisView ? "Export the takedown-report column layout" : "Export as an Excel-compatible spreadsheet"}
-            >
-              {exporting ? "…" : "Excel"}
-            </button>
-            <button
-              className="btn-cyber-primary"
+              onClick={toggleSplitView}
+              title="Toggle side-by-side Live Inspection pane (I)"
               style={{
-                padding: "7px 11px", fontSize: "11px", marginTop: 0, width: "auto",
-                background: copyUrlState === "copied" ? "var(--success)" : copyUrlState === "failed" ? "var(--danger)" : "rgba(54, 181, 160, 0.15)",
-                color: "var(--success)", border: "1px solid var(--success)",
+                background: splitViewOpen ? "rgba(0, 229, 255, 0.25)" : "var(--bg-surface)",
+                border: `1.5px solid ${splitViewOpen ? "var(--cyan, #00E5FF)" : "var(--border-color)"}`,
+                color: splitViewOpen ? "var(--cyan, #00E5FF)" : "var(--text-muted)",
+                borderRadius: "8px",
+                padding: "7px 12px",
+                cursor: "pointer",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+                fontSize: "12px",
+                fontWeight: 700,
+                boxShadow: splitViewOpen ? "0 0 14px rgba(0, 229, 255, 0.35)" : "none",
+                transition: "all 0.2s ease",
               }}
-              onClick={handleCopyUrls}
-              title={
-                isAnalysisView
-                  ? "Copy all table data in Excel-compatible format to clipboard"
-                  : status === "rejected"
-                  ? "Copy rejected profile URLs to clipboard"
-                  : status === "approved"
-                  ? "Copy validated profile URLs to clipboard"
-                  : "Copy profile URLs to clipboard"
-              }
             >
-              {copyUrlState === "copied"
-                ? "✓ Copied"
-                : copyUrlState === "failed"
-                ? "✕ Failed"
-                : isAnalysisView
-                ? "📋 Copy Table (Excel)"
-                : status === "rejected"
-                ? "📋 Copy Rejected URLs"
-                : status === "approved"
-                ? "📋 Copy Validated URLs"
-                : "📋 Copy URLs"}
+              <span>🖥️</span> {splitViewOpen ? "Split View (ON)" : "Split View"}
             </button>
+            {/* 📋 Unified Copy Dropdown */}
+            <div className="action-dropdown-container" ref={copyMenuRef}>
+              <button
+                className="btn-cyber-primary"
+                style={{
+                  padding: "7px 12px",
+                  fontSize: "11px",
+                  marginTop: 0,
+                  width: "auto",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "5px",
+                  background:
+                    copyUrlState === "copied"
+                      ? "var(--success)"
+                      : copyUrlState === "failed"
+                      ? "var(--danger)"
+                      : "rgba(54, 181, 160, 0.15)",
+                  color: copyUrlState === "copied" ? "#fff" : "var(--cyan)",
+                  border: `1px solid ${copyUrlState === "copied" ? "var(--success)" : "var(--cyan)"}`,
+                }}
+                onClick={() => {
+                  setCopyMenuOpen(!copyMenuOpen);
+                  setExportMenuOpen(false);
+                }}
+                title="Copy profile URLs or formatted table rows to clipboard"
+              >
+                {copyUrlState === "copied" ? (
+                  "✓ Copied"
+                ) : copyUrlState === "failed" ? (
+                  "✕ Failed"
+                ) : selectedIds.size > 0 ? (
+                  `📋 Copy (${selectedIds.size}) ▾`
+                ) : (
+                  "📋 Copy ▾"
+                )}
+              </button>
+
+              {copyMenuOpen && (
+                <div className="action-dropdown-menu">
+                  <div className="action-dropdown-header">Copy Options</div>
+                  {selectedIds.size > 0 ? (
+                    <div className="action-dropdown-scope-badge">
+                      <span>🎯</span> {selectedIds.size} Selected Row{selectedIds.size > 1 ? "s" : ""}
+                    </div>
+                  ) : (
+                    <div className="action-dropdown-scope-badge" style={{ background: "rgba(148, 163, 184, 0.12)", color: "var(--text-dim)" }}>
+                      <span>🌐</span> All Filtered ({displayed.length})
+                    </div>
+                  )}
+
+                  <button
+                    className="action-dropdown-item"
+                    onClick={() => handleCopy("urls")}
+                  >
+                    <div className="action-dropdown-item-left">
+                      <span className="action-dropdown-item-icon">🔗</span>
+                      <span>{selectedIds.size > 0 ? `Copy Selected URLs (${selectedIds.size})` : "Copy Profile URLs"}</span>
+                    </div>
+                    <span className="action-dropdown-item-badge">1-per-line</span>
+                  </button>
+
+                  <div className="action-dropdown-divider" />
+
+                  {isAnalysisView ? (
+                    <>
+                      <button
+                        className="action-dropdown-item"
+                        onClick={() => handleCopy("table", "incident")}
+                      >
+                        <div className="action-dropdown-item-left">
+                          <span className="action-dropdown-item-icon">📊</span>
+                          <span>Copy Table (Platform Format)</span>
+                        </div>
+                        <span className="action-dropdown-item-badge">TSV</span>
+                      </button>
+
+                      <button
+                        className="action-dropdown-item"
+                        onClick={() => handleCopy("table", "legacy")}
+                      >
+                        <div className="action-dropdown-item-left">
+                          <span className="action-dropdown-item-icon">📑</span>
+                          <span>Copy Table (Legacy Format)</span>
+                        </div>
+                        <span className="action-dropdown-item-badge">TSV</span>
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      className="action-dropdown-item"
+                      onClick={() => handleCopy("table")}
+                    >
+                      <div className="action-dropdown-item-left">
+                        <span className="action-dropdown-item-icon">📊</span>
+                        <span>Copy Table Data</span>
+                      </div>
+                      <span className="action-dropdown-item-badge">TSV</span>
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* 📥 Unified Export Dropdown */}
+            <div className="action-dropdown-container" ref={exportMenuRef}>
+              <button
+                className="btn-cyber-primary"
+                style={{
+                  padding: "7px 12px",
+                  fontSize: "11px",
+                  marginTop: 0,
+                  width: "auto",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "5px",
+                }}
+                onClick={() => {
+                  setExportMenuOpen(!exportMenuOpen);
+                  setCopyMenuOpen(false);
+                }}
+                disabled={exporting || !clientId}
+                title="Download table data as Excel (.xlsx), CSV, or JSON"
+              >
+                {exporting ? "⏳ Exporting…" : "📥 Export ▾"}
+              </button>
+
+              {exportMenuOpen && (
+                <div className="action-dropdown-menu" style={{ minWidth: "290px" }}>
+                  <div className="action-dropdown-header">Export Data</div>
+                  {selectedIds.size > 0 ? (
+                    <div className="action-dropdown-scope-badge">
+                      <span>🎯</span> Exporting {selectedIds.size} Selected Profile{selectedIds.size > 1 ? "s" : ""}
+                    </div>
+                  ) : (
+                    <div className="action-dropdown-scope-badge" style={{ background: "rgba(148, 163, 184, 0.12)", color: "var(--text-dim)" }}>
+                      <span>🌐</span> Exporting All Filtered ({total || displayed.length})
+                    </div>
+                  )}
+
+                  {isAnalysisView && (
+                    <>
+                      <div className="action-dropdown-header" style={{ marginTop: "4px" }}>Column Layout Preset</div>
+                      <div className="action-format-selector">
+                        <button
+                          type="button"
+                          className={`action-format-btn ${exportFormat === "incident" ? "active" : ""}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setExportFormat("incident");
+                          }}
+                          title="Platform Format: OrgId, Domain, Platform, AssetType, Incident Title, Source URL, Risk Rating, etc."
+                        >
+                          Platform Format
+                        </button>
+                        <button
+                          type="button"
+                          className={`action-format-btn ${exportFormat === "legacy" ? "active" : ""}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setExportFormat("legacy");
+                          }}
+                          title="Legacy Format: Original Name, IMPERSONATED, Profile name, Profile URL, Followers, etc."
+                        >
+                          Legacy Format
+                        </button>
+                      </div>
+                    </>
+                  )}
+
+                  <button
+                    className="action-dropdown-item"
+                    onClick={() => handleExport("xlsx")}
+                    disabled={exporting}
+                  >
+                    <div className="action-dropdown-item-left">
+                      <span className="action-dropdown-item-icon">📗</span>
+                      <span>Excel Spreadsheet</span>
+                    </div>
+                    <span className="action-dropdown-item-badge">.xlsx</span>
+                  </button>
+
+                  <button
+                    className="action-dropdown-item"
+                    onClick={() => handleExport("csv")}
+                    disabled={exporting}
+                  >
+                    <div className="action-dropdown-item-left">
+                      <span className="action-dropdown-item-icon">📄</span>
+                      <span>CSV Document</span>
+                    </div>
+                    <span className="action-dropdown-item-badge">.csv</span>
+                  </button>
+
+                  <button
+                    className="action-dropdown-item"
+                    onClick={() => handleExport("json")}
+                    disabled={exporting}
+                  >
+                    <div className="action-dropdown-item-left">
+                      <span className="action-dropdown-item-icon">📦</span>
+                      <span>JSON Export</span>
+                    </div>
+                    <span className="action-dropdown-item-badge">.json</span>
+                  </button>
+                </div>
+              )}
+            </div>
+            {!isAnalysisView && (
+              <button
+                className="btn-cyber-primary"
+                style={{ padding: "7px 11px", fontSize: "11px", marginTop: 0, width: "auto", background: "rgba(221, 56, 59, 0.15)", color: "var(--danger, #DD383B)", border: "1px solid var(--danger, #DD383B)" }}
+                onClick={handleDeletePlatformData}
+                disabled={deletingPlatformData || !clientId || !platform}
+                title="Permanently delete every Discovery and Analysis profile, screenshot, and published incident for this platform and client"
+              >
+                {deletingPlatformData ? "Deleting…" : "🗑 Delete Platform Data"}
+              </button>
+            )}
             {isAnalysisView && (
               <>
                 <button
@@ -2252,6 +3365,15 @@ export function ResultsGrid({
                   title="Publish held analysis results matching the current platform view and selected scope"
                 >
                   {publishingAll ? "Publishing…" : `📢 Publish ${publishScope === "all" ? "All" : PUBLISH_SCOPE_LABELS[publishScope]}`}
+                </button>
+                <button
+                  className="btn-cyber-primary"
+                  style={{ padding: "7px 11px", fontSize: "11px", marginTop: 0, width: "auto", background: "rgba(221, 56, 59, 0.15)", color: "var(--danger, #DD383B)", border: "1px solid var(--danger, #DD383B)" }}
+                  onClick={handleDeletePlatformData}
+                  disabled={deletingPlatformData || !clientId || !platform}
+                  title="Permanently delete every Discovery and Analysis profile, screenshot, and published incident for this platform and client"
+                >
+                  {deletingPlatformData ? "Deleting…" : "🗑 Delete Platform Data"}
                 </button>
               </>
             )}
@@ -2300,7 +3422,59 @@ export function ResultsGrid({
             </div>
           )}
 
-          {loading && <div style={{ padding: "24px", textAlign: "center", color: "var(--text-dim)" }}>Loading…</div>}
+          {/* Published/Unpublished filter, analysis only, sits right above
+              the table (below every other filter/coverage banner). A
+              published row is a confirmed, client-facing finding; an
+              unpublished one is still on its hold or awaiting an explicit
+              Publish (see backend/docs/adr/0007-publish-hold.md). Equal-width
+              slots so the underline can slide between them with a plain CSS
+              transform transition, no width measurement needed. */}
+          {isAnalysisView && (
+            <div style={{ position: "relative", display: "inline-flex", marginBottom: "10px" }}>
+              {(["published", "unpublished"] as const).map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setPublishedFilter(key)}
+                  title={
+                    key === "published"
+                      ? "Findings already confirmed and visible to the client"
+                      : "Still on the publish hold, or awaiting an explicit Publish"
+                  }
+                  style={{
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    width: "140px",
+                    textAlign: "left",
+                    padding: "6px 0 10px",
+                    fontSize: "14px",
+                    fontWeight: 600,
+                    fontFamily: "inherit",
+                    color: publishedFilter === key ? "var(--purple)" : "var(--text-muted)",
+                    transition: "color 0.2s ease",
+                  }}
+                >
+                  {key === "published" ? "Published" : "Unpublished"}
+                </button>
+              ))}
+              <span
+                aria-hidden="true"
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  bottom: 0,
+                  height: "2px",
+                  width: "140px",
+                  borderRadius: "2px",
+                  background: "var(--purple)",
+                  transform: `translateX(${publishedFilter === "published" ? 0 : 140}px)`,
+                  transition: "transform 0.25s ease",
+                }}
+              />
+            </div>
+          )}
+{loading && <div style={{ padding: "24px", textAlign: "center", color: "var(--text-dim)" }}>Loading…</div>}
 
           {!loading && !clientId && (
             <div style={{ padding: "24px", textAlign: "center", color: "var(--text-dim)" }}>
@@ -2315,22 +3489,58 @@ export function ResultsGrid({
           )}
 
           {!loading && displayed.length > 0 && !isAnalysisView && viewMode === "grid" && (
-            <div className="profile-grid-container" style={{ marginTop: "12px" }}>
-              {displayed.map((r) => (
-                <ProfileCard
-                  key={r.id} r={r} isAnalysisView={isAnalysisView} savingId={savingId}
-                  onDecide={decide} onValidate={validate}
-                  onSaveIncidentField={saveIncidentField}
-                  selected={selectedIds.has(r.id)} onToggleSelected={toggleSelected}
-                  dragHandlers={dragSelectHandlers(r.id)}
+            <div className={splitViewOpen ? "results-split-layout" : undefined} style={{ marginTop: "12px" }}>
+              <div className={splitViewOpen ? "split-table-wrapper" : undefined} style={{ minWidth: 0, width: "100%" }}>
+                <div className="profile-grid-container">
+                  {displayed.map((r, i) => (
+                    <div
+                      key={r.id}
+                      onClick={() => setFocusedIndex(i)}
+                      style={{
+                        borderRadius: "12px",
+                        outline: focusedIndex === i && splitViewOpen ? "2px solid var(--cyan, #00E5FF)" : "none",
+                        outlineOffset: "2px",
+                        transition: "outline 0.15s ease",
+                      }}
+                    >
+                      <ProfileCard
+                        r={r} isAnalysisView={isAnalysisView} savingId={savingId}
+                        onDecide={decide} onValidate={validate}
+                        onSaveIncidentField={saveIncidentField}
+                        selected={selectedIds.has(r.id)} onToggleSelected={toggleSelected}
+                        dragHandlers={dragSelectHandlers(r.id)}
+                        onOpenDiff={(p) => setDiffProfile(p)}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {splitViewOpen && (
+                <LiveInspectionPane
+                  profile={focusedIndex >= 0 && focusedIndex < displayed.length ? displayed[focusedIndex] : displayed[0]}
+                  isAnalysisView={isAnalysisView}
+                  onValidate={validate}
+                  onReject={(id) => decide(id, "rejected")}
+                  onEdit={(id) => setEditingId(id)}
+                  onClose={toggleSplitView}
                 />
-              ))}
+              )}
             </div>
           )}
 
           {!loading && displayed.length > 0 && (isAnalysisView || viewMode === "table") && (
-            <div style={{ overflowX: "auto", marginTop: "12px" }}>
-              <table className="core_table">
+            // Keyed on the Published/Unpublished filter so switching it
+            // remounts this wrapper and replays the fade-in, a visible
+            <div
+              key={isAnalysisView ? publishedFilter : "table"}
+              className={splitViewOpen ? "results-split-layout" : undefined}
+              style={{ marginTop: "12px", animation: "fadeUp 0.3s ease" }}
+            >
+              <div
+                className={splitViewOpen ? "split-table-wrapper" : undefined}
+                style={{ overflowX: "auto", minWidth: 0 }}
+              >
+                <table className="core_table">
                 <thead>
                   <tr>
                     <th>
@@ -2344,14 +3554,7 @@ export function ResultsGrid({
                     <th></th>
                     <th>Name</th>
                     <th>Platform</th>
-                    {/* Trimmed from 18 always-inline-editable columns (OrgId,
-                        Domain, AssetType, ThirdParty, Description, Name
-                        Match, Logo Match, Location, Followers, Last Post,
-                        each its own 50-160px input) down to the handful
-                        worth scanning at a glance. Everything else is one
-                        click away in the Edit drawer -- see the modal near
-                        the bottom of this component and the ✏️ Edit
-                        button below. */}
+                    {isAnalysisView && <th>Screenshot</th>}
                     {isAnalysisView && <th>AssetName</th>}
                     {isAnalysisView && <th>Risk</th>}
                     {isAnalysisView && <th>Category</th>}
@@ -2363,6 +3566,7 @@ export function ResultsGrid({
                     {isAnalysisView && <th>Logo Match</th>}
                     {isAnalysisView && <th>Active</th>}
                     {isAnalysisView && <th>Date</th>}
+                    {isAnalysisView && <th style={{ textAlign: "center" }}>Risk Score</th>}
                     {!isAnalysisView && <th>Status</th>}
                     <th className="core_table-actions-cell">Actions</th>
                   </tr>
@@ -2371,27 +3575,29 @@ export function ResultsGrid({
                   {loading && displayed.length === 0 ? (
                     Array.from({ length: 7 }).map((_, i) => (
                       <tr key={`skeleton-${i}`}>
-                        <td colSpan={15} style={{ padding: '8px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
+                        <td colSpan={isAnalysisView ? 16 : 6} style={{ padding: '8px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
                           <div className="skeleton-row" style={{ width: '100%', opacity: Math.max(0.1, 1 - (i * 0.15)) }} />
                         </td>
                       </tr>
                     ))
                   ) : displayed.length === 0 ? (
                     <tr>
-                      <td colSpan={15} style={{ textAlign: "center", padding: "40px", color: "var(--text-dim)" }}>
+                      <td colSpan={isAnalysisView ? 16 : 6} style={{ textAlign: "center", padding: "40px", color: "var(--text-dim)" }}>
                         No profiles match the current filters.
                       </td>
                     </tr>
                   ) : (
-                    displayed.map((r) => {
+                    displayed.map((r, i) => {
                       const isHeld = isAnalysisView && r.published === false;
                       const inc = r.incident;
                       return (
                       <tr
                         key={r.id}
-                      {...dragSelectHandlers(r.id)}
-                      style={selectedIds.has(r.id) ? { outline: "2px solid var(--cyan)", outlineOffset: "-2px" } : undefined}
-                    >
+                        {...dragSelectHandlers(r.id)}
+                        onClick={() => setFocusedIndex(i)}
+                        className={focusedIndex === i ? "row-focused" : undefined}
+                        style={selectedIds.has(r.id) ? { outline: "2px solid var(--primary)", outlineOffset: "-2px", boxShadow: "0 0 12px rgba(136, 56, 221, 0.35)", background: "rgba(136, 56, 221, 0.08)" } : undefined}
+                      >
                       <td>
                         <input
                           type="checkbox"
@@ -2410,7 +3616,7 @@ export function ResultsGrid({
 
                         </div>
                       </td>
-                      <td style={{ maxWidth: "220px" }}>
+                      <td style={{ maxWidth: "220px", position: "relative" }}>
                         <a
                           href={isAnalysisView && inc ? inc.source : r.url}
                           target="_blank" rel="noreferrer" style={{ color: "var(--text-main)" }}
@@ -2421,94 +3627,128 @@ export function ResultsGrid({
                         </a>
                         {r.verified && <span className="verified-check" title="Verified account on this platform"> ✓</span>}
                         {r.has_logo && <span title="Uses a logo/brand photo"> 🏷️</span>}
+                        <div className="row-quick-actions">
+                          <button
+                            type="button"
+                            className="row-quick-action-btn"
+                            title="Copy profile URL"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const targetUrl = isAnalysisView && inc ? inc.source : r.url;
+                              navigator.clipboard.writeText(targetUrl);
+                              toast.success("Profile URL copied!", { duration: 2000, id: `copy-${r.id}` });
+                            }}
+                          >
+                            📋
+                          </button>
+                          {isAnalysisView && inc && (
+                            <button
+                              type="button"
+                              className="row-quick-action-btn"
+                              title="Edit incident details"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setEditingId(r.id);
+                              }}
+                            >
+                              ✏️
+                            </button>
+                          )}
+                        </div>
                       </td>
                       <td><PlatformIcon platform={r.platform} size={16} /></td>
-                      {/* Read-only glance columns -- everything else (OrgId,
-                          Domain, AssetType, ThirdParty, Description, Name
-                          Match, Logo Match, Location, Followers, Last Post)
-                          moved into the Edit drawer below, opened via the
-                          ✏️ Edit action in this row's Actions cell. */}
                       {isAnalysisView && (
-                        <td title={inc?.assetName ?? ""} style={{ maxWidth: "140px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        <td
+                          onClick={(e) => e.stopPropagation()}
+                          onMouseDown={(e) => e.stopPropagation()}
+                          onPointerDown={(e) => e.stopPropagation()}
+                        >
+                          <ScreenshotCell r={r} />
+                        </td>
+                      )}
+                      {isAnalysisView && (
+                        <td title={inc?.assetName ?? ""} style={{ maxWidth: "140px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#ffffff" }}>
                           {inc?.assetName || "—"}
                         </td>
                       )}
                       {isAnalysisView && (
                         <td>
-                          {inc && (
-                            <span
-                              style={{
-                                background: riskBadgeColor(inc.riskRating), color: "#fff",
-                                padding: "2px 8px", borderRadius: "999px", fontSize: "11px", fontWeight: 700,
-                              }}
-                            >
-                              {inc.riskRating}
-                            </span>
-                          )}
+                          {(() => {
+                            const risk = getRiskBadgeDetails(inc?.riskRating);
+                            if (risk.label === "—") return "—";
+                            return (
+                              <span
+                                className="risk-capsule-badge"
+                                style={{
+                                  background: risk.color,
+                                  color: "#ffffff",
+                                  padding: "3px 12px",
+                                  borderRadius: "14px",
+                                  fontSize: "11px",
+                                  fontWeight: 700,
+                                  display: "inline-block",
+                                  letterSpacing: "0.4px",
+                                  boxShadow: `0 2px 8px ${risk.color}40`,
+                                  textTransform: "capitalize",
+                                }}
+                              >
+                                {risk.label}
+                              </span>
+                            );
+                          })()}
                         </td>
                       )}
                       {isAnalysisView && (
-                        <td style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                        <td style={{ fontSize: "11px", color: "#ffffff" }}>
                           {inc ? `${inc.category}${inc.subCategory ? ` · ${inc.subCategory}` : ""}` : "—"}
                         </td>
                       )}
                       {isAnalysisView && (
-                        <td style={{ fontSize: "11px", color: "var(--text-muted)" }}>{inc?.domain || "—"}</td>
+                        <td style={{ fontSize: "11px", color: "#ffffff" }}>{inc?.domain || "—"}</td>
                       )}
                       {isAnalysisView && (
-                        <td style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                        <td style={{ fontSize: "11px", color: "#ffffff" }}>
                           {inc?.socialProfileInfo.numberOfFollowers ?? r.followers ?? emptyLabel(r, r.platform, "followers")}
                         </td>
                       )}
                       {isAnalysisView && (
-                        <td style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                        <td style={{ fontSize: "11px", color: "#ffffff" }}>
                           {inc?.socialProfileInfo.location || r.location || emptyLabel(r, r.platform, "location")}
                         </td>
                       )}
                       {isAnalysisView && (
-                        <td style={{ fontSize: "11px", color: "var(--text-muted)", whiteSpace: "nowrap" }}>
+                        <td style={{ fontSize: "11px", color: "#ffffff", whiteSpace: "nowrap" }}>
                           {inc?.socialProfileInfo.lastPostDate || r.last_post_date || emptyLabel(r, r.platform, "last_post_date")}
-                          {/* r.is_active is true/false/null -- null means no
-                              last-post date was ever found (unknown), never
-                              "confirmed inactive", so it renders nothing rather
-                              than a wrong badge. See ACTIVE_WINDOW_DAYS (6mo). */}
-                          {r.is_active !== null && r.is_active !== undefined && (
-                            <span
-                              title={r.is_active ? "Posted within the last 6 months" : "No post in over 6 months"}
-                              style={{
-                                marginLeft: "6px", fontSize: "10px", fontWeight: 700,
-                                padding: "1px 6px", borderRadius: "8px",
-                                color: r.is_active ? "var(--success, #36b5a0)" : "var(--text-dim)",
-                                background: r.is_active ? "rgba(54,181,160,0.12)" : "rgba(255,255,255,0.06)",
-                              }}
-                            >
-                              {r.is_active ? "● Active" : "○ Inactive"}
-                            </span>
-                          )}
                         </td>
                       )}
                       {isAnalysisView && (
                         <td>
                           <button
                             type="button"
-                            onClick={(e) => { e.stopPropagation(); saveProfileField(r.id, "username_match", !r.username_match); }}
+                            disabled={savingId === r.id}
+                            onClick={(e) => { e.stopPropagation(); saveProfileField(r.id, "username_match", !usernameMatchOf(r)); }}
                             style={{
-                              cursor: "pointer",
-                              background: r.username_match ? "var(--success, #10B981)" : "rgba(156, 163, 175, 0.2)",
-                              color: r.username_match ? "#fff" : "var(--text-dim)",
-                              border: "1px solid " + (r.username_match ? "transparent" : "var(--border-color)"),
+                              cursor: savingId === r.id ? "default" : "pointer",
+                              opacity: savingId === r.id ? 0.6 : 1,
+                              background: usernameMatchOf(r) ? "var(--success, #10B981)" : "rgba(156, 163, 175, 0.2)",
+                              color: usernameMatchOf(r) ? "#fff" : "#ffffff",
+                              border: "1px solid " + (usernameMatchOf(r) ? "transparent" : "var(--border-color)"),
                               padding: "4px 10px",
                               borderRadius: "14px",
                               fontSize: "12px",
-                              fontWeight: r.username_match ? 600 : 400,
+                              fontWeight: usernameMatchOf(r) ? 600 : 400,
                               display: "inline-flex",
                               alignItems: "center",
                               gap: "4px",
                               transition: "all 0.15s ease",
                             }}
-                            title="Click anywhere to instantly toggle Username Match"
+                            title={
+                              savingId === r.id
+                                ? "Saving…"
+                                : "Click anywhere to instantly toggle Username Match"
+                            }
                           >
-                            {r.username_match ? "✓ Match" : "+ Match"}
+                            {usernameMatchOf(r) ? "✓ Match" : "+ Match"}
                           </button>
                         </td>
                       )}
@@ -2516,24 +3756,30 @@ export function ResultsGrid({
                         <td>
                           <button
                             type="button"
-                            onClick={(e) => { e.stopPropagation(); saveProfileField(r.id, "logo_match", !r.logo_match); }}
+                            disabled={savingId === r.id}
+                            onClick={(e) => { e.stopPropagation(); saveProfileField(r.id, "logo_match", !logoMatchOf(r)); }}
                             style={{
-                              cursor: "pointer",
-                              background: r.logo_match ? "var(--success, #10B981)" : "rgba(156, 163, 175, 0.2)",
-                              color: r.logo_match ? "#fff" : "var(--text-dim)",
-                              border: "1px solid " + (r.logo_match ? "transparent" : "var(--border-color)"),
+                              cursor: savingId === r.id ? "default" : "pointer",
+                              opacity: savingId === r.id ? 0.6 : 1,
+                              background: logoMatchOf(r) ? "var(--success, #10B981)" : "rgba(156, 163, 175, 0.2)",
+                              color: logoMatchOf(r) ? "#fff" : "#ffffff",
+                              border: "1px solid " + (logoMatchOf(r) ? "transparent" : "var(--border-color)"),
                               padding: "4px 10px",
                               borderRadius: "14px",
                               fontSize: "12px",
-                              fontWeight: r.logo_match ? 600 : 400,
+                              fontWeight: logoMatchOf(r) ? 600 : 400,
                               display: "inline-flex",
                               alignItems: "center",
                               gap: "4px",
                               transition: "all 0.15s ease",
                             }}
-                            title="Click anywhere to instantly toggle Logo Match"
+                            title={
+                              savingId === r.id
+                                ? "Saving…"
+                                : "Click anywhere to instantly toggle Logo Match"
+                            }
                           >
-                            {r.logo_match ? "✓ Match" : "+ Match"}
+                            {logoMatchOf(r) ? "✓ Match" : "+ Match"}
                           </button>
                         </td>
                       )}
@@ -2542,13 +3788,13 @@ export function ResultsGrid({
                           {/* Three states, not two. `null` means no last-post
                               date was available to judge by (Telegram never
                               exposes one; Instagram often doesn't; a
-                              cut-short run never got one) -- rendering that
+                              cut-short run never got one), rendering that
                               as "inactive" states a fact about a profile
                               nobody checked. */}
                           {inc?.socialProfileInfo.isActive === null ||
                           inc?.socialProfileInfo.isActive === undefined ? (
                             <span
-                              style={{ color: "var(--text-dim)", fontStyle: "italic" }}
+                              style={{ color: "#ffffff", opacity: 0.8, fontStyle: "italic" }}
                               title={
                                 analysisWasBlocked(r)
                                   ? "Analysis could not read this profile, so activity is unknown"
@@ -2558,14 +3804,43 @@ export function ResultsGrid({
                               ? unknown
                             </span>
                           ) : (
-                            <span style={{ color: inc.socialProfileInfo.isActive ? "var(--success)" : "var(--text-dim)" }}>
+                            <span style={{ color: inc.socialProfileInfo.isActive ? "var(--success)" : "#ffffff" }}>
                               {inc.socialProfileInfo.isActive ? "● active" : "○ inactive"}
                             </span>
                           )}
                         </td>
                       )}
                       {isAnalysisView && (
-                        <td style={{ fontSize: "11px", color: "var(--text-muted)", whiteSpace: "nowrap" }}>{inc?.date || "—"}</td>
+                        <td style={{ fontSize: "11px", color: "#ffffff", whiteSpace: "nowrap" }}>{inc?.date || "—"}</td>
+                      )}
+                      {isAnalysisView && (
+                        <td style={{ textAlign: "center", padding: "8px 4px" }}>
+                          {(() => {
+                            const risk = getRiskBadgeDetails(inc?.riskRating);
+                            return (
+                              <span
+                                className="risk-score-circle"
+                                title={`Risk Score: ${risk.score}/10 (${risk.label})`}
+                                style={{
+                                  background: risk.color,
+                                  color: "#ffffff",
+                                  width: "24px",
+                                  height: "24px",
+                                  borderRadius: "50%",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                  fontSize: "11px",
+                                  fontWeight: 800,
+                                  boxShadow: `0 2px 8px ${risk.color}66`,
+                                  margin: "0 auto",
+                                }}
+                              >
+                                {risk.score}
+                              </span>
+                            );
+                          })()}
+                        </td>
                       )}
                       {!isAnalysisView && (
                         <td>
@@ -2573,12 +3848,20 @@ export function ResultsGrid({
                             {r.status}
                           </span>
                           {r.status === "pending" && changeSummary(r.changes) && (
-                            <div
-                              style={{ fontSize: "10px", color: "var(--warn-yellow, #FDB71B)", marginTop: "3px", whiteSpace: "nowrap", maxWidth: "160px", overflow: "hidden", textOverflow: "ellipsis" }}
-                              title={`Previously rejected -- a rediscovery found a real change: ${changeSummary(r.changes)}`}
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); setDiffProfile(r); }}
+                              style={{
+                                fontSize: "10px", color: "var(--warn-yellow, #FDB71B)", marginTop: "3px",
+                                background: "rgba(253, 183, 27, 0.12)", border: "1px solid rgba(253, 183, 27, 0.3)",
+                                borderRadius: "4px", padding: "2px 6px", cursor: "pointer", display: "inline-flex",
+                                alignItems: "center", gap: "4px", whiteSpace: "nowrap", maxWidth: "180px",
+                                overflow: "hidden", textOverflow: "ellipsis",
+                              }}
+                              title="Click to view full comparison of changes"
                             >
                               🔄 {changeSummary(r.changes)}
-                            </div>
+                            </button>
                           )}
                         </td>
                       )}
@@ -2610,7 +3893,7 @@ export function ResultsGrid({
                             </button>
                           )}
                           {/* A profile only reaches analysis after already being
-                              validated once in discovery -- re-showing "Validate"
+                              validated once in discovery, re-showing "Validate"
                               there was a redundant, confusing leftover of the
                               discovery-phase workflow. Analysis's own primary
                               positive action is Publish (below), not a second
@@ -2697,6 +3980,18 @@ export function ResultsGrid({
                 )}
                 </tbody>
               </table>
+              </div>
+
+              {splitViewOpen && displayed.length > 0 && (
+                <LiveInspectionPane
+                  profile={focusedIndex >= 0 && focusedIndex < displayed.length ? displayed[focusedIndex] : displayed[0]}
+                  isAnalysisView={isAnalysisView}
+                  onValidate={validate}
+                  onReject={(id) => decide(id, "rejected")}
+                  onEdit={(id) => setEditingId(id)}
+                  onClose={toggleSplitView}
+                />
+              )}
             </div>
           )}
 
@@ -2782,13 +4077,15 @@ export function ResultsGrid({
         </div>
       </div>
 
-      {/* Full-field edit drawer -- replaces having all 18 incident fields
+      {/* Full-field edit drawer, replaces having all 18 incident fields
           permanently inline-editable in the table. Reuses IncidentEditPanel
           unchanged (already built for the card view) so there's exactly one
           implementation of "edit an incident field", not a second copy. */}
       {editingId && (() => {
         const editing = displayed.find((r) => r.id === editingId);
         if (!editing) return null;
+        const isSaving = savingId === editing.id;
+        const isUnpublished = isAnalysisView && editing.published === false;
         return (
           <div
             role="dialog"
@@ -2805,9 +4102,16 @@ export function ResultsGrid({
               className="dashboard-card-box"
               style={{ width: "min(640px, 100%)", background: "var(--bg-card)" }}
             >
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
-                <div style={{ fontSize: "13px", fontWeight: 700 }}>
-                  ✏️ Edit incident — {editing.incident?.title || editing.profile_name || editing.username}
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px", borderBottom: "1px solid var(--border-subtle)", paddingBottom: "10px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                  <div style={{ fontSize: "14px", fontWeight: 700 }}>
+                    ✏️ Edit incident — {editing.incident?.title || editing.profile_name || editing.username}
+                  </div>
+                  {isSaving ? (
+                    <span className="drawer-save-indicator saving">⏳ Saving…</span>
+                  ) : (
+                    <span className="drawer-save-indicator saved">● All changes saved</span>
+                  )}
                 </div>
                 <button
                   onClick={() => setEditingId(null)}
@@ -2818,6 +4122,46 @@ export function ResultsGrid({
                 </button>
               </div>
               <IncidentEditPanel r={editing} onSave={(path, value) => saveIncidentField(editing.id, path, value)} drkOptions={drkOptions} onToggleMatch={(field, val) => saveProfileField(editing.id, field, val)} />
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "16px", paddingTop: "12px", borderTop: "1px solid var(--border-subtle)" }}>
+                <div>
+                  {isUnpublished && (
+                    <button
+                      type="button"
+                      disabled={isSaving || analysisWasBlocked(editing)}
+                      onClick={async () => {
+                        await publish(editing.id);
+                        toast.success("Incident published successfully!", { icon: "🚀" });
+                        setEditingId(null);
+                      }}
+                      className="table-btn-publish"
+                      style={{
+                        background: "linear-gradient(135deg, rgba(136, 56, 221, 0.25), rgba(0, 229, 255, 0.2))",
+                        color: "#fff",
+                        border: "1px solid rgba(0, 229, 255, 0.6)",
+                        borderRadius: "8px",
+                        padding: "7px 16px",
+                        fontSize: "13px",
+                        fontWeight: 700,
+                        cursor: "pointer",
+                        boxShadow: "0 0 12px rgba(0, 229, 255, 0.25)",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "6px",
+                      }}
+                    >
+                      <span>🚀</span> Publish Finding
+                    </button>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditingId(null)}
+                  className="btn-cyber-primary"
+                  style={{ width: "auto", padding: "7px 18px", fontSize: "12px", background: "var(--bg-surface)", color: "var(--text-main)", border: "1px solid var(--border-color)" }}
+                >
+                  Done
+                </button>
+              </div>
             </div>
           </div>
         );
@@ -2831,34 +4175,75 @@ export function ResultsGrid({
         }}>
           <div style={{
             background: "var(--bg-surface)", border: "1px solid var(--border-color)",
-            borderRadius: "12px", width: "100%", maxWidth: "500px", padding: "24px"
+            borderRadius: "12px", width: "100%", maxWidth: "620px", padding: "24px"
           }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
               <h3 style={{ margin: 0, fontSize: "17px", fontWeight: 700, color: "var(--text-primary)" }}>
                 🔗 Add profile URL(s) manually
               </h3>
               <button onClick={() => setManualUrlsOpen(false)} style={{ background: "transparent", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: "16px", fontWeight: 700 }}>✕</button>
             </div>
-            <div style={{ fontSize: "11px", color: "var(--text-dim)", marginBottom: "16px" }}>
-              One per line (or comma-separated) -- Facebook, X/Twitter, Instagram, YouTube, Telegram.
-              Each is created as approved and sent straight to analysis, no keyword search needed.
+
+            {/* Sliding Tabs */}
+            <div className="manual-url-tab-rail">
+              <div className={`manual-url-tab-slider ${manualUrlTab === "domain" ? "domain" : ""}`} />
+              <button
+                type="button"
+                className={`manual-url-tab-btn ${manualUrlTab === "individual" ? "active" : ""}`}
+                onClick={() => setManualUrlTab("individual")}
+              >
+                👤 Executive URLs {splitUrls(manualIndividualUrlsText).length > 0 && `(${splitUrls(manualIndividualUrlsText).length})`}
+              </button>
+              <button
+                type="button"
+                className={`manual-url-tab-btn ${manualUrlTab === "domain" ? "active" : ""}`}
+                onClick={() => setManualUrlTab("domain")}
+              >
+                🏷️ Domain URLs {splitUrls(manualDomainUrlsText).length > 0 && `(${splitUrls(manualDomainUrlsText).length})`}
+              </button>
             </div>
-            <textarea
-              className="input-filter"
-              style={{ width: "100%", minHeight: "150px", fontFamily: "var(--font-mono)", fontSize: "12px", marginBottom: "16px" }}
-              placeholder="https://www.facebook.com/profile.php?id=...&#10;https://x.com/handle"
-              value={manualUrlsText}
-              onChange={(e) => setManualUrlsText(e.target.value)}
-              disabled={manualUrlsBusy}
-            />
-            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+
+            <div style={{ fontSize: "11px", color: "var(--text-dim)", marginBottom: "12px" }}>
+              {manualUrlTab === "individual"
+                ? "Enter executive/individual profile URLs (one per line or comma-separated). Automatically classified as Executive impersonation."
+                : "Enter brand/domain profile URLs (one per line or comma-separated). Automatically classified as Domain impersonation."}
+            </div>
+
+            {manualUrlTab === "individual" ? (
+              <textarea
+                className="input-filter"
+                style={{ width: "100%", minHeight: "160px", fontFamily: "var(--font-mono)", fontSize: "12px" }}
+                placeholder="https://x.com/exec-handle&#10;https://www.instagram.com/exec-handle"
+                value={manualIndividualUrlsText}
+                onChange={(e) => setManualIndividualUrlsText(e.target.value)}
+                disabled={manualUrlsBusy}
+              />
+            ) : (
+              <textarea
+                className="input-filter"
+                style={{ width: "100%", minHeight: "160px", fontFamily: "var(--font-mono)", fontSize: "12px" }}
+                placeholder="https://www.facebook.com/profile.php?id=...&#10;https://www.instagram.com/brand-handle"
+                value={manualDomainUrlsText}
+                onChange={(e) => setManualDomainUrlsText(e.target.value)}
+                disabled={manualUrlsBusy}
+              />
+            )}
+
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "16px" }}>
+              <span style={{ fontSize: "11px", color: "var(--text-dim)" }}>
+                Total: {splitUrls(manualIndividualUrlsText).length + splitUrls(manualDomainUrlsText).length} URL(s) to add
+              </span>
               <button
                 className="btn-cyber-primary"
                 style={{ width: "auto", padding: "9px 20px", fontSize: "13px" }}
                 onClick={submitManualUrls}
-                disabled={manualUrlsBusy || !manualUrlsText.trim() || !clientId}
+                disabled={
+                  manualUrlsBusy ||
+                  (!manualIndividualUrlsText.trim() && !manualDomainUrlsText.trim()) ||
+                  !clientId
+                }
               >
-                {manualUrlsBusy ? "Adding…" : "➕ Add & Analyse"}
+                {manualUrlsBusy ? "Adding…" : `➕ Add & Analyse (${splitUrls(manualIndividualUrlsText).length + splitUrls(manualDomainUrlsText).length})`}
               </button>
             </div>
           </div>
@@ -2914,6 +4299,23 @@ export function ResultsGrid({
           </div>
         </div>
       )}
+
+      {diffProfile && (
+        <VisualDiffModal profile={diffProfile} onClose={() => setDiffProfile(null)} />
+      )}
+
+      {shortcutsHelpOpen && (
+        <ShortcutsModal onClose={() => setShortcutsHelpOpen(false)} />
+      )}
+
+      <button
+        type="button"
+        className="floating-shortcuts-btn"
+        onClick={() => setShortcutsHelpOpen(true)}
+        title="View keyboard shortcuts guide (?)"
+      >
+        <span>⌨️</span> Shortcuts <span className="kbd-badge" style={{ fontSize: "10px", padding: "1px 4px" }}>?</span>
+      </button>
     </div>
   );
 }

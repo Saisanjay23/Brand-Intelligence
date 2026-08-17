@@ -5,7 +5,7 @@ bounded to a handful of concurrent slots (`settings.round_robin_slots`) so
 per-client `cron` scheduling (see scheduler_service.py's module docstring).
 
 A manual Sweep/Analyze click on the Home page can still land on a client
-mid-rotation at any time -- that's fine as-is, no coordination needed here:
+mid-rotation at any time, that's fine as-is, no coordination needed here:
 `job_service.JobManager.existing_queued()` coalescing and its per-resource
 locks already make a manual run and a round-robin turn for the same client
 either merge into one job or queue safely behind each other, never both run
@@ -38,19 +38,19 @@ _rotation: list[str] = []
 _cursor = 0
 _rotation_lock = asyncio.Lock()
 
-# True while suspended for want of any usable session anywhere -- exists
+# True while suspended for want of any usable session anywhere, exists
 # purely so "everything is down" fires one incident on the transition
 # rather than one per client for as long as the outage lasts (same pattern
 # as scheduler_service._breaker_open).
 _breaker_open = False
 
 # How many client turns in a row have failed with no successes between them
-# -- across every slot, not per-client. A client-specific problem (its own
+#, across every slot, not per-client. A client-specific problem (its own
 # keywords/session) doesn't climb this; something breaking the underlying
 # job-worker spawn mechanism itself does, and that failure mode showed up
 # in practice: dozens of job-worker processes created back to back with no
 # pacing exhausted a Windows multiprocessing resource (pipe/semaphore
-# handles), after which every subsequent spawn failed within ~1 second --
+# handles), after which every subsequent spawn failed within ~1 second
 # and with no backoff, the engine hammered that failure in a ~1.5s loop
 # instead of giving the system a chance to recover. This counter drives an
 # exponential backoff per slot on consecutive failure, and trips one
@@ -62,12 +62,12 @@ FAILURE_INCIDENT_THRESHOLD = 5
 
 # Per-platform "no usable session" notification debounce. Deleting a
 # session (or every session in a pool going stale) does NOT go through
-# sessions/manager.py::mark_session_failed at all -- that only fires from a
+# sessions/manager.py::mark_session_failed at all; that only fires from a
 # live scrape hitting a real error mid-job, which never happens for a
 # platform with zero sessions (it's silently excluded from `ready` before a
 # job would ever try it). And the "all platforms down" breaker above only
 # fires when EVERY platform is unusable, so one platform quietly losing its
-# only session while the others stay healthy was previously invisible --
+# only session while the others stay healthy was previously invisible:
 # no incident, no email, ever. This is the fix: every pre-flight check
 # below reports each individually-unavailable platform here, debounced per
 # platform (not relying solely on alerting_service's own 1h email debounce,
@@ -83,11 +83,11 @@ _PLATFORM_STATE_MESSAGES = {
 }
 
 # Exponential moving average of seconds spent per client turn, across all
-# slots -- feeds the Scheduler tab's approximate "next run" ETA. Seeded at a
+# slots, feeds the Scheduler tab's approximate "next run" ETA. Seeded at a
 # plausible guess so the very first estimate isn't wildly off.
 _avg_duration_s = 90.0
 
-# What each slot is doing right now, keyed by slot index -- surfaced on the
+# What each slot is doing right now, keyed by slot index, surfaced on the
 # Scheduler tab so an admin can see the engine is actually alive and what
 # it's touching, not just a spinner.
 _slot_state: dict[int, dict] = {}
@@ -99,14 +99,14 @@ def _now_iso() -> str:
 
 async def notify_unavailable_platforms(ready: list[str], unavailable: dict[str, str]) -> None:
     """One debounced incident (and, via incident_service, one debounced
-    email) per platform that currently has no usable session -- whether or
+    email) per platform that currently has no usable session, whether or
     not OTHER platforms are still fine. See the module-level comment above
     _platform_unavailable_last_notified for why this exists separately from
     the "every platform is down" breaker below.
 
     Public, and called from BOTH this engine's own per-client pre-flight
     check and scheduler_service.catch_up_analysis's independent 20-minute
-    sweep -- the debounce state above needs to be shared so the two don't
+    sweep; the debounce state above needs to be shared so the two don't
     each think they're first and double-notify, and catch-up's fixed
     interval is what still catches a platform going dark while this engine
     happens to be paused."""
@@ -153,7 +153,7 @@ async def _next_client_id() -> Optional[str]:
         client_id = _rotation[_cursor]
         _cursor += 1
         if _cursor >= len(_rotation):
-            # end of a lap -- force a fresh client list on the next pull
+            # end of a lap, force a fresh client list on the next pull
             _cursor = 0
             _rotation = []
         return client_id
@@ -195,7 +195,9 @@ async def _process_client(slot: int, client_id: str) -> Optional[str]:
                 f"session ({detail}). Clients are not being scraped. It will resume automatically "
                 "once any platform's session pool recovers.",
             )
-        await clients_db.record_run_result(client_id, "skipped", f"no platform ready ({detail})")
+        await clients_db.record_run_result(
+            client_id, "skipped", f"no platform ready ({detail})", duration_s=time.monotonic() - start,
+        )
         _slot_state[slot] = {"client_id": None, "phase": "idle", "since": _now_iso()}
         return "skipped"
     if _breaker_open:
@@ -207,7 +209,7 @@ async def _process_client(slot: int, client_id: str) -> Optional[str]:
     _slot_state[slot]["phase"] = "discovery"
     try:
         job = job_manager.create(DISCOVERY, client_id, {
-            "keywords": keywords, "tabs": ["people", "pages"], "max_results": 0, "max_seconds": 1800,
+            "keywords": keywords, "tabs": ["people", "pages", "groups"], "max_results": 0, "max_seconds": 1800,
         })
         if job.task:
             await job.task
@@ -240,9 +242,9 @@ async def _process_client(slot: int, client_id: str) -> Optional[str]:
 
     status = "success" if discovery_ok and analysis_ok else "failed"
     note = "" if status == "success" else "discovery or analysis did not complete cleanly -- see Incidents"
-    await clients_db.record_run_result(client_id, status, note)
-
     duration = time.monotonic() - start
+    await clients_db.record_run_result(client_id, status, note, duration_s=duration)
+
     _avg_duration_s = _avg_duration_s * 0.8 + duration * 0.2
     _slot_state[slot] = {"client_id": None, "phase": "idle", "since": _now_iso()}
     return status
@@ -258,7 +260,7 @@ async def _worker(slot: int) -> None:
         try:
             client_id = await _next_client_id()
             if client_id is None:
-                # no clients have keywords set yet -- poll rather than spin
+                # no clients have keywords set yet, poll rather than spin
                 await asyncio.sleep(30)
                 continue
 
@@ -267,13 +269,13 @@ async def _worker(slot: int) -> None:
             raise
         except Exception as e:
             # _process_client already catches everything inside the
-            # discovery/analysis phases it runs -- this is for whatever it
+            # discovery/analysis phases it runs; this is for whatever it
             # DOESN'T guard (a Mongo hiccup in clients_db.try_get/
             # record_run_result, registry.ready_platforms(), etc). Without
             # this try/except, that exception propagates straight out of
             # this coroutine: asyncio.create_task() doesn't restart a dead
             # task on its own, so this slot would silently stop picking up
-            # any client ever again -- one fewer worker, forever, with no
+            # any client ever again, one fewer worker, forever, with no
             # error surfaced anywhere an operator would see it. Catching
             # here, logging, notifying, and looping is what actually makes
             # "the engine runs continuously" true rather than assumed.
@@ -318,7 +320,7 @@ async def _worker(slot: int) -> None:
                     "immediately; check the Incidents list for the underlying error and consider "
                     "restarting the backend process if it doesn't recover on its own.",
                 )
-            # exponential backoff, capped -- gives whatever resource was
+            # exponential backoff, capped, gives whatever resource was
             # exhausted (see the module docstring) real time to free up
             # instead of immediately re-attempting and burning through it
             # again on the very next slot iteration
@@ -329,6 +331,20 @@ async def _worker(slot: int) -> None:
                 log.info(f"round-robin: recovered after {_consecutive_failures} consecutive failure(s)")
             _consecutive_failures = 0
             _failure_incident_open = False
+        elif result == "skipped":
+            # No platform had a usable session for this client, _breaker_open
+            # (above) already logs/alerts once for the whole outage, but
+            # without a pause here the loop still re-checks the NEXT client
+            # immediately, and the one after that, as fast as Mongo will
+            # answer: with everything down, every client in the rotation
+            # skips in a tight loop, burning a full CPU core per slot and
+            # hammering Mongo with `record_run_result` writes for no reason
+            #, there's nothing to do until some session recovers. `failed`
+            # already backs off (loop above); `skipped` needs the same
+            # courtesy, just a flat pause rather than an escalating one,
+            # since "no session ready" isn't a symptom that gets worse the
+            # longer it's ignored the way a spawn-failure storm is.
+            await asyncio.sleep(5)
 
 
 def start() -> None:
@@ -352,7 +368,7 @@ def stop() -> None:
         t.cancel()
     _tasks.clear()
     _slot_state.clear()
-    # a manual pause is a fresh start, not "still recovering" -- don't carry
+    # a manual pause is a fresh start, not "still recovering", don't carry
     # a stale failure streak (or its backoff) into the next Resume
     _consecutive_failures = 0
     _failure_incident_open = False
@@ -370,15 +386,37 @@ def status() -> dict:
         "rotation_size": len(_rotation) or None,
         "current": list(_slot_state.values()),
         "consecutive_failures": _consecutive_failures,
+        # whether THIS process auto-started the engine on boot (see
+        # main.py's lifespan), distinct from `running`, which is the
+        # engine's state right now regardless of how it got there. Lets the
+        # Scheduler tab's toggle show "will auto-start next boot" even
+        # while an admin has it manually paused/resumed in the meantime.
+        "autostart": settings.scheduler_autostart,
     }
+
+
+def set_autostart(enabled: bool) -> bool:
+    """Persists whether the engine should start itself on the NEXT process
+    boot (see main.py's lifespan), does not itself start or stop the
+    engine right now; use POST /scheduler/start|stop for that."""
+    from backend.config.settings import write_env
+
+    write_env("SCHEDULER_AUTOSTART", "true" if enabled else "false")
+    settings.scheduler_autostart = enabled
+    return settings.scheduler_autostart
 
 
 async def client_statuses() -> list[dict]:
     """Every client with keywords set, its last-run fields, and a rough ETA
-    until the round-robin engine reaches it again -- feeds the Scheduler
+    until the round-robin engine reaches it again, feeds the Scheduler
     admin tab. The ETA (rotation distance / slot count * average per-client
-    duration) is an estimate, not a promise -- a client's own runtime and
-    any platform outages both move it around."""
+    duration) is an estimate, not a promise, a client's own runtime and
+    any platform outages both move it around.
+
+    `current_phase` is this client's row in `_slot_state` (see `status()`)
+    merged straight in, keyed by client id; so the Scheduler tab can show
+    "running now" directly on a client's own row instead of needing to
+    cross-reference the separate per-slot `current` list itself."""
     from backend.database.repositories import client_repository as clients_db
 
     clients = [
@@ -387,6 +425,9 @@ async def client_statuses() -> list[dict]:
     ]
     n_slots = len(_tasks) if _running and _tasks else max(1, settings.round_robin_slots)
     rotation_snapshot = list(_rotation)
+    running_now = {
+        s["client_id"]: s for s in _slot_state.values() if s.get("client_id")
+    }
     out = []
     for c in clients:
         eta_seconds: Optional[int] = None
@@ -394,12 +435,17 @@ async def client_statuses() -> list[dict]:
             idx = rotation_snapshot.index(c["client_id"])
             distance = (idx - _cursor) % len(rotation_snapshot)
             eta_seconds = round((distance / n_slots) * _avg_duration_s)
+        running = running_now.get(c["client_id"])
         out.append({
             "client_id": c["client_id"],
             "name": c.get("name") or c["client_id"],
             "last_run_at": c.get("last_run_at"),
             "last_run_status": c.get("last_run_status"),
             "last_run_note": c.get("last_run_note", ""),
+            "last_run_duration_s": c.get("last_run_duration_s"),
+            "run_count": c.get("run_count", 0),
             "eta_seconds": eta_seconds,
+            "current_phase": running["phase"] if running else None,
+            "current_since": running["since"] if running else None,
         })
     return out

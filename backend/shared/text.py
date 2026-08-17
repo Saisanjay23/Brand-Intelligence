@@ -16,13 +16,12 @@ from typing import Any, Iterator, Optional
 from urllib.parse import ParseResult, urlparse
 
 try:
-    from rapidfuzz.fuzz import ratio as _ratio
     from rapidfuzz.fuzz import token_set_ratio as _tsr
     HAVE_RF = True
 except ImportError:
     HAVE_RF = False
 
-# oldest plausible timestamp -- anything before this is not a real post date
+# oldest plausible timestamp, anything before this is not a real post date
 EPOCH_FLOOR = 1075593600
 
 MONTHS = (
@@ -118,7 +117,7 @@ def fmt_created(iso: str) -> str:
 
 
 def parse_normalized_url(url: str, extra_schemes: tuple[str, ...] = ()) -> Optional[ParseResult]:
-    """Strip whitespace/quotes and default to an https:// scheme -- the
+    """Strip whitespace/quotes and default to an https:// scheme; the
     common preamble every platform's own `normalize_url()` builds on before
     applying its own host canonicalization and path formatting. Returns
     None for an empty input, so callers can early-return ""."""
@@ -196,64 +195,3 @@ def name_score(candidate: str, target: str) -> int:
 
     coverage = sum(_covers(t, ta) for t in tb) / len(tb)
     return int(base * coverage)
-
-
-# A handle is long enough to make "one contains the other" meaningful. Below
-# this, containment is noise: official "hp" is a substring of "shopping",
-# which is not an impersonation signal by any reading.
-MIN_CONTAINMENT_LEN = 5
-
-
-def _norm_handle(s: str) -> str:
-    """A platform handle reduced to a comparable core.
-
-    Handles are not display names: they are single tokens whose separators
-    carry no meaning, so `@Adani_Group`, `adani.group` and `adanigroup` are
-    the same handle wearing different punctuation and must compare equal.
-    A full profile URL is accepted too, since that is what an operator
-    pasting from a browser will most often have on the clipboard.
-    """
-    s = (s or "").strip().lower()
-    if "/" in s:
-        # drop scheme + host, keep the last path segment (".../adanigroup")
-        parts = [p for p in s.split("/") if p]
-        s = parts[-1] if parts else ""
-    s = s.split("?")[0].lstrip("@")
-    return re.sub(r"[^a-z0-9]", "", s)
-
-
-def handle_score(candidate: str, official: str) -> int:
-    """0-100 similarity between a discovered profile's handle and the
-    brand's own official handle on that platform.
-
-    Deliberately NOT name_score: that one is tuned for multi-word display
-    names (token sets, word order irrelevant), which is exactly wrong for
-    handles -- "adanigroup" has no tokens to set-compare, and the signal
-    that matters is character-level edit distance (typo-squats) plus
-    containment (decoration).
-
-        adanigroup      vs adanigroup -> 100  (identical)
-        @Adani_Group    vs adanigroup -> 100  (punctuation is not meaning)
-        adanigrouup     vs adanigroup ->  ~95 (typo-squat)
-        adanigroupindia vs adanigroup ->   90 (official handle + decoration)
-        randomperson    vs adanigroup ->  low
-    """
-    a, b = _norm_handle(candidate), _norm_handle(official)
-    if not a or not b:
-        return 0
-    if a == b:
-        return 100
-
-    if HAVE_RF:
-        base = float(_ratio(a, b))
-    else:
-        base = 100 * SequenceMatcher(None, a, b).ratio()
-
-    # "adanigroupofficial" / "officialadanigroup" wrap the real handle in
-    # decoration -- a strong signal that plain edit distance under-rates,
-    # because the added words inflate the distance. Length-gated so a very
-    # short official handle can't match half the platform by coincidence.
-    if min(len(a), len(b)) >= MIN_CONTAINMENT_LEN and (b in a or a in b):
-        base = max(base, 90.0)
-
-    return int(base)

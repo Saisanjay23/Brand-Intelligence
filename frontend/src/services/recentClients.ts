@@ -1,5 +1,5 @@
 // The backend has no "list all clients" route (only upsert-one / get-one-by-
-// id, see backend/api/client_routes.py) -- a client picker has nothing
+// id, see backend/api/client_routes.py), a client picker has nothing
 // server-side to enumerate. This is a purely local, best-effort convenience
 // list of clients this browser has used before, not an authoritative source.
 
@@ -26,7 +26,7 @@ export function rememberClient(client: RecentClient): RecentClient[] {
   try {
     localStorage.setItem(KEY, JSON.stringify(next));
   } catch {
-    // storage unavailable (private mode, quota) -- the list just won't persist
+    // storage unavailable (private mode, quota), the list just won't persist
   }
   return next;
 }

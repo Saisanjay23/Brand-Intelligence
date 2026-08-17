@@ -1,6 +1,6 @@
 """The exception hierarchy every layer raises against.
 
-Engine and db code never imports FastAPI -- it raises one of these plain
+Engine and db code never imports FastAPI; it raises one of these plain
 exceptions, and the one handler registered in main.py turns it into
 FastAPI's own default error shape, `{"detail": "message"}`, with the right
 status code. No custom envelope: this engine is called internally by a
@@ -29,7 +29,7 @@ class NotFoundError(DomainError):
 
 
 class ConflictError(DomainError):
-    """The request is well-formed but the current state won't allow it --
+    """The request is well-formed but the current state won't allow it,
     e.g. a platform session that isn't ready, a duplicate client id."""
 
     status_code = 409

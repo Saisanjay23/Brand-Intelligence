@@ -18,14 +18,35 @@ DEBOUNCE_SECONDS = 3600  # 1 hour per platform
 
 
 def _build_email(incident: dict) -> EmailMessage:
+    platform_name = incident["platform"].title()
+    is_session_invalid = incident.get("error_type") == "SessionInvalid"
     msg = EmailMessage()
-    msg["Subject"] = f"[Brand Intelligence] Alert: {incident['platform'].title()} Pipeline Incident"
+    # SessionInvalid gets its own, unambiguous subject/opening line; this
+    # is the one incident type that always means the same concrete thing
+    # (discovery/analysis conclusively hit a login or checkpoint wall
+    # instead of the profile it was scraping) and always needs the same
+    # concrete action (paste fresh cookies/credentials for THIS platform),
+    # so it says exactly that instead of the generic "pipeline incident"
+    # framing every other error type shares.
+    if is_session_invalid:
+        msg["Subject"] = f"[Brand Intelligence] Login page detected -- please update the session for {platform_name}"
+    else:
+        msg["Subject"] = f"[Brand Intelligence] Alert: {platform_name} Pipeline Incident"
     msg["From"] = settings.alert_from
     msg["To"] = ", ".join(settings.alert_emails)
     source_file = incident.get("source_file", "")
-    body = (
+    opening = (
+        f"{platform_name}'s saved session was checked while running {incident['kind']} and found to be "
+        f"logged out or challenged -- the scraper landed on a login/checkpoint page instead of the profile "
+        f"it was reading. This account is now paused for {platform_name} until the session is replaced.\n\n"
+        f"Please update the session for {platform_name} (paste fresh cookies under Sessions) before the "
+        f"next run.\n\n"
+        if is_session_invalid else
         f"An incident occurred in the '{incident['platform']}' {incident['kind']} pipeline.\n\n"
-        f"Scope: {incident['scope']}\n"
+    )
+    body = (
+        opening
+        + f"Scope: {incident['scope']}\n"
         f"Job ID: {incident['job_id']}\n"
         f"Target URL: {incident.get('url', '')}\n\n"
         f"--- Error Details ---\n"
@@ -87,7 +108,7 @@ async def notify_incident(incident: dict) -> None:
 
 
 def send_test_email() -> tuple[bool, str]:
-    """Synchronous on purpose -- called from an admin "Send test email"
+    """Synchronous on purpose, called from an admin "Send test email"
     button, which wants to know right away whether it worked, not a
     fire-and-forget best-effort like the real alert path. Returns
     (sent, detail) so the Mail settings UI can show the actual SMTP error

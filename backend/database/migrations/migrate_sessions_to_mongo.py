@@ -1,7 +1,7 @@
 """One-off migration: `session/<platform>.json` cookie pool files -> the
 `sessions` collection in the current single `brand_intel` Mongo database.
 
-Read-only against the files -- nothing on disk is modified or deleted.
+Read-only against the files, nothing on disk is modified or deleted.
 Telegram's `.session` blob is NOT touched: it stays a file by design
 (Telethon owns that format; see `platforms/registry.py`'s `session_blob`
 field).
@@ -10,7 +10,7 @@ Idempotent: skips any (platform, cookie names) combination that already
 matches an existing pooled session's cookie names, rather than blindly
 appending a duplicate on every run.
 
-Never logs a cookie value -- only counts and session identifiers. This
+Never logs a cookie value, only counts and session identifiers. This
 migrates live credentials; treat its output review the same way you would
 a credentials file.
 

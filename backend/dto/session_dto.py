@@ -12,8 +12,23 @@ class CookiesIn(BaseModel):
     identifier: str = ""
 
 
+class CredentialsIn(BaseModel):
+    identifier: str = ""
+    username: str
+    password: str
+    two_factor_secret: str = ""
+    proxy: Optional[str] = None
+
+
 class ApiKeyIn(BaseModel):
     key: str
+    identifier: str = ""
+
+
+class SessionUpdateIn(BaseModel):
+    blob: str = ""
+    api_key: str = ""
+    identifier: Optional[str] = None
 
 
 class LoginIn(BaseModel):
@@ -27,7 +42,7 @@ class ProxyIn(BaseModel):
 
 # Telegram's MTProto login is inherently multi-step (code, then optionally a
 # 2FA password) and cannot reuse LoginIn's single-shot headful-browser shape
-# -- see services/telegram_login_service.py.
+#, see services/telegram_login_service.py.
 class TelegramLoginStart(BaseModel):
     api_id: int
     api_hash: str

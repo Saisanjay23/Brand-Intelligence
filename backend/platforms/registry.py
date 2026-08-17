@@ -1,6 +1,6 @@
 """Which platforms exist, and how to load each one's adapter classes.
 
-Static catalog plus lazy class loading only -- no Mongo, no filesystem
+Static catalog plus lazy class loading only, no Mongo, no filesystem
 cookie access itself. Adding a platform is one entry here plus its adapter
 package under `platforms/<name>/`; nothing else changes.
 
@@ -36,10 +36,16 @@ class Platform:
     env_keys: tuple[str, ...] = ()  # credentials a non-cookie platform needs
     session_blob: str = ""  # a non-cookie session file, e.g. MTProto's
     enabled: bool = True
-    # a heads-up for the analyst/ops dashboard about *inherent* fragility --
+    # a heads-up for the analyst/ops dashboard about *inherent* fragility,
     # not a failure (that's the incidents module's job), a standing caveat
     # about this platform's own scraping surface. Empty when there is none.
     stability_note: str = ""
+    # True when `analysis_path` exists but doesn't actually extract fields.
+    # Analysis_path itself is always set (every platform needs a Scraper class),
+    # so it can't be used as the "does analysis actually work" signal, this is
+    # the real one, surfaced to the frontend so an analyst sees the caveat
+    # before running analysis, not after it silently produces nothing.
+    analysis_stub: bool = False
 
     @property
     def can_discover(self) -> bool:
@@ -118,15 +124,18 @@ PLATFORMS: dict[str, Platform] = {
         env_keys=("TELEGRAM_API_ID", "TELEGRAM_API_HASH"),
         session_blob="telegram.session",
     ),
-    "linkedin": Platform(
-        id="linkedin",
-        name="LinkedIn",
-        analysis_path="backend.platforms.linkedin.analysis_engine:Scraper",
-        discovery_path="backend.platforms.linkedin.discovery_engine:Discovery",
-        session_path="backend.platforms.linkedin.discovery_engine:LinkedInSession",
-        cookie_domain="linkedin",
-        required_cookies=("li_at",),
-        stability_note="Field scraping not implemented -- discovery only, analysis is a stub.",
+    "tiktok": Platform(
+        id="tiktok",
+        name="TikTok",
+        analysis_path="backend.platforms.tiktok.analysis_engine:Scraper",
+        discovery_path="backend.platforms.tiktok.discovery_engine:Discovery",
+        session_path="backend.platforms.tiktok.discovery_engine:TikTokSession",
+        cookie_domain="tiktok",
+        required_cookies=("sessionid",),
+        stability_note="TikTok has no free public API; this reads its own embedded page "
+        "JSON (field names reverse-engineered, not confirmed against a live session) "
+        "and falls back to a DOM parse when that's stripped or reshaped -- needs live "
+        "verification before being trusted the way the other platforms already are.",
     ),
 }
 
@@ -149,3 +158,19 @@ async def session_state(p: Platform) -> str:
     from backend.sessions import manager as sessions_engine
 
     return await sessions_engine.state_for(p.id)
+
+
+async def ready_platforms() -> tuple[list[str], dict[str, str]]:
+    """(ready platform ids, {unavailable id: state}) across every enabled
+    platform, shared by anything that needs to gate a sweep on "is at
+    least one platform usable" without silently dropping why the others
+    weren't (the analysis catch-up sweep and the round-robin engine both
+    need exactly this)."""
+    ready: list[str] = []
+    unavailable: dict[str, str] = {}
+    for platform_id, plat in PLATFORMS.items():
+        if not plat.enabled:
+            continue
+        state = await session_state(plat)
+        (ready.append(platform_id) if state == "ready" else unavailable.setdefault(platform_id, state))
+    return ready, unavailable

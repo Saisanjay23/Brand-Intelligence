@@ -1,6 +1,6 @@
 """Per-platform health, measured from what actually happened.
 
-A platform is not "up" or "down" -- it degrades. Sessions get challenged,
+A platform is not "up" or "down"; it degrades. Sessions get challenged,
 payload shapes drift, a scanner starts returning PARTIAL rows. This records
 the outcome of every profile touched and turns the recent history into one
 number, so a scanner that has quietly stopped working is visible before
@@ -38,7 +38,7 @@ class _PlatformHealth:
 
     @property
     def score(self) -> float:
-        """1.0 healthy, 0 dead. Partials count half -- they are a warning."""
+        """1.0 healthy, 0 dead. Partials count half, they are a warning."""
         if not self.recent:
             return 1.0
         weight = {"ok": 1.0, "partial": 0.5, "bad": 0.0}
@@ -83,10 +83,6 @@ def record(platform: str, status: str, note: str = "") -> None:
     else:
         h.ok += 1
         h.recent.append("ok")
-
-
-def all_platforms() -> list[dict]:
-    return [h.to_dict() for h in _by_platform.values()]
 
 
 def one(platform: str) -> dict:

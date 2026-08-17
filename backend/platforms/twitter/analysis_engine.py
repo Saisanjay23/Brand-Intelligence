@@ -8,14 +8,14 @@ normalization for the analysis entry point, and the browser-drive loop
 (Scraper).
 
 One request does it, usually: visiting a profile fires UserByScreenName, whose
-`legacy` object holds every field the report wants as typed values -- an
+`legacy` object holds every field the report wants as typed values, an
 integer follower count rather than a rendered "154M", and a real join date.
 So most fields never need the DOM, and unlike Facebook the Created Date
 column is filled.
 
 The one field that does fall back to the DOM is last-post date. It comes
 from a SEPARATE query (UserTweets) than the profile one, and that query can
-simply not have landed in the single ~1.2s window this waits for it -- a
+simply not have landed in the single ~1.2s window this waits for it, a
 timing miss, not a parsing failure, confirmed live: two accounts stored with
 no last-post date reproduced fine on a fresh visit. When that happens,
 dom_last_post() reads the same information off the already-rendered
@@ -26,12 +26,10 @@ from __future__ import annotations
 
 import asyncio
 import re
-import sys
-from pathlib import Path
 from urllib.parse import urlparse
 
 from backend.shared.models.row import Row
-from backend.shared.text import fmt_created, name_score, normalized_host, parse_normalized_url
+from backend.shared.text import name_score, normalized_host, parse_normalized_url
 from backend.platforms.twitter.discovery_engine import (RE_CHECKPOINT,
                                                          RE_GONE, RE_LOGIN,
                                                          TWEETS_QUERY,
@@ -73,20 +71,20 @@ def handle_of(url: str) -> str:
     return "" if h.lower() in BAD_SEGMENTS else h
 
 
-# ── DOM last-post fallback ────────────────────────────────────────────
+# DOM last-post fallback
 # latest_post() (discovery_engine.py) reads the UserTweets GraphQL response,
-# and deliberately excludes reposts and pinned tweets -- counting either
+# and deliberately excludes reposts and pinned tweets, counting either
 # would make a dormant account look active. A DOM fallback has to preserve
 # that same filtering, not just grab the newest <time> on the page: verified
 # live on a real account, the single newest tweet CELL on screen was a
 # repost, one day newer than that account's actual last original post.
 # `[data-testid="socialContext"]` is the exact element X renders that
-# repost badge in ("Adani Group reposted") -- excluding any cell that has
+# repost badge in ("Adani Group reposted"), excluding any cell that has
 # one reproduces latest_post()'s scoping.
 #
 # No live example of a currently-pinned tweet was available to confirm its
 # exact socialContext text, so "pinned" is matched defensively (case
-# -insensitive substring) alongside the confirmed "repost" -- an unmatched
+# -insensitive substring) alongside the confirmed "repost", an unmatched
 # pinned tweet would only make this fallback occasionally too generous by
 # one tweet, never wrong in the direction that hides real inactivity.
 JS_TWEET_TIMES = """
@@ -106,7 +104,7 @@ JS_TWEET_TIMES = """
 
 async def dom_last_post(page) -> str:
     """Newest ORGANIC post date read off the already-rendered timeline.
-    '' when nothing usable is on screen -- never a guess."""
+    '' when nothing usable is on screen, never a guess."""
     try:
         cells = await page.evaluate(JS_TWEET_TIMES)
     except Exception:
@@ -131,9 +129,7 @@ class Scraper:
         proxy: dict | None = None,
     ):
         self.a = args
-        self.evidence = Path(args.evidence) if args.evidence else None
-        if self.evidence:
-            self.evidence.mkdir(parents=True, exist_ok=True)
+        self.evidence = args.evidence or None  # GridFS key prefix, not a path
         self.session = TwitterSession(
             args,
             cookies,
@@ -253,7 +249,7 @@ class Scraper:
                 row.mark("last_post", "graphql")
             elif row.posts_seen != "no":
                 # the UserTweets query (captured into `posts` above) missed
-                # its window -- fill() already determined "no posts at all"
+                # its window, fill() already determined "no posts at all"
                 # is not the case (posts_seen != "no"), so read the same
                 # information off the timeline that's already rendered on
                 # screen instead of waiting longer or re-requesting
@@ -314,16 +310,24 @@ class Scraper:
     async def screenshot(self, page, row: Row) -> None:
         if not self.evidence:
             return
-        # DETERMINISTIC filename, no timestamp: re-analysing a profile must
+        # DETERMINISTIC key, no timestamp: re-analysing a profile must
         # overwrite its own previous capture, not add another one. With a
-        # timestamp, a daily re-sweep left one PNG per profile per run on
-        # disk forever, and the profile document only ever pointed at the
-        # newest -- every earlier file was unreachable garbage.
+        # timestamp, a daily re-sweep left one PNG per profile per run in
+        # the store forever, and the profile document only ever pointed at
+        # the newest, every earlier one was unreachable garbage.
         stem = re.sub(r"[^A-Za-z0-9._-]", "_", row.profile_id or "entity")[:60]
-        shot = self.evidence / f"{stem}.png"
+        key = f"{self.evidence}/{stem}.png"
         try:
-            await page.screenshot(path=str(shot), full_page=False)
-            row.screenshot = str(shot)
+            # See Session.wait_for_visible_content: field extraction here
+            # comes from intercepted API responses, which can land well
+            # before the page has visually painted anything, a screenshot
+            # taken right after would capture the loading state, not the
+            # profile.
+            await self.session.wait_for_visible_content(page)
+            data = await page.screenshot(full_page=False)
+            from backend.database.repositories import evidence_repository
+            await evidence_repository.save(key, data)
+            row.screenshot = key
         except Exception:
             pass
 
@@ -341,14 +345,11 @@ class Scraper:
 
     @staticmethod
     def report(i: int, total: int, u: str, row: Row) -> None:
-        print(f"[{i}/{total}] {u}", file=sys.stderr)
-        print(
-            f"    {row.status:<14} name={row.profile_name[:22]:<22} "
-            f"created={fmt_created(row.created_iso) or '-':<10} "
-            f"followers={row.followers if row.followers is not None else '-':<9} "
-            f"active={row.active_yes or '-':<3} "
-            f"risk={row.risk} {row.priority}",
-            file=sys.stderr,
+        from backend.shared.logging import get_logger as _gl
+        _gl("platforms.twitter.analysis").info(
+            f"[{i}/{total}] {u} | {row.status} name={row.profile_name[:22]} "
+            f"followers={row.followers if row.followers is not None else '-'} "
+            f"active={row.active_yes or '-'} risk={row.risk} {row.priority}"
         )
 
     async def run(self, jobs: list[tuple[str, str, str]]) -> list[Row]:
@@ -358,8 +359,9 @@ class Scraper:
             rows.append(row)
             self.report(i, len(jobs), u, row)
             if row.status == "CHECKPOINT" and not getattr(self.a, "keep_going", False):
-                print(
-                    "\nCHECKPOINT -- aborting to protect the session.", file=sys.stderr
+                from backend.shared.logging import get_logger as _gl
+                _gl("platforms.twitter.analysis").warning(
+                    "CHECKPOINT -- aborting to protect the session."
                 )
                 break
             if i < len(jobs):

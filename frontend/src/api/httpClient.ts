@@ -1,8 +1,8 @@
 // Shared low-level HTTP plumbing every api/*Api.ts module builds on: where
 // the backend lives, and the fetch/error-shape boilerplate every call needs.
 //
-// No Authorization header is attached today -- this backend has no auth
-// layer (see backend/docs/adr/0005-no-auth-layer.md) -- but this is the one
+// No Authorization header is attached today, this backend has no auth
+// layer (see backend/docs/adr/0005-no-auth-layer.md), but this is the one
 // place it would be added if that ever changes, so every API module picks
 // it up for free instead of each hand-rolling its own fetch wrapper.
 //

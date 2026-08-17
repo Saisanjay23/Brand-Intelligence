@@ -1,6 +1,6 @@
 # Brand Intelligence Engine (headless) -- runtime dependencies
 
-# browser automation (Facebook, X, Instagram, LinkedIn)
+# browser automation (Facebook, X, Instagram)
 playwright>=1.40
 
 # API + service

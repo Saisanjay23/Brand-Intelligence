@@ -1,9 +1,10 @@
-// The app's outer shell -- top nav header + scrollable content area -- split
+// The app's outer shell, top nav header + scrollable content area, split
 // out of App.tsx so routing/state composition (App.tsx) and page chrome
 // (this file) aren't the same component. Renders identical markup to what
 // App.tsx used to build inline; no behavior change.
 import type { ReactNode } from "react";
 import { Header, type ViewPage } from "../components/Header";
+import type { Client } from "../api/types";
 import type { RecentClient } from "../services/recentClients";
 
 interface Props {
@@ -12,6 +13,7 @@ interface Props {
   clientId: string;
   clientName: string;
   recentClients: RecentClient[];
+  allClients?: Client[];
   onClient: (clientId: string, name: string) => void;
   onForgetClient: (clientId: string) => void;
   activeJobsCount: number;

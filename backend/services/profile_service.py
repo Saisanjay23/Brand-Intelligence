@@ -1,4 +1,4 @@
-"""Profile business logic -- extracted from the old `routes_profiles.py`
+"""Profile business logic, extracted from the old `routes_profiles.py`
 handler bodies so the controller layer stays request-in/response-out only.
 
 Two response shapes off the same collection, picked by `phase`:
@@ -8,7 +8,7 @@ and a UI renders as cards (profile_name + logo, nothing else).
 onto each validated, scraped profile (a client has one name, fetched
 once per request rather than stored redundantly on every profile).
 
-Approving a profile here is also where analysis gets queued -- the only
+Approving a profile here is also where analysis gets queued, the only
 place in this layer that reaches into the job service directly, since
 that's exactly the "approve -> auto-launch analysis for that profile's
 own platform" behavior described in the plan.
@@ -22,7 +22,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from backend.database.repositories import client_repository as clients_db
+from backend.database.repositories import evidence_repository as evidence_db
 from backend.database.repositories import profile_repository as profiles_db
+from backend.database.repositories import published_incident_repository as published_incidents_db
 from backend.services import incident_publisher
 from backend.services.job_service import ANALYSIS, job_manager
 from backend.shared.errors import NotFoundError
@@ -32,9 +34,10 @@ from backend.validators.profile_validator import validate_patch_fields
 log = get_logger("services.profile_service")
 
 
-def _to_card(doc: dict) -> dict:
+def _to_card(doc: dict, client: Optional[dict] = None) -> dict:
     return {
         "id": doc["id"], "platform": doc.get("platform", ""), "url": doc.get("url", ""),
+        "client_name": client["name"] if client else "",
         "profile_name": doc.get("display_name") or doc.get("username") or "",
         "profile_image_url": doc.get("profile_image_url", ""),
         "has_logo": bool(doc.get("has_logo", False)),
@@ -45,29 +48,24 @@ def _to_card(doc: dict) -> dict:
         "priority": doc.get("priority"),
         "comments": doc.get("comments"),
         "followers": doc.get("followers"),
-        # "profile" | "page" -- only Facebook discovery distinguishes these
+        # "profile" | "page"; only Facebook discovery distinguishes these
         # (see PLATFORM_TABS in discovery_service.py); every other platform
         # only ever sweeps one entity type, so this is blank there.
         "entity_type": doc.get("entity_type", ""),
-        # every keyword sweep that has ever (re)found this profile -- lets
+        # every keyword sweep that has ever (re)found this profile, lets
         # the discovery filter narrow to "only what THIS keyword matched"
         "keywords": doc.get("keywords", []),
         # 0-100 name-vs-keyword closeness, seeded at discovery time and
-        # refined once analysis actually visits the profile -- the card's
+        # refined once analysis actually visits the profile, the card's
         # High/Low match badge
         "name_score": doc.get("name_score"),
-        # 0-100 handle-vs-official-handle closeness. None means the client
-        # has no official handle set for this platform, i.e. NOT MEASURED --
-        # deliberately distinct from 0 ("measured, no resemblance"), so the
-        # UI can say "not configured" rather than implying a clean result.
-        "username_score": doc.get("username_score"),
         # an analyst's own visual confirmation, set via the card's Validate
-        # action -- see EDITABLE in profile_repository.py
+        # action, see EDITABLE in profile_repository.py
         "logo_match": doc.get("logo_match"),
         "username_match": doc.get("username_match"),
         # set only on a profile a rediscovery just bounced from "rejected"
         # back to "pending" (see profile_repository.save()'s reconsideration
-        # branch) -- the old/new value per changed field, so an analyst
+        # branch), the old/new value per changed field, so an analyst
         # seeing a profile reappear in their pending queue can see WHY
         # instead of having to trust it blindly or dig through Mongo.
         # Cleared the moment the analyst makes a fresh decision (patch()
@@ -87,17 +85,32 @@ def _to_full(doc: dict, client: Optional[dict]) -> dict:
         "profile_name": doc.get("display_name") or doc.get("username") or "",
         "profile_image_url": doc.get("profile_image_url", ""),
         "followers": doc.get("followers"), "location": doc.get("location", ""),
+        # "profile" | "page" | "group", set at discovery time and never
+        # blanked by analysis (profile_repository.py's save() only ever
+        # touches fields a caller actually sends), so it's just as
+        # meaningful to filter an analysed row by as a discovery card
+        # this response shape just never carried it before.
+        "entity_type": doc.get("entity_type", ""),
         "last_post_date": doc.get("last_post_date"),
-        # True/False/None -- computed from last_post_date against the
+        # True/False/None, computed from last_post_date against the
         # 6-month industry-standard dormant-account window (see
         # shared/models/scoring.py::ACTIVE_WINDOW_DAYS and
         # shared/models/row.py::Row.active_yes). None means "no last-post
-        # date was ever found," not "confirmed inactive" -- was already
+        # date was ever found," not "confirmed inactive", was already
         # computed and used for risk scoring, just never reached this
         # response before.
         "is_active": doc.get("is_active"),
         "has_logo": bool(doc.get("has_logo", False)),
+        # True/False/None, mirrors is_active's tri-state. None means the
+        # name-match check never ran (not "confirmed no match"). Stored
+        # since analysis (ANALYSIS_FIELDS) but never reached this response
+        # before; the export column layouts need it as an honest Yes/No/blank.
+        "has_name_match": doc.get("has_name_match"),
         "verified": bool(doc.get("verified", False)),
+        # the real/official account this profile is being compared against,
+        # when an analyst has one on hand, blank on the large majority of
+        # profiles, which is expected (see dto/profile_dto.py's ProfilePatch).
+        "target": doc.get("target", ""), "official_feed": doc.get("official_feed", ""),
         "status": doc.get("status", "pending"),
         "phase": doc.get("phase", "analysis"),
         "risk_score": doc.get("risk_score"),
@@ -105,7 +118,7 @@ def _to_full(doc: dict, client: Optional[dict]) -> dict:
         "comments": doc.get("comments"),
         "published": doc.get("published", True),
         "publish_hold_until": doc.get("publish_hold_until"),
-        # Evidence capture -- the screenshot taken while analysis was
+        # Evidence capture, the screenshot taken while analysis was
         # actually looking at the profile. An impersonating account is
         # routinely suspended or deleted before anyone downstream reads the
         # incident, so this is frequently the only surviving proof it
@@ -120,21 +133,18 @@ def _to_full(doc: dict, client: Optional[dict]) -> dict:
         "analysis_status": doc.get("analysis_status", ""),
         "analysis_attempts": doc.get("analysis_attempts", 0),
         "analysed_at": doc.get("analysed_at"),
-        # see _to_card's identical field -- carried onto the analysis record
-        # so the handle signal stays visible after a profile is validated
-        "username_score": doc.get("username_score"),
-        # carried over unchanged from the discovery card's Validate action --
-        # "logo match yes / username match yes" stays visible on the
-        # analysis-phase record too
+        # null until an analyst corrects one in the analysis view; a
+        # validated profile counts as matched on both without anything
+        # being written here (shared/models/scoring.py::resolve_match)
         "logo_match": doc.get("logo_match"),
         "username_match": doc.get("username_match"),
-        # see _to_card's identical field -- reconsideration can bounce an
+        # see _to_card's identical field, reconsideration can bounce an
         # already-analysed (phase=analysis) rejected profile back to
         # pending too, not just a discovery-phase one.
         "changes": doc.get("changes"),
         "changed_at": doc.get("changed_at"),
         # a live preview of the exact record Publish will write to
-        # published_incidents -- editable via PATCH's incident_overrides
+        # published_incidents, editable via PATCH's incident_overrides
         # (see profile_repository.EDITABLE) before the analyst actually
         # publishes. None when the client record is gone (nothing to
         # compute domain/orgId/assetName from).
@@ -156,70 +166,57 @@ async def list_profiles(
     include_held: bool = False, keyword: Optional[str] = None,
     entity_type: Optional[str] = None, priority: Optional[str] = None,
     match_level: Optional[str] = None, keyword_match_type: Optional[str] = None,
-    search: Optional[str] = None,
+    search: Optional[str] = None, published: Optional[bool] = None,
 ) -> dict:
     # `keyword_match_type` classifies against the CLIENT's own configured
     # keyword lists, so the client record has to be loaded before the query
     # rather than after it (the analysis branch below needs it anyway).
-    client = None
-    if keyword_match_type or phase == profiles_db.PHASE_ANALYSIS:
-        client = await clients_db.try_get(client_id)
+    # Also always loaded now for `client_name` on every card/row, an
+    # export needs the client's display name for its filename regardless
+    # of phase, and this is one cheap lookup shared by the whole page.
+    client = await clients_db.try_get(client_id)
 
     docs, total, counts = await profiles_db.find(
         client_id, platform=platform, status=status, phase=phase, limit=limit, offset=offset,
         include_held=include_held, keyword=keyword, entity_type=entity_type,
         priority=priority, match_level=match_level, keyword_match_type=keyword_match_type,
-        search=search, client_keywords=client,
+        search=search, client_keywords=client, published=published,
     )
     if phase == profiles_db.PHASE_ANALYSIS:
         items = [_to_full(d, client) for d in docs]
     else:
-        items = [_to_card(d) for d in docs]
+        items = [_to_card(d, client) for d in docs]
     return {"items": items, "total": total, "counts": counts, "limit": limit, "offset": offset}
 
 
-async def screenshot_path(profile_id: str) -> tuple[str, str]:
-    """(absolute path, download filename) for a profile's evidence capture.
+async def screenshot_path(profile_id: str) -> tuple[bytes, str]:
+    """(PNG bytes, download filename) for a profile's evidence capture.
 
-    The stored value is deliberately relative to `settings.evidence_path`,
-    and this is the only place it is ever resolved back to a real path. The
-    containment check is not a formality: the stored string reaches Mongo
-    from scraping code, and joining an unvalidated relative path onto a root
-    is exactly how `../../etc/passwd` becomes a file read.
+    The stored value is the exact GridFS key the analysis engine wrote the
+    capture under (see database/repositories/evidence_repository.py), a
+    lookup key, not a filesystem path, so there is no root to escape and
+    nothing to contain; an unrecognised/tampered key is simply a miss.
     """
-    from backend.config.settings import settings
+    from backend.database.repositories import evidence_repository
 
     doc = await profiles_db.get_by_id(profile_id)
     if doc is None:
         raise NotFoundError(f"profile {profile_id!r} not found")
-    rel = (doc.get("screenshot") or "").strip()
-    if not rel:
+    key = (doc.get("screenshot") or "").strip()
+    if not key:
         raise NotFoundError(f"profile {profile_id!r} has no evidence screenshot")
 
-    root = settings.evidence_path.resolve()
-    try:
-        target = (root / rel).resolve()
-        target.relative_to(root)
-    except (ValueError, OSError):
-        log.warning(f"profile {profile_id}: screenshot path {rel!r} escapes the evidence root -- refusing")
-        raise NotFoundError(f"profile {profile_id!r} has no readable evidence screenshot")
-    if not target.is_file():
-        # the document points at a capture that is no longer on disk (volume
-        # replaced, evidence pruned) -- a 404 with a clear reason, not a 500
-        raise NotFoundError(f"profile {profile_id!r} evidence file is missing from the evidence store")
+    data = await evidence_repository.read(key)
+    if data is None:
+        # the document points at a capture that is no longer in the store
+        # (pruned, or predates this evidence key existing), a 404 with a
+        # clear reason, not a 500
+        raise NotFoundError(f"profile {profile_id!r} evidence capture is missing from the evidence store")
 
     platform = doc.get("platform", "profile")
     name = doc.get("display_name") or doc.get("username") or doc.get("entity_id") or profile_id
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", f"{platform}_{name}")[:80]
-    return str(target), f"{safe}.png"
-
-
-async def stats(client_id: str, platform: Optional[str] = None) -> dict:
-    """One aggregate query the dashboard can call instead of firing five-plus
-    separate `list_profiles` calls (one per status, one per platform) just to
-    show summary counts -- see `profiles_db.stats`, which was already
-    implemented but had no route exposing it."""
-    return await profiles_db.stats(client_id, platform)
+    return data, f"{safe}.png"
 
 
 async def coverage(client_id: str, platform: Optional[str] = None) -> dict:
@@ -270,13 +267,14 @@ async def get_profile(profile_id: str) -> dict:
 
 # host -> platform id, for auto-detecting which scraper a hand-typed URL
 # belongs to. Deliberately the same platform id vocabulary as
-# backend/platforms/registry.py -- these ARE looked up there right after.
+# backend/platforms/registry.py, these ARE looked up there right after.
 _PLATFORM_HOSTS: dict[str, str] = {
     "facebook.com": "facebook", "fb.com": "facebook", "fb.me": "facebook",
     "twitter.com": "twitter", "x.com": "twitter",
     "instagram.com": "instagram",
     "youtube.com": "youtube", "youtu.be": "youtube",
     "t.me": "telegram", "telegram.me": "telegram",
+    "tiktok.com": "tiktok",
 }
 
 
@@ -310,18 +308,51 @@ def _parse_manual_url(raw: str) -> Optional[tuple[str, str, str]]:
     return platform, url, entity_id
 
 
-async def add_manual_urls(client_id: str, urls: list[str]) -> dict:
+def _best_matching_keyword(haystack: str, candidates: list) -> str:
+    """The first of `candidates` that appears (loosely, non-alphanumerics
+    ignored) inside `haystack`, or "" if none do."""
+    hay = re.sub(r"[^a-z0-9]", "", haystack.lower())
+    for k in candidates:
+        needle = re.sub(r"[^a-z0-9]", "", str(k).lower()) if k else ""
+        if needle and needle in hay:
+            return str(k)
+    return ""
+
+
+async def add_manual_urls(
+    client_id: str,
+    urls: Optional[list[str]] = None,
+    individual_urls: Optional[list[str]] = None,
+    domain_urls: Optional[list[str]] = None,
+) -> dict:
     """An analyst who already has a specific profile URL in hand (a tip, a
     report, a link an earlier sweep never turned up) shouldn't have to
     reverse-engineer a keyword that would make discovery happen to find it
     again. Each URL is created (or matched onto an existing card) straight
-    at status="approved" -- typing the URL in IS the approval decision, so
+    at status="approved", typing the URL in IS the approval decision, so
     it goes to analysis without an extra manual Validate click, exactly
     like any other approved profile (see the same auto-queue this module's
-    patch_profile/bulk_patch_profiles already trigger on approval) -- but
+    patch_profile/bulk_patch_profiles already trigger on approval), but
     never overrides a profile that was already explicitly rejected/approved
     by an earlier decision (see profile_repository.save's initial_status
     guard).
+
+    Three lists, not one, because keyword provenance matters downstream:
+    incident_publisher classifies an incident (person vs brand) from the
+    profile's `keywords` array, and a hand-added profile has no sweep
+    behind it to have populated one. `urls` is the untyped legacy path
+    best-effort fuzzy match against every one of the client's configured
+    keywords, exactly as before. `individual_urls`/`domain_urls` is an
+    analyst saying up front which bucket a URL belongs in (the UI's two
+    separate Executive/Domain boxes), which used to depend entirely on the
+    client happening to have a configured keyword that fuzzy-matched the
+    URL text, a URL for an executive not yet in the client's own
+    name_keywords list had NO way to land in the individual bucket at all,
+    and silently published as Brand Infringement instead. Explicit intent
+    now wins outright: still prefers a real fuzzy match (keeps the
+    downstream keyword-count/coverage stats meaningful when one exists),
+    but falls back to the client's first configured keyword of that type
+    rather than to nothing.
 
     One bad URL never sinks the batch; unsupported/unparseable ones come
     back in `skipped` rather than raising.
@@ -330,33 +361,30 @@ async def add_manual_urls(client_id: str, urls: list[str]) -> dict:
     from backend.services import client_service
 
     client = await client_service.get(client_id)  # 404s if the client was never configured
-    client_keywords = list(client.get("name_keywords") or []) + list(client.get("domain_keywords") or [])
+    individual_keywords = list(client.get("name_keywords") or []) + list(client.get("asset_name_individual_keywords") or [])
+    domain_keywords = list(client.get("domain_keywords") or []) + list(client.get("asset_name_domain_keywords") or [])
+    all_keywords = individual_keywords + domain_keywords
 
     added_by_platform: dict[str, int] = {}
     skipped: list[str] = []
-    for raw in urls:
+
+    async def _add_one(raw: str, forced_candidates: Optional[list] = None) -> None:
         parsed = _parse_manual_url(raw)
         if not parsed or parsed[0] not in registry.PLATFORMS:
             skipped.append(raw)
-            continue
+            return
         platform, url, entity_id = parsed
-        # Attach keyword provenance where the URL itself reveals it. A
-        # hand-added profile has no sweep behind it, so `keywords` was
-        # always empty -- and incident_publisher classifies an incident
-        # (person vs brand) from exactly that array, so EVERY tip-sourced
-        # executive impersonation was published as Brand Infringement.
-        # Matching the client's own keywords against the URL recovers the
-        # provenance when it is there to recover; when it isn't, the
-        # publisher falls back to the scraped display name once analysis
-        # has run.
-        haystack = f"{url} {entity_id}".lower()
-        matched = next(
-            (k for k in client_keywords
-             if k and re.sub(r"[^a-z0-9]", "", str(k).lower()) and
-             re.sub(r"[^a-z0-9]", "", str(k).lower()) in re.sub(r"[^a-z0-9]", "", haystack)),
-            "",
-        )
-        # entity_type ("profile" vs "page") deliberately left unset here --
+        haystack = f"{url} {entity_id}"
+        if forced_candidates is not None:
+            # explicit intent: a real fuzzy match against THIS type's own
+            # keywords first, else the client's first configured keyword of
+            # that type (still classifies correctly even when the URL text
+            # itself doesn't happen to contain it), else blank if the
+            # client has none configured for that type at all.
+            matched = _best_matching_keyword(haystack, forced_candidates) or (forced_candidates[0] if forced_candidates else "")
+        else:
+            matched = _best_matching_keyword(haystack, all_keywords)
+        # entity_type ("profile" vs "page") deliberately left unset here,
         # a URL alone can't reliably tell a Facebook Page from a personal
         # profile, and guessing wrong would misfile it under the People-
         # Only/Pages-Only filter. Blank reads honestly as "unknown", same
@@ -367,6 +395,13 @@ async def add_manual_urls(client_id: str, urls: list[str]) -> dict:
             url=url, entity_id=entity_id, keyword=matched, initial_status="approved",
         )
         added_by_platform[platform] = added_by_platform.get(platform, 0) + 1
+
+    for raw in (urls or []):
+        await _add_one(raw)
+    for raw in (individual_urls or []):
+        await _add_one(raw, individual_keywords)
+    for raw in (domain_urls or []):
+        await _add_one(raw, domain_keywords)
 
     for platform in added_by_platform:
         job_manager.create(ANALYSIS, client_id, {}, platform=platform)
@@ -379,7 +414,7 @@ async def patch_profile(profile_id: str, body_fields: dict) -> dict:
     updated = await profiles_db.patch(profile_id, fields)
     if fields.get("status") == "approved":
         job_manager.create(ANALYSIS, updated["client_id"], {}, platform=updated.get("platform"))
-    # same curated shape GET /profiles/{id} returns -- a PATCH response must
+    # same curated shape GET /profiles/{id} returns, a PATCH response must
     # look like the record it just changed, not a different (raw-document)
     # shape with internal fields and none of _to_full's computed ones
     client = await clients_db.try_get(updated.get("client_id", ""))
@@ -390,7 +425,7 @@ async def bulk_patch_profiles(
     profile_ids: list[str], status: str,
     logo_match: Optional[bool] = None, username_match: Optional[bool] = None,
 ) -> dict:
-    """The bulk counterpart to `patch_profile` -- one request instead of one
+    """The bulk counterpart to `patch_profile`, one request instead of one
     per card, for an analyst triaging hundreds of discovered profiles. One
     bad id never sinks the batch; each is applied independently and
     reported back in `succeeded`/`failed`.
@@ -429,11 +464,37 @@ async def bulk_patch_profiles(
     return {"succeeded": [pid for pid, _ in succeeded], "failed": failed}
 
 
+async def delete_profiles(profile_ids: list[str]) -> dict:
+    """Hard delete, the Live Activity tab's DB browser. Irreversible, so
+    this is deliberately a distinct action from a status patch (reject is
+    reversible via reconsideration, this is not) and never triggered as a
+    side effect of anything else."""
+    deleted = await profiles_db.delete_by_ids(profile_ids)
+    return {"deleted": deleted, "requested": len(profile_ids)}
+
+
+async def delete_for_client_platform(client_id: str, platform: str) -> dict:
+    """The Discovery/Analysis "delete this platform's data" button
+    scoped to exactly one client + platform, covering both phases (same
+    collection, distinguished only by `phase`) plus the GridFS evidence
+    screenshots and published incidents that reference those profiles, so
+    nothing is left dangling behind. Mirrors client_service.delete's
+    cascade, just narrowed to one platform instead of every platform."""
+    deleted_profiles = await profiles_db.delete_for_client_platform(client_id, platform)
+    deleted_evidence = await evidence_db.delete_for_client_platform(client_id, platform)
+    asset_type = incident_publisher._asset_type(platform)
+    deleted_published = await published_incidents_db.delete_for_client_platform(client_id, asset_type)
+    return {
+        "deleted_profiles": deleted_profiles, "deleted_evidence": deleted_evidence,
+        "deleted_published_incidents": deleted_published,
+    }
+
+
 async def publish_profile(profile_id: str) -> dict:
     """An analyst confirming a held analysis result before its hold clears
-    on its own -- see ADR 0007. Publishing is also the one moment this
+    on its own, see ADR 0007. Publishing is also the one moment this
     tool builds/upserts the client-facing incident record for the profile
-    (see services/incident_publisher.py) -- never at analysis time, so the
+    (see services/incident_publisher.py), never at analysis time, so the
     hold review stays meaningful."""
     updated = await profiles_db.publish(profile_id)
     client = await clients_db.try_get(updated.get("client_id", ""))
@@ -452,10 +513,10 @@ _PUBLISH_MODE_WINDOWS = {
 async def publish_all_profiles(client_id: str, platform: Optional[str] = None, mode: str = "all") -> dict:
     """Publishes every analysis-phase profile for this client (optionally
     scoped to one platform, and optionally scoped to a recent analysis
-    window -- "recent"=last 24h, "2days", "week") that isn't already
-    published -- the bulk counterpart to publish_profile, same
+    window, "recent"=last 24h, "2days", "week") that isn't already
+    published, the bulk counterpart to publish_profile, same
     incident-record side effect per profile. The cutoff is always computed
-    here, server-side, from `mode` -- never trusts a client-supplied
+    here, server-side, from `mode`, never trusts a client-supplied
     timestamp."""
     since = None
     window = _PUBLISH_MODE_WINDOWS.get(mode)

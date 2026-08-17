@@ -1,4 +1,4 @@
-// Generic browser download trigger -- no domain knowledge, reusable
+// Generic browser download trigger, no domain knowledge, reusable
 // anywhere a Blob needs to become a saved file.
 export function download(filename: string, content: string, mime: string) {
   const blob = new Blob([content], { type: mime });
@@ -21,7 +21,7 @@ export function downloadBlob(filename: string, blob: Blob) {
 //
 // Cell values here come from scraped, attacker-influenced social-media
 // profile content (an impersonator's own display name, bio, etc), and these
-// exports are analyst-facing takedown reports meant to be opened in Excel --
+// exports are analyst-facing takedown reports meant to be opened in Excel,
 // so a leading =, +, -, or @ is formula-injection, not just a CSV quoting
 // edge case (CWE-1236). Prefixing with a bare `'` neutralizes it in Excel
 // without changing the visible text, same mitigation OWASP recommends.

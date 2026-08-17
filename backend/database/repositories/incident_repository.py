@@ -1,14 +1,13 @@
-"""Incident persistence -- the `incidents` collection, TTL-bounded. Kept in
+"""Incident persistence, the `incidents` collection, TTL-bounded. Kept in
 Mongo rather than memory: unlike the health tracker's rolling window, an
 incident is exactly the kind of thing a person comes back the next day to
-ask "why did last night's run fail" -- losing it on every restart would
+ask "why did last night's run fail", losing it on every restart would
 defeat the point. The TTL still bounds it automatically.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 from backend.database.connection import db
 
@@ -23,21 +22,12 @@ async def record(doc: dict) -> None:
         pass  # the incident log itself must never be why a job fails
 
 
-async def recent(limit: int = 50, platform: Optional[str] = None) -> list[dict]:
-    q = {"platform": platform} if platform else {}
-    out = []
-    async for d in db()[INCIDENTS].find(q).sort("ts", -1).limit(limit):
-        d["id"] = str(d.pop("_id"))
-        out.append(d)
-    return out
-
-
 async def since(ts: datetime) -> list[dict]:
     return await db()[INCIDENTS].find({"ts": {"$gte": ts}}).to_list(length=1000)
 
 
 async def delete_for_client(client_id: str) -> int:
-    """Part of the client-deletion cascade -- only ever removes incidents
+    """Part of the client-deletion cascade, only ever removes incidents
     scoped to this one client; session-check incidents (scope is the
     literal "-- all clients --") are cross-client and untouched."""
     res = await db()[INCIDENTS].delete_many({"scope": client_id})

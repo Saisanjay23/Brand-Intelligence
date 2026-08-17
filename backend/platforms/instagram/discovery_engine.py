@@ -1,5 +1,5 @@
 """Instagram discovery engine: search, crawling, pagination, and profile
-extraction -- keywords in, candidate accounts out.
+extraction, keywords in, candidate accounts out.
 
 Also owns the browser session (login/checkpoint detection) and the payload
 parsing (InstagramUser + friends): both are produced here first and re-used
@@ -29,14 +29,14 @@ from backend.shared.text import iter_dicts
 from backend.stealth.browser import Session
 from backend.platforms.facebook.discovery_engine import Hit
 
-# ─────────────────────────── session / login state ─────────────────────────
+# Session / login state
 
 ME = "https://www.instagram.com/accounts/edit/"
 
 RE_LOGIN = re.compile(
     # The first three are the classic logged-out pages. The rest are the
     # modern "saved login" wall, which is what a dead session actually gets
-    # served now -- it never says "log in" anywhere, which is precisely how
+    # served now, it never says "log in" anywhere, which is precisely how
     # it slipped past this check. Belt and braces alongside expect_path in
     # check_session; neither is trusted alone.
     r"(Log in to Instagram|Sign up to see|Log In\b.*Sign Up|"
@@ -60,14 +60,13 @@ class InstagramSession(Session):
     async def check_session(self) -> bool:  # type: ignore[override]
         # expect_path is what actually catches a dead Instagram session:
         # the logged-out redirect lands on `instagram.com/#`, which trips
-        # none of the negative patterns -- see Session.check_session.
+        # none of the negative patterns, see Session.check_session.
         return await super().check_session(
             ME, RE_LOGIN, RE_CHECKPOINT, expect_path="/accounts/edit",
         )
 
 
-# ───────────────────── payload parsing (profile extraction) ────────────────
-#
+# Payload parsing (profile extraction)
 # Reading Instagram's own API payloads.
 #
 # Instagram serves the web client from a private JSON API rather than a
@@ -77,19 +76,14 @@ class InstagramSession(Session):
 #     /api/v1/fbsearch/topsearch/        search results: users[].user
 #     /graphql/query                     newer builds move profile data here
 #
-# The profile payload is unusually complete -- it carries the newest twelve
+# The profile payload is unusually complete, it carries the newest twelve
 # posts with unix timestamps, so the last-post date needs no extra request.
 #
 # NOT AVAILABLE: account creation date. Instagram exposes it only inside
 # "About this account", which is an authenticated interactive panel, so that
-# column stays blank rather than guessed -- the same call made for Facebook.
+# column stays blank rather than guessed, the same call made for Facebook.
 
 PROFILE_ENDPOINTS = ("users/web_profile_info", "api/v1/users/", "graphql/query")
-SEARCH_ENDPOINTS = (
-    "fbsearch/topsearch",
-    "fbsearch/web/top_serp",
-    "web/search/topsearch",
-)
 
 # Instagram's anonymous avatar
 DEFAULT_PIC_HINTS = (
@@ -112,6 +106,9 @@ class InstagramUser:
     verified: bool = False
     private: bool = False
     last_post_iso: str = ""
+    category: str = ""
+    external_url: str = ""
+    has_highlight_reels: Optional[bool] = None
 
     @property
     def url(self) -> str:
@@ -154,6 +151,14 @@ def user_from_node(node: dict) -> Optional[InstagramUser]:
     if not isinstance(username, str) or not username:
         return None
     pk = node.get("id") or node.get("pk") or node.get("pk_id") or ""
+    category = str(node.get("category_name") or node.get("category") or "").strip()
+    external_url = str(node.get("external_url") or "").strip()
+    if not external_url and isinstance(node.get("bio_links"), list) and node["bio_links"]:
+        first_link = node["bio_links"][0]
+        if isinstance(first_link, dict):
+            external_url = str(first_link.get("url") or "").strip()
+    has_highlight_reels = bool(node.get("has_highlight_reels") or node.get("highlight_reel_count"))
+
     return InstagramUser(
         entity_id=str(pk),
         username=username,
@@ -166,6 +171,9 @@ def user_from_node(node: dict) -> Optional[InstagramUser]:
         verified=bool(node.get("is_verified")),
         private=bool(node.get("is_private")),
         last_post_iso=_latest_post(node),
+        category=category,
+        external_url=external_url,
+        has_highlight_reels=has_highlight_reels,
     )
 
 
@@ -241,10 +249,10 @@ def parse_lines(text: str) -> Iterator[Any]:
                 continue
 
 
-# ───────────────────────────── crawling / pagination ───────────────────────
+# Crawling / pagination
 
 MOBILE_SEARCH_API = "https://i.instagram.com/api/v1/users/search/?q={q}&count={count}"
-# Same private mobile API, one profile by exact username -- analysis_engine.py
+# Same private mobile API, one profile by exact username, analysis_engine.py
 # uses this directly instead of waiting for the browser's own JS to fire it,
 # which it no longer does for a logged-in view of someone else's profile
 # (verified live; see analysis_engine.py's module docstring).
@@ -252,7 +260,7 @@ PROFILE_INFO_API = "https://i.instagram.com/api/v1/users/web_profile_info/?usern
 MOBILE_UA = "Instagram 219.0.0.12.117 Android (29/10; 480dpi; 1080x2151; OnePlus; GM1913; OnePlus7Pro; qcom; en_US; 314660328)"
 
 
-# ── secondary endpoint fallback ───────────────────────────────────────
+# Secondary endpoint fallback
 # The sweep above talks to Instagram's private MOBILE search API. That is
 # fast and field-rich, and it is also a single point of failure: the
 # endpoint answers 403 for a session Instagram dislikes, and a shape change
@@ -262,7 +270,7 @@ MOBILE_UA = "Instagram 219.0.0.12.117 Android (29/10; 480dpi; 1080x2151; OnePlus
 # The fallback is a DIFFERENT endpoint, not the rendered page. A DOM
 # fallback was tried first and rejected on evidence: Instagram's web search
 # is a slide-out panel in an SPA, the /explore/search/keyword/ URL renders
-# no results at all when loaded directly (verified live -- it returns only
+# no results at all when loaded directly (verified live, it returns only
 # nav chrome), and the only "profiles" a DOM scrape found were the logged-in
 # user's own account and a "popular" nav link. A fallback that invents
 # results is worse than no fallback, because those rows reach an analyst's
@@ -276,7 +284,7 @@ WEB_SEARCH_API = "https://www.instagram.com/web/search/topsearch/?query={q}"
 
 async def web_search_users(ctx, keyword: str, timeout_s: int = 45) -> list[InstagramUser]:
     """Query the web client's search endpoint. Only runs when the mobile API
-    produced nothing -- see Discovery.sweep."""
+    produced nothing, see Discovery.sweep."""
     res = await ctx.request.get(
         WEB_SEARCH_API.format(q=quote(keyword)),
         headers={
@@ -403,8 +411,8 @@ class Discovery:
                 out.complete = True
 
             # Private mobile API first (richer), rendered search page second.
-            # The DOM pass only runs when the API produced nothing at all --
-            # a 403, or a payload whose shape we no longer recognise -- so a
+            # The DOM pass only runs when the API produced nothing at all,
+            # a 403, or a payload whose shape we no longer recognise, so a
             # healthy sweep never pays for a browser page.
             chain = await run_strategies(
                 f"instagram/search[{keyword!r}]",
@@ -464,10 +472,3 @@ class Discovery:
         pairs = await asyncio.gather(*(one(i, k) for i, k in enumerate(keywords)))
         return [s for _, s in sorted(pairs, key=lambda p: p[0])]
 
-
-def merge(sweeps: list[Sweep]) -> list[Hit]:
-    seen: dict[str, Hit] = {}
-    for s in sweeps:
-        for h in s.hits:
-            seen.setdefault(h.entity_id or h.url, h)
-    return list(seen.values())

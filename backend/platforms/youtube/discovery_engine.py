@@ -1,4 +1,4 @@
-"""YouTube discovery engine: search, pagination, and channel extraction --
+"""YouTube discovery engine: search, pagination, and channel extraction,
 keywords in, candidate channels out, via the official Data API v3.
 
 Also owns the API client (`YouTubeAPI`) and the default-picture check: both
@@ -18,7 +18,7 @@ units/day:
 So discovery costs ~100 units per 50 results, and analysis is ~2 units per
 channel. Reading the newest upload through playlistItems instead of a dated
 search is a 100x saving, which is why it is done that way. No browser, so no
-session, no pacing and no detection surface -- a sweep stops on an explicit
+session, no pacing and no detection surface, a sweep stops on an explicit
 end of results, a cap, or quota exhaustion, and says which.
 """
 
@@ -48,7 +48,7 @@ RE_DEFAULT_PIC = re.compile(r"/(default|no_avatar|blank)", re.I)
 
 
 class QuotaExceeded(RuntimeError):
-    """The daily allowance is gone -- retrying today will not help."""
+    """The daily allowance is gone, retrying today will not help."""
 
 
 class YouTubeAPI:
@@ -65,8 +65,11 @@ class YouTubeAPI:
                 return json.load(r)
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", "replace")
-            if e.code == 403 and "quota" in body.lower():
+            body_lower = body.lower()
+            if e.code in (403, 429) and ("quota" in body_lower or "quotaexceeded" in body_lower):
                 raise QuotaExceeded("YouTube daily quota exhausted") from e
+            if e.code == 403 and any(tok in body_lower for tok in ("key", "api key", "invalid", "badrequest")):
+                raise RuntimeError(f"youtube {endpoint} 403: API key invalid - {body[:200]}") from e
             raise RuntimeError(f"youtube {endpoint} {e.code}: {body[:200]}") from e
 
     async def get(self, endpoint: str, **params) -> dict:
@@ -78,7 +81,12 @@ class YouTubeAPI:
     async def search_channels(
         self, keyword: str, page_token: str = "", per_page: int = 50
     ) -> tuple[list[dict], str]:
-        """-> (items, next_page_token). 100 quota units per call."""
+        """--> (items, next_page_token). 100 quota units per call.
+
+        Retries up to 3 times with exponential backoff for transient
+        failures (network timeouts, 500s). YouTube's Data API occasionally
+        returns empty items on the first attempt but succeeds on retry.
+        """
         params: dict[str, Any] = {
             "part": "snippet",
             "type": "channel",
@@ -87,8 +95,34 @@ class YouTubeAPI:
         }
         if page_token:
             params["pageToken"] = page_token
-        data = await self.get("search", **params)
-        return data.get("items", []), data.get("nextPageToken", "")
+        last_exc: Optional[Exception] = None
+        for attempt in range(3):
+            try:
+                data = await self.get("search", **params)
+                items = data.get("items", [])
+                token = data.get("nextPageToken", "")
+                # YouTube occasionally returns an empty items list on
+                # transient hiccups even with a 200 status. Retry once
+                # if this is the first page (no page_token) and we got
+                # nothing back.
+                if not items and not page_token and attempt < 2:
+                    log.info(
+                        f"youtube search {keyword!r}: empty response on "
+                        f"attempt {attempt + 1}, retrying"
+                    )
+                    await asyncio.sleep(1.5 * (attempt + 1))
+                    continue
+                return items, token
+            except QuotaExceeded:
+                raise
+            except Exception as e:
+                last_exc = e
+                log.info(
+                    f"youtube search {keyword!r}: {type(e).__name__} on "
+                    f"attempt {attempt + 1}, retrying"
+                )
+                await asyncio.sleep(1.5 * (attempt + 1))
+        raise last_exc or RuntimeError("youtube search_channels failed after retries")
 
     async def channels(self, ids: list[str]) -> list[dict]:
         """Full detail for up to 50 channels in one unit."""
@@ -108,7 +142,7 @@ class YouTubeAPI:
 
         forHandle is exact. Search is only a fallback for legacy /c/ and /user/
         URLs, and its result is accepted ONLY if the channel's own handle or
-        custom URL matches what was asked for -- search happily returns a
+        custom URL matches what was asked for, search happily returns a
         similarly-named channel, and silently reporting the wrong one is worse
         than reporting nothing.
         """
@@ -116,16 +150,20 @@ class YouTubeAPI:
         if not want:
             return None
 
-        for key in ("forHandle", "forUsername"):
+        for params in (
+            {"forHandle": f"@{want}"},
+            {"forHandle": want},
+            {"forUsername": want},
+        ):
             try:
                 data = await self.get(
                     "channels",
                     part="snippet,statistics,contentDetails,brandingSettings",
-                    **{key: handle.lstrip("@")},
+                    **params,
                 )
                 if items := data.get("items"):
                     return items[0]
-            except RuntimeError:
+            except (QuotaExceeded, RuntimeError):
                 continue
 
         items, _ = await self.search_channels(handle, per_page=5)
@@ -137,9 +175,12 @@ class YouTubeAPI:
             if not found:
                 continue
             snip = found[0].get("snippet") or {}
+            branding = (found[0].get("brandingSettings") or {}).get("channel") or {}
             identifiers = {
                 str(snip.get("customUrl") or "").lstrip("@").lower(),
                 str(snip.get("title") or "").lower(),
+                str(snip.get("channelTitle") or "").lower(),
+                str(branding.get("title") or "").lower(),
             }
             if want in identifiers:
                 return found[0]
@@ -147,12 +188,32 @@ class YouTubeAPI:
         return None
 
     async def latest_upload(self, uploads_playlist: str) -> str:
-        """ISO date of the newest upload. 1 unit, versus 100 for a dated search."""
+        """ISO date of the newest upload. 1 unit, versus 100 for a dated search.
+
+        `channels()` always synthesizes an "uploads" playlist id for a
+        channel (the `UC` -> `UU` prefix swap) even when that channel has
+        never actually uploaded anything, the playlist is never
+        materialized server-side in that case, and `playlistItems` 404s on
+        it. Confirmed live: a channel with `statistics.videoCount == "0"`
+        404s here every time. That is a normal, expected shape (a channel
+        genuinely has zero videos), not a real error, analysis_engine.py's
+        `process()` already has an `elif videoCount == "0"` fallback for
+        exactly this case, but it never got a chance to run before this was
+        fixed, because the 404 propagated as an exception straight past it
+        and `one()`'s broad except handler discarded the whole `Row`,
+        including the profile name/subscriber count `fill()` had already
+        successfully populated moments earlier.
+        """
         if not uploads_playlist:
             return ""
-        data = await self.get(
-            "playlistItems", part="snippet", playlistId=uploads_playlist, maxResults=1
-        )
+        try:
+            data = await self.get(
+                "playlistItems", part="snippet", playlistId=uploads_playlist, maxResults=1
+            )
+        except RuntimeError as e:
+            if "404" in str(e):
+                return ""
+            raise
         items = data.get("items") or []
         if not items:
             return ""
@@ -160,7 +221,7 @@ class YouTubeAPI:
         return published[:10]
 
 
-# ───────────────────────────── crawling / pagination ───────────────────────
+# Crawling / pagination
 
 
 @dataclass
@@ -179,7 +240,7 @@ class Sweep:
 
 
 class Discovery:
-    """`ctx` is accepted and unused -- this platform needs no browser."""
+    """`ctx` is accepted and unused, this platform needs no browser."""
 
     def __init__(self, args, ctx=None):
         self.a = args
@@ -187,14 +248,14 @@ class Discovery:
 
     async def stop(self) -> None:
         """No persistent connection to release (plain HTTP calls per
-        request) -- exists so discovery_service.py can call every
+        request), exists so discovery_service.py can call every
         no-session platform's discoverer.stop() uniformly, the same way it
         already calls session.stop() for the browser-based ones. See
         telegram/discovery_engine.py's Discovery.stop() for the platform
         where this actually matters."""
         return None
 
-    async def sweep(self, keyword: str, tab: str = "channels") -> Sweep:
+    async def sweep(self, keyword: str, tab: str = "channels", on_progress: Any = None) -> Sweep:
         out = Sweep(keyword=keyword, tab=tab)
         started = time.time()
         by_id: dict[str, Hit] = {}
@@ -210,17 +271,25 @@ class Discovery:
 
                 items, token = await self.api.search_channels(keyword, token)
                 out.pages += 1
+                # Small delay between paginated API calls to avoid
+                # transient rate limiting from YouTube's backend
+                if token and out.pages > 1:
+                    await asyncio.sleep(0.5)
+                page_hits: list[Hit] = []
                 for i, it in enumerate(items):
                     cid = (it.get("id") or {}).get("channelId", "")
                     snip = it.get("snippet") or {}
                     if not cid or cid in by_id:
                         continue
-                    # search.list's snippet always carries thumbnails -- the
+                    desc = (snip.get("description") or "").strip()
+                    published_at = (snip.get("publishedAt") or "")[:10]
+                    custom_url = (snip.get("customUrl") or "").strip()
+                    # search.list's snippet always carries thumbnails, the
                     # same response the channel came from, no extra request
                     thumbs = snip.get("thumbnails") or {}
                     avatar = (thumbs.get("high") or thumbs.get("medium")
                              or thumbs.get("default") or {}).get("url", "")
-                    by_id[cid] = Hit(
+                    hit = Hit(
                         entity_id=cid,
                         name=(
                             snip.get("channelTitle") or snip.get("title") or ""
@@ -234,6 +303,17 @@ class Discovery:
                         rank=len(by_id) + i,
                         source="api",
                     )
+                    by_id[cid] = hit
+                    page_hits.append(hit)
+
+                if page_hits and on_progress and callable(on_progress):
+                    try:
+                        res = on_progress(len(by_id), out.pages, page_hits)
+                        if asyncio.iscoroutine(res):
+                            await res
+                    except Exception:
+                        pass
+
                 if not token:
                     # the API stopped offering pages: genuinely the end
                     out.stopped, out.complete = "exhausted", True
@@ -249,7 +329,7 @@ class Discovery:
                 # pattern: the loop-break check above (`len(by_id) >=
                 # max_results`) only fires at the top of the NEXT
                 # iteration, after a whole search.list page has already
-                # been absorbed into by_id -- so a configured cap of 5
+                # been absorbed into by_id, so a configured cap of 5
                 # still returned however many channels came back in that
                 # page (YouTube's API commonly pages 50 at a time), with
                 # nothing here to trim it back down.
@@ -258,7 +338,7 @@ class Discovery:
         return out
 
     async def run(self, keywords: list[str], tabs=None) -> list[Sweep]:
-        """API calls are cheap to parallelise, but quota is shared -- keep it modest."""
+        """API calls are cheap to parallelise, but quota is shared, keep it modest."""
         sem = asyncio.Semaphore(max(1, min(self.a.concurrency, 4)))
 
         async def one(i: int, keyword: str) -> tuple[int, Sweep]:

@@ -4,7 +4,7 @@ The single biggest detection signal is rhythm: identical gaps between
 identical actions. Everything here exists to break that up.
 
 Deliberately small. Mouse-jitter and typing simulation are omitted because
-this tool never types or clicks -- it navigates and reads payloads, so faking
+this tool never types or clicks, it navigates and reads payloads, so faking
 input events would add signal, not remove it.
 """
 
@@ -62,5 +62,11 @@ class Human:
         if not self.should_rest():
             return 0.0
         nap = random.uniform(20, 60)
+        await asyncio.sleep(nap)
+        return nap
+
+    async def warmup_delay(self, scale: float = 1.0) -> float:
+        """Initial orientation delay after session launch before commencing sweeps."""
+        nap = random.uniform(1.2, 3.5) * scale
         await asyncio.sleep(nap)
         return nap

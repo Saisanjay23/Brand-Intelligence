@@ -15,7 +15,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-import pytest
 
 from backend.platforms.instagram.analysis_engine import Scraper
 

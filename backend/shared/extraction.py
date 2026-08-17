@@ -1,21 +1,21 @@
 """Ordered extraction strategies with precise failure reporting.
 
-Every scraper here reads the same field more than one way -- the platform's
+Every scraper here reads the same field more than one way, the platform's
 own network payload first, the rendered DOM second, a page-title/regex
-scrape last -- because any one of them breaks on its own schedule. The
+scrape last, because any one of them breaks on its own schedule. The
 logic existed; what did not exist was any record of WHICH way was used, or
 of what exactly went wrong when one stopped working.
 
 That gap is what made a parser break invisible: Facebook rotates a GraphQL
 doc id, the payload branch quietly recognises nothing, the DOM branch finds
-nothing either, and the sweep reports 0 results as a clean success -- the
+nothing either, and the sweep reports 0 results as a clean success; the
 same output as "this client genuinely has no impersonators". By the time
 anyone noticed, days of coverage were gone (see
 services/discovery_service.py's parser-drift canary, which detects the
 symptom; this module reports the cause).
 
 `run_strategies` runs each strategy in order, takes the first that yields
-anything, and -- crucially -- records for every one that failed:
+anything, and, crucially, records for every one that failed:
 
     * which strategy it was,
     * the exception, if it raised,
@@ -25,7 +25,7 @@ anything, and -- crucially -- records for every one that failed:
     * the source text of that line.
 
 A strategy that returns nothing without raising is recorded too, pointed at
-its own definition -- silent drift is the common case, not the exception.
+its own definition, silent drift is the common case, not the exception.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ from backend.shared.logging import get_logger
 
 log = get_logger("shared.extraction")
 
-# Frames outside this package are library internals -- reporting
+# Frames outside this package are library internals, reporting
 # "json/decoder.py line 355" tells nobody which parser to fix.
 _PROJECT_MARKER = "backend"
 
@@ -101,12 +101,12 @@ class ExtractionResult:
 
     @property
     def degraded(self) -> bool:
-        """Succeeded, but not on the preferred method -- the early warning
+        """Succeeded, but not on the preferred method, the early warning
         that the primary path is rotting while output still looks fine."""
         return self.ok and bool(self.failures)
 
     def report(self) -> str:
-        """Multi-line, aimed at whoever has to fix it -- goes into the
+        """Multi-line, aimed at whoever has to fix it, goes into the
         incident body and therefore the alert email."""
         lines = [f.describe() for f in self.failures]
         if self.ok:
@@ -125,7 +125,7 @@ def _repo_relative(path: str) -> str:
 
 
 def _blame_frame(exc: BaseException) -> tuple[str, int, str, str]:
-    """The deepest frame inside this project -- the line to actually change.
+    """The deepest frame inside this project, the line to actually change.
 
     Deliberately not the outermost frame (that is this module) and not the
     innermost frame overall (that is usually inside json/ or playwright/,
@@ -146,7 +146,7 @@ def _blame_frame(exc: BaseException) -> tuple[str, int, str, str]:
 
 def _definition_site(fn: Callable) -> tuple[str, int, str, str]:
     """Where a silently-empty strategy is defined. A strategy that returns
-    nothing never raises, so there is no traceback to blame -- its own
+    nothing never raises, so there is no traceback to blame; its own
     definition is the honest pointer."""
     try:
         target = inspect.unwrap(fn)
@@ -167,7 +167,7 @@ async def run_strategies(
 ) -> ExtractionResult:
     """Run each strategy in order; first one to yield something wins.
 
-    `strategies` is an ordered [(name, callable)] -- by convention the
+    `strategies` is an ordered [(name, callable)], by convention the
     platform's own network payload first, then the DOM, then anything
     cruder. Callables may be sync or async. CancelledError is never
     swallowed: a cancelled job must stay cancelled, not silently fall
@@ -183,7 +183,7 @@ async def run_strategies(
                 value = await value
         except asyncio.CancelledError:
             raise
-        except Exception as e:  # noqa: BLE001 -- deliberately broad: one
+        except Exception as e:  # noqa: BLE001, deliberately broad: one
             # strategy blowing up is exactly the case the next one exists for
             file, line, func, src = _blame_frame(e)
             result.failures.append(StrategyFailure(

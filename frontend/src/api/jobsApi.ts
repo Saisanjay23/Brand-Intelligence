@@ -2,7 +2,7 @@
 import { json, post, url } from "./httpClient";
 import type { Job, JobEvent } from "./types";
 
-// Poll, no WebSocket -- see backend/docs/adr/0002-polling-plus-webhook-over-websocket.md
+// Poll, no WebSocket, see backend/docs/adr/0002-polling-plus-webhook-over-websocket.md
 export const jobsApi = {
   jobs: (clientId = "", limit = 25) =>
     fetch(url(`/jobs?client_id=${encodeURIComponent(clientId)}&limit=${limit}`)).then(

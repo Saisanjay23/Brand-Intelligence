@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from backend.controllers import job_controller
+from backend.shared.pagination import MAX_LIMIT
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
 @router.get("")
-async def list_jobs(client_id: str = "", limit: int = 25) -> dict:
+async def list_jobs(client_id: str = "", limit: int = Query(25, ge=1, le=MAX_LIMIT)) -> dict:
     return await job_controller.list_jobs(client_id, limit)
 
 

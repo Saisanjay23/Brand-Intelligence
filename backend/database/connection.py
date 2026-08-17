@@ -1,7 +1,7 @@
-"""Mongo connection lifecycle -- the one place a Motor client is created.
+"""Mongo connection lifecycle, the one place a Motor client is created.
 
 One database (`settings.mongo_db_name`), collections `clients`, `profiles`,
-`sessions`, `session_health`, `session_item_health`, `incidents` -- see
+`sessions`, `session_health`, `session_item_health`, `incidents`, see
 docs/adr/0004 for why this isn't split one-database-per-platform.
 
 Naive (non-tz-aware) datetimes are used deliberately: PyMongo without

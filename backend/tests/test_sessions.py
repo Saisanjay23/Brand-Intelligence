@@ -57,7 +57,7 @@ def test_pool_summary_counts():
     assert summary == {"total": 3, "available": 1, "dead": 1}
 
 
-# ── graduated quarantine backoff ───────────────────────────────────────────
+# Graduated quarantine backoff
 # One rate-limit used to cost a flat 24h, so a single bad afternoon could
 # quarantine an entire pool until the next day.
 
@@ -92,6 +92,7 @@ def test_public_view_of_non_cookie_items():
         "rate_limited_until": 0.0, "last_used": 0.0, "use_count": 0, "in_use": False,
         "cookie_count": 0, "proxy_host": "",
         "is_api_key": True, "consecutive_failures": 0, "available": True,
+        "dead_since": 0.0, "purge_in_days": None,
     }
 
 

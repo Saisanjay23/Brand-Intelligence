@@ -1,5 +1,5 @@
 """Business-rule validation for profile edits, beyond what the `ProfilePatch`
-DTO's field types already enforce -- extracted from the old
+DTO's field types already enforce, extracted from the old
 `routes_profiles.py` handler so a controller only ever calls a service, and
 a service only ever calls a validator/repository, never re-implements a
 status-whitelist check inline.

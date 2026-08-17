@@ -1,5 +1,5 @@
 """Facebook discovery engine: search, crawling, pagination, profile/URL
-extraction -- keywords in, candidate profile URLs out.
+extraction, keywords in, candidate profile URLs out.
 
 Also owns the browser session (login/checkpoint detection) and URL/identity
 normalization: both are produced here first and re-used by
@@ -14,14 +14,18 @@ COMPLETENESS
     Anything else (a cap, an error) is reported as an incomplete sweep rather
     than being silently treated as the end.
 
-    People and Pages are NOT held to the same completeness bar, on purpose:
-    Pages is a genuinely small, finite set for any real keyword, so it always
-    runs to one of the three signals above -- no result-count cap at all.
-    People is not: a common name keeps serving loosely-matching profiles well
-    past anything an analyst would act on, so it stops at the client's own
-    configured People cap when there is one, and at PEOPLE_MAX_RESULTS (250)
-    when there isn't -- see _people_cap. The constant is the default for an
-    unconfigured sweep, never a ceiling over a configured one.
+    People, Pages, and Groups are all held to the SAME rule, see _tab_cap:
+    a tab runs to one of the three signals above (no result-count cap at
+    all) unless the client has configured an explicit cap for that exact
+    (tab, individual/domain keyword-type) combination, in which case it
+    stops at EXACTLY that number, never fewer and never more (the
+    per-response check in absorb() plus the post-backfill trim near the end
+    of sweep() both enforce this, not just the coarser between-scrolls
+    check). A common name can otherwise keep serving loosely-matching
+    profiles well past anything an analyst would act on. Pages/Groups
+    results tend to run out on their own for any real keyword, but nothing
+    stops an analyst from capping them too if a particular keyword proves
+    noisy there as well.
 
     The cursor also carries `result_ids_shown`: every id Facebook has rendered
     so far. After the sweep those are reconciled against what was extracted,
@@ -29,7 +33,7 @@ COMPLETENESS
     is the guard against a layout change quietly dropping results.
 
 SPEED
-    Pagination is cursor-driven, so pages must be fetched in order -- but the
+    Pagination is cursor-driven, so pages must be fetched in order, but the
     scanner waits on the pagination response itself rather than sleeping, and
     images are never downloaded. Different keywords are independent, so they
     run in parallel tabs.
@@ -50,10 +54,24 @@ from backend.shared.extraction import ExtractionResult, run_strategies
 from backend.shared.text import iter_dicts, normalized_host, parse_normalized_url
 from backend.stealth.browser import Session
 
-# ─────────────────────────── session / login state ─────────────────────────
+# Session / login state
 
 ME = "https://www.facebook.com/me"
 
+# Matches the classic logged-out pages only. It deliberately does NOT try
+# to match Meta's modern account-chooser wall ("Explore the things you
+# love." over a Continue/Use another profile/Create new account card),
+# which is what a dead Facebook session is actually served now, c_user
+# still names the account, so the wall even greets it by name, while xs no
+# longer authenticates anything. That wall says "Log in" only as a
+# two-word link label and none of the three phrases here, which is exactly
+# how it walked past this check (confirmed live 2026-08-12: /me, /settings,
+# /friends, /bookmarks and /notifications all rendered it, and all five
+# were reported healthy). Catching it is FacebookSession.check_session's
+# `deny_paths` job instead, because this regex is not only a session
+# signal, analysis_engine.py and _resolve_missing below both run it over
+# a visited profile page to decide LOGIN_REQUIRED, so a string that also
+# occurs anywhere in logged-in chrome would mark real profiles unreadable.
 RE_LOGIN = re.compile(r"(You must log in|Log in to Facebook|Log In or Sign Up)", re.I)
 RE_CHECKPOINT = re.compile(
     r"(checkpoint|suspicious activity|Confirm Your Identity|"
@@ -81,12 +99,12 @@ RE_GONE = re.compile(
 # own silhouette asset tag). Verified wrong against live data: every
 # confirmed-real custom photo this tool has ever scraped from a SEARCH
 # result (500 sampled, has_logo already True) uses tag `t39.30808-1` or
-# `t1.6435-1`, never `t1.30497-1` -- while a profile-PAGE visit's own
+# `t1.6435-1`, never `t1.30497-1`, while a profile-PAGE visit's own
 # `profilePicLarge`/`profilePicMedium`/`profilePicSmall` fields (see
 # _extract_entity's PICTURE_KEYS) serve that SAME real, already-uploaded
 # photo (same scontent host, same realistic random-id filename, e.g.
 # `453178253_471506465671661_2781666950760530985_n.png`) tagged
-# `t1.30497-1` instead -- just a different CDN rendering-context tag for
+# `t1.30497-1` instead, just a different CDN rendering-context tag for
 # the identical upload, not a marker of "no photo". Matching on it here
 # was silently discarding a real photo URL entirely (see _extract_entity:
 # a match means the uri is never even stored, not just flagged), which is
@@ -100,10 +118,22 @@ RE_DEFAULT_PIC = re.compile(
 
 class FacebookSession(Session):
     async def check_session(self) -> bool:  # type: ignore[override]
-        return await super().check_session(ME, RE_LOGIN, RE_CHECKPOINT)
+        # deny_paths is the positive confirmation, the same job expect_path
+        # does for Instagram/TikTok, /me cannot use expect_path because
+        # its authenticated destination is the account's OWN profile path,
+        # which differs per account. Logged out it lands on the site root
+        # (/me) or on /index.php?next=... (every other authenticated path),
+        # and neither is somewhere a logged-in /me can end up. Without it a
+        # logged-out session reports healthy, every search it then runs is
+        # served a bare 404, and both discovery strategies correctly find
+        # nothing, which reads identically to a GraphQL doc-id rotation
+        # and sends the investigation at the parsers instead of the cookies.
+        return await super().check_session(
+            ME, RE_LOGIN, RE_CHECKPOINT, deny_paths=("/", "/index.php"),
+        )
 
 
-# ───────────────────────────── URL / identity ──────────────────────────────
+# URL / identity
 
 
 def normalize_url(url: str) -> str:
@@ -118,7 +148,7 @@ def normalize_url(url: str) -> str:
 
 
 def profile_id(url: str) -> str:
-    """Returns the numeric id or the vanity slug -- always as a string.
+    """Returns the numeric id or the vanity slug, always as a string.
 
     Normalises first: without a scheme, urlparse puts the host in the path and
     the first segment comes back as "facebook.com".
@@ -127,6 +157,8 @@ def profile_id(url: str) -> str:
     if m := re.search(r"profile\.php\?id=(\d+)", url):
         return m.group(1)
     if m := re.search(r"/people/[^/]+/(\d+)", url):
+        return m.group(1)
+    if m := re.search(r"/groups/(\d+)", url):
         return m.group(1)
     seg = [s for s in urlparse(url).path.split("/") if s]
     if not seg:
@@ -145,11 +177,11 @@ def tab_url(base: str, sk: str) -> str:
 
 
 # fbcdn signs the whole crop range up to `cstp`'s bound, not the specific
-# `ctp` size actually requested -- every profile-picture URL Facebook hands
+# `ctp` size actually requested, every profile-picture URL Facebook hands
 # out (search snippet or profile header alike) asks for a tiny ctp (40-60px)
 # while cstp carries the real uploaded photo's native size. Raising ctp to
 # match cstp, with the same signature tokens untouched, is what actually
-# yields the full-resolution upload rather than the thumbnail -- verified
+# yields the full-resolution upload rather than the thumbnail, verified
 # live: a 50x50 crop (2.8KB) vs. the same URL bumped to 638x638 (33KB), both
 # 200 OK, no new request needed.
 _CTP = re.compile(r"ctp=s\d+x\d+")
@@ -170,16 +202,15 @@ def hd_picture_url(url: str) -> str:
     return url
 
 
-# ───────────────────── search payload parsing (profile extraction) ─────────
-#
+# Search payload parsing (profile extraction)
 # Reading search results out of Facebook's own search payloads.
 #
 # WHY NOT SCRAPE THE LINKS OFF THE PAGE
 #     A search page is full of profile links that are not results: the chat
 #     sidebar, the notification flyout, "people you may know". Harvesting
 #     a[href*=facebook.com] on the People tab returned 52 ids that were not
-#     results at all. Results live in one place -- the edges of the search
-#     connection -- and that is the only place this reads.
+#     results at all. Results live in one place, the edges of the search
+#     connection, and that is the only place this reads.
 #
 # WHERE THE RESULTS ARE
 #     data.serpResponse.results.edges[]
@@ -188,31 +219,28 @@ def hd_picture_url(url: str) -> str:
 #                 id, name, profile_url, url
 
 VIEW_MODELS = {"SearchProfileViewModel"}
-ENTITY_TYPES = {"User": "profile", "Page": "page"}
+# LIVE-CONFIRMED (2026-08-11, real search/groups/?q= response): a Group
+# result rides through the exact same SearchProfileViewModel/.profile
+# shape as User/Page, just with __typename "Group" and profile_url already
+# pointing at /groups/<id>/, no separate parsing branch needed, this
+# dict entry is the whole difference.
+ENTITY_TYPES = {"User": "profile", "Page": "page", "Group": "group"}
 QUERY_NAME = "SearchCometResultsPaginatedResultsQuery"
 
 
 @dataclass
 class Hit:
     """One search result. The universal discovery-result shape every other
-    platform's discovery_engine.py also builds -- see each platform's
+    platform's discovery_engine.py also builds, see each platform's
     `from backend.platforms.facebook.discovery_engine import Hit`."""
 
     entity_id: str
     name: str
     url: str
     avatar: str = ""
-    # whether `avatar` is the entity's own uploaded photo, not the platform's
-    # placeholder/default avatar -- decided per-platform at the point avatar is
-    # set (see each discovery module), never guessed from "an avatar URL exists"
     has_custom_pic: bool = False
-    # a real platform-issued verification badge (blue check / verified icon),
-    # read directly off that platform's own payload/DOM at scrape time --
-    # never inferred from anything else. Defaults False on platforms that
-    # don't parse a verification signal yet, which is correct: "unknown"
-    # must never render as "verified".
     verified: bool = False
-    entity_type: str = "profile"  # profile | page
+    entity_type: str = "profile"  # profile | page | channel | group
     keyword: str = ""
     tab: str = ""
     rank: int = 0
@@ -239,7 +267,7 @@ class PageState:
     """What one pagination response says about how far the results go.
 
     `ids_shown` is what Facebook rendered. `ids_processed` is the wider set the
-    backend considered -- on the Pages tab it held 32 ids while only 30 were
+    backend considered, on the Pages tab it held 32 ids while only 30 were
     ever rendered. Those extras are real entities the search matched but chose
     not to display, so discovery keeps them, tagged separately.
     """
@@ -252,19 +280,31 @@ class PageState:
     end_of_serp: bool = False
 
 
+# the tab is authoritative about what was searched; __typename is not.
+# Pages (and Groups) render through the same profile stack and can report
+# themselves inconsistently depending on which fallback path resolved them
+TAB_KIND = {"people": "profile", "pages": "page", "groups": "group"}
+
+
+def kind_for_tab(tab: str) -> str:
+    return TAB_KIND.get(tab, "profile")
+
+
 def profile_url_for(entity_id: str, kind: str = "profile") -> str:
-    """`profile.php?id=` only ever resolves a personal profile -- visiting it
+    """`profile.php?id=` only ever resolves a personal profile, visiting it
     with a Page's numeric id (Pages use plain https://facebook.com/<id> or
     their vanity slug) lands on Facebook's own "content isn't available"
     page, not the Page. Every candidate this fires for then reads as
     blocked/unresolved forever, permanently showing the bare numeric id as
     its name (see _resolve_missing/sweep()'s missing+unshown backfill,
-    which both route through here) -- this is the actual cause of a
+    which both route through here), this is the actual cause of a
     Facebook Pages-tab card stuck showing its raw id/no photo no matter how
     many times it's re-swept.
     """
     if kind == "page":
         return f"https://www.facebook.com/{entity_id}"
+    if kind == "group":
+        return f"https://www.facebook.com/groups/{entity_id}/"
     return f"https://www.facebook.com/profile.php?id={entity_id}"
 
 
@@ -287,20 +327,24 @@ def iter_results(blob: Any) -> Iterator[Hit]:
             if not (isinstance(eid, str) and eid.isdigit()):
                 continue
             url = prof.get("profile_url") or prof.get("url") or profile_url_for(eid, ENTITY_TYPES.get(prof.get("__typename"), "profile"))
-            # already in this same search response -- no extra request needed.
-            # The search snippet asks for a 40-60px thumbnail; bump it to the
-            # same URL's own signed max (cstp) so cards show the real upload,
-            # not a postage stamp, without discovery costing an extra request.
             pic = prof.get("profile_picture")
             raw_uri = pic.get("uri", "") if isinstance(pic, dict) else ""
             has_custom = bool(raw_uri) and not bool(RE_DEFAULT_PIC.search(raw_uri))
             avatar = hd_picture_url(raw_uri) if has_custom else ""
+
+            verified = bool(
+                prof.get("is_verified")
+                or prof.get("verification_status") == "VERIFIED"
+                or prof.get("is_profile_verified")
+            )
+
             yield Hit(
                 entity_id=eid,
                 name=(prof.get("name") or "").strip(),
                 url=url.split("?__")[0],
                 avatar=avatar,
                 has_custom_pic=has_custom,
+                verified=verified,
                 entity_type=ENTITY_TYPES.get(prof.get("__typename"), "profile"),
                 rank=i,
             )
@@ -311,7 +355,7 @@ def page_state(blob: Any) -> Optional[PageState]:
 
     Facebook puts a page_info on several connections per response (the
     notification dropdown has one too), so this only accepts a cursor that
-    decodes to a search cursor -- one carrying result_ids_shown.
+    decodes to a search cursor, one carrying result_ids_shown.
     """
     for d in iter_dicts(blob):
         pi = d.get("page_info")
@@ -387,27 +431,36 @@ def parse_embedded(texts) -> Iterator[Any]:
             continue
 
 
-# ───────────────────────────── crawling / pagination ───────────────────────
-#
+# Crawling / pagination
 # Searches the People and Pages tabs for each keyword and collects every
 # result Facebook will serve, then hands the URLs to the analysis phase.
 
 TABS = {
     "people": "https://www.facebook.com/search/people/?q={q}",
     "pages": "https://www.facebook.com/search/pages/?q={q}",
+    "groups": "https://www.facebook.com/search/groups/?q={q}",
 }
 
-# People search is effectively unbounded -- Facebook keeps serving pages of
+# People search is effectively unbounded. Facebook keeps serving pages of
 # loosely-matching profiles long past anything useful for a common keyword.
 # A default hard cap was originally enforced, but has been removed to allow
 # endless discovery matching the analyst's manual process, unless explicitly
-# capped by the client configuration.
+# capped by the client configuration. Pages and Groups are naturally small,
+# finite result sets for any real keyword, so the same rule, "capped only
+# when the client configured a number for THIS exact tab", applies to all
+# three identically; see _tab_cap.
 
 
-def _people_cap(opts) -> int:
-    """The effective People-tab result cap for this sweep."""
-    configured = int(getattr(opts, "max_results", 0) or 0)
-    return configured if configured > 0 else 1_000_000_000
+def _tab_cap(opts) -> int:
+    """The result cap this sweep was configured with, resolved per
+    (keyword-type, tab) by discovery_service.py's cap grouping and baked
+    into `opts.max_results` before a discoverer is even constructed (see
+    _sweep_platform's `_options_for`). 0 means uncapped, scrape until one
+    of the three natural completeness signals fires (has_next_page=false,
+    end_of_serp, or no new ids after `--patience` scrolls), for every tab,
+    not just Pages/Groups; People simply tends to hit that point far later
+    for a common name."""
+    return int(getattr(opts, "max_results", 0) or 0)
 
 
 JS_EMBEDDED = (
@@ -418,7 +471,7 @@ JS_EMBEDDED = (
 
 
 async def _notify(on_progress, found_count: int, page_num: int, new_hits: list) -> None:
-    """Best-effort progress callback -- a broken callback must never abort
+    """Best-effort progress callback, a broken callback must never abort
     the scrape itself, so any exception here is swallowed by the caller."""
     if asyncio.iscoroutinefunction(on_progress):
         await on_progress(found_count, page_num, new_hits)
@@ -426,12 +479,12 @@ async def _notify(on_progress, found_count: int, page_num: int, new_hits: list) 
         on_progress(found_count, page_num, new_hits)
 
 
-# ── DOM fallback ──────────────────────────────────────────────────────
+# DOM fallback
 # `iter_results` reads the /api/graphql search response, which is the rich
 # path and the one this engine is built around. Facebook rotates its search
 # doc ids on its own schedule, and when it does the parser recognises no
 # edges, `by_id` stays empty, and the sweep reports 0 hits as a clean
-# success -- silent, and indistinguishable from "nobody matches".
+# success, silent, and indistinguishable from "nobody matches".
 #
 # The id-backfill path already here is NOT a substitute: it works from ids
 # Facebook mentioned in a payload we could still parse, so it fails in the
@@ -459,15 +512,23 @@ JS_DOM_SEARCH_HITS = """
     if (!href) continue;
     if (href.startsWith('/')) href = 'https://www.facebook.com' + href;
     if (!href.includes('facebook.com')) continue;
-    // notification permalinks are profile links wearing tracking params --
+    // notification permalinks are profile links wearing tracking params,
     // real, but not results of this search
     if (/[?&](notif_id|notif_t|ref=notif)/.test(href)) continue;
 
     let id = '', clean = '';
     const byId = href.match(/[?&]id=(\\d+)/);
+    // a real group result is /groups/<numeric id>/ -- two path segments,
+    // checked BEFORE the RESERVED filter below (which exists to reject the
+    // bare /groups directory-nav link, a single segment with no id; this
+    // is the opposite shape and IS a genuine result)
+    const groupMatch = href.match(/facebook\\.com\\/groups\\/(\\d+)\\/?(?:$|[?#])/);
     if (byId) {
       id = byId[1];
       clean = 'https://www.facebook.com/profile.php?id=' + id;
+    } else if (groupMatch) {
+      id = groupMatch[1];
+      clean = 'https://www.facebook.com/groups/' + id + '/';
     } else {
       const m = href.match(/facebook\\.com\\/([A-Za-z0-9.\\-_]+)\\/?(?:$|[?#])/);
       if (!m) continue;
@@ -506,9 +567,9 @@ JS_DOM_SEARCH_HITS = """
 
 async def dom_search_hits(page, keyword: str, tab: str) -> list["Hit"]:
     """Scrape the rendered search results page. Only runs when the GraphQL
-    payload produced nothing at all -- see Discovery.sweep."""
+    payload produced nothing at all, see Discovery.sweep."""
     rows = await page.evaluate(JS_DOM_SEARCH_HITS)
-    kind = "page" if tab == "pages" else "profile"
+    kind = kind_for_tab(tab)
     hits: list[Hit] = []
     for i, r in enumerate(rows or []):
         eid = (r.get("entity_id") or "").strip()
@@ -567,17 +628,17 @@ class Sweep:
 # visit each to recover a name/photo. Deliberately uncapped BY COUNT: a
 # count-based cap here (this used to be `ids[:60]`) silently left every
 # candidate past the cutoff showing whatever incomplete/blank data the
-# search snippet happened to return -- and since `ids` is sorted, it was
+# search snippet happened to return, and since `ids` is sorted, it was
 # the SAME candidates left broken on every single re-sweep, forever, not a
 # random sample. A card must never show something a normal user browsing
 # Facebook wouldn't see.
 #
-# Concurrency, though, deliberately stays LOW -- this is not a plain
+# Concurrency, though, deliberately stays LOW, this is not a plain
 # performance knob, it's request pacing under the same live session as
 # everything else this module does (see settings.py's discovery_concurrency:
 # "the single most important knob for staying unremarkable"). A first pass
 # at this fix raised it 3->8 to compensate for removing the count cap; that
-# was a mistake -- more simultaneous page visits under one account is
+# was a mistake, more simultaneous page visits under one account is
 # exactly the kind of burst activity the rest of this codebase is built to
 # avoid, and it's what let a single sweep's resolve phase run long enough
 # to starve a second keyword's sweep of its own turn (see RESOLVE_TIME_
@@ -591,13 +652,13 @@ RESOLVE_CONCURRENCY = 4
 # only RESOLVE_CONCURRENCY at a time) reconciliation takes. Since a sweep
 # holds one of the (deliberately few) outer discovery-concurrency slots for
 # its entire duration, an unbounded resolve phase could starve a later
-# keyword's sweep of ever getting a turn -- which reads exactly like "the
+# keyword's sweep of ever getting a turn, which reads exactly like "the
 # second keyword was never searched", even though it's actually just queued
 # behind a resolve step still running. This is a genuine best-effort time
 # budget, not a count truncation: whatever hasn't been resolved when it
 # elapses keeps its already-known (possibly blank) data for THIS sweep, the
 # same graceful "blank beats wrong" degradation this function already
-# documents -- and unlike the old count cap, WHICH candidates get skipped
+# documents, and unlike the old count cap, WHICH candidates get skipped
 # isn't the same fixed set every time (real-world timing varies), so a
 # later re-sweep has a genuinely different chance at any of them, not a
 # permanently-doomed subset.
@@ -611,7 +672,7 @@ RESOLVE_TIME_BUDGET_SEC = 180
 # which is true on a fast connection and false on a slow one, on a heavy
 # profile, or when the avatar is lazy-loaded a moment after first paint.
 # Whenever the page needed longer, extraction ran against a half-built DOM
-# with no GraphQL payload for the entity yet -- so the candidate resolved
+# with no GraphQL payload for the entity yet, so the candidate resolved
 # blank and the card kept showing its bare numeric id, even though the same
 # profile opened by hand a second later plainly showed a name and photo.
 # That is exactly the "I can see the logo and username when I open it"
@@ -620,12 +681,12 @@ RESOLVE_TIME_BUDGET_SEC = 180
 # The fix is to wait for the actual signal (JS_PROFILE_READY below) rather
 # than for the clock, with this as the ceiling. Waiting for a real
 # condition also means the common fast case returns as soon as the data is
-# there -- typically quicker than the old flat 1.2s -- so a much more
+# there, typically quicker than the old flat 1.2s, so a much more
 # generous ceiling costs nothing on profiles that load normally.
 RESOLVE_SETTLE_SEC = 12
 
 # The condition that actually matters on a profile page: EITHER the page
-# has committed to an identity (canonical/og:url -- what the identity gate
+# has committed to an identity (canonical/og:url, what the identity gate
 # below reads) OR it has rendered at least one real fbcdn image (what the
 # DOM fallback wants) OR the page has embedded a real application/json
 # payload (what _extract_entity reads). Any one of these means there is
@@ -633,7 +694,7 @@ RESOLVE_SETTLE_SEC = 12
 #
 # Originally AND-chained on canonical being present first. That was wrong,
 # confirmed live: some profile-page renders never set a canonical link or
-# og:url meta tag at all -- not a load failure, just a render variant --
+# og:url meta tag at all, not a load failure, just a render variant,
 # so requiring it meant this wait ALWAYS ran out its full
 # RESOLVE_SETTLE_SEC ceiling on those pages even though the actual data
 # (name, photo, embedded JSON) had rendered in well under a second. With
@@ -659,7 +720,7 @@ JS_PROFILE_READY = """
 }
 """
 
-# Chrome/placeholder strings that are never a real profile's own name --
+# Chrome/placeholder strings that are never a real profile's own name:
 # a login wall, checkpoint, or "Facebook" itself leaking through a loosely
 # matched dict would otherwise read as a plausible (wrong) name. Mirrors
 # analysis_engine.py's own GENERIC_NAMES guard; kept as a separate local
@@ -668,13 +729,13 @@ JS_PROFILE_READY = """
 GENERIC_NAMES = {"facebook", "notifications", "log in to facebook"}
 
 # `profile_picture` is what a SEARCH RESULT snippet uses (see iter_results,
-# a completely different code path from this one -- it reads straight off
+# a completely different code path from this one, it reads straight off
 # a known field position in the search response, never through this
 # function at all, and has never shown any of the problems documented
 # below across 500+ sampled real photos).
 #
 # A profile PAGE's own embedded JSON never carries that key at all in the
-# same shape -- the identical uploaded photo shows up under one of these
+# same shape, the identical uploaded photo shows up under one of these
 # instead when read via _extract_entity during a resolve visit.
 PAGE_CONTEXT_PICTURE_KEYS = (
     "profile_picture", "profilePicLarge", "profilePicMedium", "profilePicSmall",
@@ -686,22 +747,22 @@ PAGE_CONTEXT_PICTURE_KEYS = (
 # testing across three separate would-be defenses (each one individually
 # insufficient, in order of discovery):
 #
-#   1. id-scoping alone -- an id-scoped dict (id == eid) can still be a
+#   1. id-scoping alone, an id-scoped dict (id == eid) can still be a
 #      viewer-relative "RenderedProfile" projection whose picture fields
 #      describe what renders TO THE CURRENT VIEWER, not the profile's own
 #      actual photo.
-#   2. on_target_profile (canonical/og:url identity confirmation) -- some
+#   2. on_target_profile (canonical/og:url identity confirmation), some
 #      profile pages never render a canonical link at all, so this can't
 #      even be evaluated; and even when it IS confirmed correct, the
 #      substitution still happens (see point 4).
 #   3. RenderedProfile structural markers (__isRenderedProfile,
-#      is_viewer_friend, wem_private_sharing_bundle, ...) -- confirmed the
+#      is_viewer_friend, wem_private_sharing_bundle, ...), confirmed the
 #      SAME leaked photo can also appear in a dict with NONE of these
 #      markers present, under the plain `profile_picture` key itself.
 #   4. THE ACTUAL MECHANISM: this is not a scoping bug at all. For a
 #      privacy-restricted profile (is_viewer_friend: false), Facebook's
 #      client substitutes the VIEWER'S OWN photo into EVERY picture field
-#      it renders for that profile -- JSON, DOM, all of them -- because it
+#      it renders for that profile. JSON, DOM, all of them, because it
 #      genuinely cannot show a non-friend the real, restricted photo.
 #      Being on the confirmed-correct page does not prevent this: identity
 #      confirmation and privacy-restriction are orthogonal, and no
@@ -711,13 +772,13 @@ PAGE_CONTEXT_PICTURE_KEYS = (
 # Given no reliably positive signal was found after three real attempts,
 # and every attempt was empirically caught leaking the scraper's own
 # identity onto a candidate (the single worst class of bug this whole
-# codebase is built to prevent -- see the original identity-leak incident
+# codebase is built to prevent, see the original identity-leak incident
 # this module's docstrings already describe), this module follows its own
 # stated rule to its logical conclusion: blank beats wrong, always, no
 # exceptions. A profile-page resolve visit recovers NAME only. Avatar
 # recovery for a candidate that needs it stays exactly what it's always
 # been for a genuinely unresolvable profile: blank, with the UI's own
-# entity_id/"Unnamed Profile" fallback rendering it honestly -- not a
+# entity_id/"Unnamed Profile" fallback rendering it honestly, not a
 # fabricated, wrong photo that reads as a confirmed real impersonator when
 # it's neither.
 TRUST_PAGE_CONTEXT_AVATAR = False
@@ -725,7 +786,7 @@ TRUST_PAGE_CONTEXT_AVATAR = False
 
 def _extract_entity(blobs: list[Any], eid: str, *, trust_page_context_avatar: bool = TRUST_PAGE_CONTEXT_AVATAR) -> tuple[str, str, bool]:
     """The (name, avatar, has_custom_pic) for entity `eid` found across a
-    profile page's own embedded/XHR JSON payloads -- scoped by exact id
+    profile page's own embedded/XHR JSON payloads, scoped by exact id
     match only, the same "an unverifiable id scopes to nothing" rule
     analysis_engine.py's Harvest.scoped() uses, so a page carrying other
     entities (suggested friends, sidebar widgets, sponsored content)
@@ -734,7 +795,7 @@ def _extract_entity(blobs: list[Any], eid: str, *, trust_page_context_avatar: bo
     positive impersonation match (a bogus high name-score badge) rather
     than the honest "no name available" it actually is.
 
-    `trust_page_context_avatar` defaults OFF -- see
+    `trust_page_context_avatar` defaults OFF, see
     PAGE_CONTEXT_PICTURE_KEYS's docstring for why none of these keys are
     considered safe to read from a profile-page visit at all, regardless
     of id-scoping or identity confirmation. Overridable for tests that
@@ -742,7 +803,7 @@ def _extract_entity(blobs: list[Any], eid: str, *, trust_page_context_avatar: bo
     directly, and left in place rather than deleted so a FUTURE reliable
     positive signal can re-enable it without rebuilding the plumbing.
 
-    Pure and synchronous on purpose -- exercised directly in
+    Pure and synchronous on purpose, exercised directly in
     test_facebook_discovery.py against fixture payloads, no browser
     needed to catch a scoping regression.
     """
@@ -806,7 +867,7 @@ def _photo_asset_id(url: str) -> str:
     constant across repeated fetches of the same underlying asset even
     though the surrounding signed query params (oh=, _nc_ohc=, ...) rotate
     per-request. Lets two URLs be compared for "is this the same photo"
-    without false negatives from token rotation -- see _resolve_missing's
+    without false negatives from token rotation, see _resolve_missing's
     self-avatar cross-check, which needs exactly that comparison to catch
     the scraper's own photo leaking onto a candidate."""
     m = _ASSET_ID_RE.search(url or "")
@@ -815,7 +876,7 @@ def _photo_asset_id(url: str) -> str:
 
 def _all_picture_asset_ids(blobs: list[Any]) -> set[str]:
     """Every photo asset id findable anywhere in `blobs`, under any known
-    picture-carrying key, with NO id-scoping -- used only to build the
+    picture-carrying key, with NO id-scoping, used only to build the
     scraper's OWN self-photo fingerprint (see _self_avatar_assets), where
     the point is capturing every representation of "my own photo"
     regardless of which wrapper object it's nested under, not to attribute
@@ -862,7 +923,7 @@ class Discovery:
 
     async def _self_avatar_assets(self) -> set[str]:
         """Every stable asset id (see _photo_asset_id) findable for the
-        scraping account's OWN current avatar -- fetched once per
+        scraping account's OWN current avatar, fetched once per
         _resolve_missing batch, not per candidate. Defense-in-depth
         alongside the on_target_profile gate: confirmed via a real
         incident that the scraper's own photo can leak onto a candidate's
@@ -870,7 +931,7 @@ class Discovery:
         viewer-context UI data where the real, access-restricted photo
         would be). The gate closes the specific mechanism that caused
         that; this closes the door on ANY mechanism producing the same
-        symptom -- any avatar this function would attach is checked
+        symptom, any avatar this function would attach is checked
         against this set before being trusted, regardless of which
         extraction path found it.
 
@@ -916,7 +977,7 @@ class Discovery:
 
     async def _resolve_missing(self, ids: list[str], kind: str) -> dict[str, Hit]:
         """Best-effort name/avatar backfill for ids that reached `sweep()`'s
-        reconciliation step with no edge to read a name/photo from -- one
+        reconciliation step with no edge to read a name/photo from, one
         visit to the profile's own page per id, reading whichever embedded
         payload on THAT page mentions the id's own name/profile_picture
         (see _extract_entity for the id-scoping that keeps this from ever
@@ -924,12 +985,12 @@ class Discovery:
 
         Deliberately not the full multi-fallback cascade
         analysis_engine.py's read_name()/read_pic() use (DOM header,
-        og:title, gql_strs, ...) -- importing from analysis_engine here
+        og:title, gql_strs, ...), importing from analysis_engine here
         would be circular (it already imports FROM this module), and this
         only needs to be good enough to stop a discovery card reading as a
         bare numeric id when the profile plainly has a name and photo. A
         profile this can't resolve (deleted, checkpointed, genuinely
-        nameless) still gets its blank-name Hit from the caller -- nothing
+        nameless) still gets its blank-name Hit from the caller, nothing
         here demotes a candidate, it only enriches one.
         """
         out: dict[str, Hit] = {}
@@ -960,7 +1021,7 @@ class Discovery:
                 blocked = False
                 fallback_name = ""
                 # confirmed False unless the identity gate below proves
-                # otherwise -- gates the page-title name fallback (avatar
+                # otherwise, gates the page-title name fallback (avatar
                 # recovery is off entirely; see PAGE_CONTEXT_PICTURE_KEYS)
                 on_target_profile = False
                 try:
@@ -970,7 +1031,7 @@ class Discovery:
                     )
                     # a login wall / checkpoint / "content isn't available"
                     # page is never a source of THIS profile's real identity
-                    # -- skip extraction entirely rather than risk reading
+                    #, skip extraction entirely rather than risk reading
                     # Facebook's own chrome text as if it were the profile.
                     # Checked FIRST, before the settle wait below: a blocked
                     # page will never satisfy JS_PROFILE_READY, so waiting
@@ -988,7 +1049,7 @@ class Discovery:
                         # hoping (see RESOLVE_SETTLE_SEC). A timeout here is
                         # NOT an error: it just means this profile never
                         # fully rendered in the time allowed, so extraction
-                        # proceeds with whatever did arrive -- same
+                        # proceeds with whatever did arrive, same
                         # best-effort, blank-beats-wrong degradation as
                         # everywhere else in this function.
                         try:
@@ -1006,23 +1067,23 @@ class Discovery:
 
                         # CRITICAL: verify the page we actually landed on IS
                         # eid's profile before trusting either fallback below.
-                        # `page.goto` can silently end up somewhere else --
+                        # `page.goto` can silently end up somewhere else:
                         # an invalid/dead id, a soft redirect that doesn't
-                        # trip RE_GONE's "content isn't available" text --
+                        # trip RE_GONE's "content isn't available" text,
                         # and land on, among other things, the SCRAPING
                         # ACCOUNT'S OWN logged-in home feed. Facebook's own
                         # nav chrome puts that account's avatar and name on
                         # every single page, so an untargeted "grab the
                         # biggest image" / "read the page title" fallback
                         # would confidently misattribute the scraper's own
-                        # identity to a random candidate -- a real profile
+                        # identity to a random candidate, a real profile
                         # picture and name attached to the WRONG entity,
                         # which is worse than a blank card: it reads as a
                         # confirmed, real impersonator when it's neither.
                         # Confirmed via this incident: an analyst's own
                         # Facebook account photo/name showed up on a
                         # discovery card. Both fallbacks are now gated on
-                        # this page provably being eid's own profile -- via
+                        # this page provably being eid's own profile, via
                         # its canonical link / og:url, the same identity
                         # signal _extract_entity's payload-id scoping
                         # relies on, just read from the DOM instead of a
@@ -1040,7 +1101,7 @@ class Discovery:
                         #   1. the canonical itself resolves to eid (a
                         #      personal profile, /profile.php?id=<eid>)
                         #   2. the canonical matches the link eid's OWN
-                        #      payload record publishes for itself -- the
+                        #      payload record publishes for itself, the
                         #      Pages case, where the canonical is a vanity
                         #      slug that never mentions the numeric id
                         #      (see _entity_url_path).
@@ -1054,13 +1115,13 @@ class Discovery:
                         )
 
                         if on_target_profile:
-                            # Name only -- see PAGE_CONTEXT_PICTURE_KEYS's
+                            # Name only, see PAGE_CONTEXT_PICTURE_KEYS's
                             # docstring for why there is deliberately no
                             # DOM-avatar fallback here any more: the exact
                             # same viewer-substitution that makes the JSON
                             # picture keys unsafe applies identically to
                             # whatever image is actually rendered on
-                            # screen, confirmed live -- being on the
+                            # screen, confirmed live, being on the
                             # correct, identity-confirmed page does not
                             # make the DOM avatar trustworthy for a
                             # privacy-restricted profile.
@@ -1089,7 +1150,7 @@ class Discovery:
                 # currently off by default (TRUST_PAGE_CONTEXT_AVATAR):
                 # if a future reliable positive signal re-enables it, this
                 # still needs to be here. If it's the scraper's own
-                # current photo, it is never eid's -- discard it. See
+                # current photo, it is never eid's, discard it. See
                 # _self_avatar_assets's docstring
                 # for the confirmed incident this closes the door on.
                 if avatar and self_avatar_assets and _photo_asset_id(avatar) in self_avatar_assets:
@@ -1105,7 +1166,7 @@ class Discovery:
                 asyncio.gather(*(one(eid) for eid in ids)), timeout=RESOLVE_TIME_BUDGET_SEC,
             )
         except asyncio.TimeoutError:
-            # whatever finished before the deadline is already in `out` --
+            # whatever finished before the deadline is already in `out`:
             # each `one(eid)` writes its own entry the moment it completes,
             # not at the end of the batch, so a timeout here only drops the
             # candidates still in flight, not the ones already resolved
@@ -1122,22 +1183,23 @@ class Discovery:
         processed_ids: set[str] = set()
         state: Optional[PageState] = None
         arrived = asyncio.Event()
-        # the tab is authoritative about what was searched; __typename is not --
-        # Pages render through the profile stack and report themselves as User
-        kind = "page" if tab == "pages" else "profile"
+        kind = kind_for_tab(tab)
 
-        people_cap = _people_cap(self.a)
+        cap = _tab_cap(self.a)
 
         def absorb(blob) -> None:
             nonlocal state
             for hit in iter_results(blob):
-                # capped here, not only in the while-loop's own check below --
+                # capped here, not only in the while-loop's own check below:
                 # one response can carry a whole page's worth of edges at
                 # once, so checking only between scrolls let by_id overshoot
-                # 250 by up to a page's width before the loop noticed, and
+                # the cap by up to a page's width before the loop noticed, and
                 # those extras were already incrementally saved to Mongo by
-                # the time it did
-                if tab == "people" and len(by_id) >= people_cap:
+                # the time it did. Applies to every tab now, not just People.
+                # A configured Pages/Groups cap used to only get the coarse
+                # between-scrolls check below, so it could overshoot by a
+                # whole response's worth of edges plus untrimmed backfill.
+                if cap and len(by_id) >= cap:
                     break
                 if hit.entity_id not in by_id:
                     hit.keyword, hit.tab, hit.entity_type = keyword, tab, kind
@@ -1176,12 +1238,25 @@ class Discovery:
                 )
             except Exception:
                 pass
+
+            # Wait for the first GraphQL search response to arrive before
+            # reading embedded data. Facebook's search results come via XHR
+            # (not embedded in the initial HTML), and on slower connections or
+            # heavier payloads, the response can arrive several seconds after
+            # domcontentloaded fires. Without this wait, by_id is empty when
+            # run_strategies evaluates, producing a false "0 results" report.
+            if not by_id:
+                try:
+                    await asyncio.wait_for(arrived.wait(), timeout=self.a.settle)
+                except asyncio.TimeoutError:
+                    pass
+
             for blob in parse_embedded(await page.evaluate(JS_EMBEDDED)):
                 absorb(blob)
 
             # Insertion order in by_id is discovery order, so slicing from
             # `notified` on each call yields exactly the hits new since the
-            # last notification -- callers (jobs.py) use this to persist and
+            # last notification, callers (jobs.py) use this to persist and
             # show results while a single long sweep is still running,
             # instead of everything landing at once when it finally ends.
             notified = 0
@@ -1194,13 +1269,7 @@ class Discovery:
 
             stalls = 0
             while True:
-                if tab == "people" and len(by_id) >= people_cap:
-                    # name the cap that actually fired, so an incomplete
-                    # sweep can be told apart from one the analyst capped
-                    out.stopped = ("cap:results" if int(getattr(self.a, "max_results", 0) or 0) > 0
-                                   else "cap:results-default")
-                    break
-                if self.a.max_results and len(by_id) >= self.a.max_results:
+                if cap and len(by_id) >= cap:
                     out.stopped = "cap:results"
                     break
                 if self.a.max_pages and out.pages >= self.a.max_pages:
@@ -1256,7 +1325,7 @@ class Discovery:
             missing = rendered_ids - by_id.keys()
 
             # Ids the search BACKEND processed but Facebook deliberately
-            # never rendered (`processed_unicorn_ids` -- see _processed_ids).
+            # never rendered (`processed_unicorn_ids`, see _processed_ids).
             # Counted as telemetry, NEVER turned into result rows.
             #
             # This used to create a candidate row per id, on the reasoning
@@ -1271,7 +1340,7 @@ class Discovery:
             #
             # Every blank/numeric-id card came from here, and not one real
             # rendered result was ever blank. These ids are Facebook's
-            # internal candidate bookkeeping -- entities the search matched
+            # internal candidate bookkeeping, entities the search matched
             # then filtered out before display (deactivated, privacy-
             # restricted, blocked to this viewer, region-limited, deduped,
             # quality-filtered). A human searching Facebook by hand NEVER
@@ -1282,23 +1351,23 @@ class Discovery:
             #
             # The requirement this tool is held to is fidelity: show
             # exactly what a real user sees when they search, in that
-            # order, nothing more. `result_ids_shown` IS that contract --
-            # it is Facebook's own statement of what it put on screen.
+            # order, nothing more. `result_ids_shown` IS that contract.
+            # It is Facebook's own statement of what it put on screen.
             # `processed_unicorn_ids` is explicitly what it chose NOT to.
             # Including the latter doesn't add recall, it adds unverifiable
             # rows an analyst then has to hand-reject (113 of these had
-            # been manually rejected in that same live dataset -- pure
+            # been manually rejected in that same live dataset, pure
             # wasted triage on rows that should never have existed).
             #
             # Kept as a COUNT on the Sweep (out.unshown, surfaced in
-            # summary()) so the gap stays observable -- if Facebook's
+            # summary()) so the gap stays observable, if Facebook's
             # filtering behaviour ever shifts dramatically that number
             # moves, and it's still visible in the run's own summary,
             # just no longer masquerading as results.
             unshown = processed_ids - by_id.keys()
 
             # one cheap profile-page visit per reconciled id to recover a
-            # name/photo -- see _resolve_missing's docstring for why this
+            # name/photo, see _resolve_missing's docstring for why this
             # doesn't reuse analysis_engine.py's full extraction cascade.
             # Best-effort: an id this can't resolve still gets tracked with
             # a blank name below, exactly as it always has.
@@ -1307,7 +1376,7 @@ class Discovery:
                 eid for eid, h in by_id.items()
                 if not h.name or h.name.strip() == eid or h.name.strip().isdigit() or not h.avatar or not h.has_custom_pic
             }
-            # deliberately NOT `| unshown` -- see the comment above: those
+            # deliberately NOT `| unshown`, see the comment above: those
             # ids mostly have no viewable profile behind them, so visiting
             # them spent the resolve budget (and real page loads under the
             # live session) on data that cannot exist, while starving the
@@ -1335,7 +1404,7 @@ class Discovery:
                 by_id[eid] = Hit(
                     entity_id=eid,
                     # blank when unresolved, not a "fb:{id}" placeholder
-                    # string -- the UI's own display_name -> username ->
+                    # string, the UI's own display_name -> username ->
                     # entity_id -> "Unnamed Profile" fallback already
                     # renders this sensibly, and nothing downstream keys
                     # off the old "fb:" prefix anymore
@@ -1350,7 +1419,7 @@ class Discovery:
                 )
             out.backfilled = len(missing)
 
-            # `unshown` is counted, never materialized as rows -- see the
+            # `unshown` is counted, never materialized as rows, see the
             # long comment where it's computed for the measured reasoning.
             out.unshown = len(unshown)
             # Every id in by_id now came from one of exactly TWO places,
@@ -1358,7 +1427,7 @@ class Discovery:
             # this search: a real rendered edge, or a rendered id we failed
             # to parse as an edge (the id-backfill safety net). Ids the
             # backend matched but never displayed are no longer included at
-            # all -- see the `unshown` comment above. An earlier version
+            # all, see the `unshown` comment above. An earlier version
             # dropped any hit with a blank/numeric name, which silently
             # discarded genuine People-tab results Facebook simply returned
             # no name for (privacy-restricted profiles do this often, which
@@ -1372,14 +1441,14 @@ class Discovery:
             # again on a later page is dropped rather than overwriting its
             # earlier (correct) position (see absorb()'s `if hit.entity_id
             # not in by_id`). A plain Python dict preserves insertion order,
-            # so that natural order IS the fix -- sort ONLY by whether a hit
+            # so that natural order IS the fix, sort ONLY by whether a hit
             # is a confirmed real search result vs a best-effort backfill
             # (Facebook never told us where those would have ranked, so
             # they belong after everything it actually confirmed), and let
             # Python's stable sort keep every other tie exactly where it
             # naturally landed.
             #
-            # This used to sort by `h.rank` too, as a tiebreaker -- but rank
+            # This used to sort by `h.rank` too, as a tiebreaker, but rank
             # is reset to 0 for every individual response, not global across
             # the whole sweep, so it silently interleaved a later page's
             # early-ranked results ahead of an earlier page's later-ranked
@@ -1388,7 +1457,7 @@ class Discovery:
             # user sees searching Facebook directly."
             # GraphQL payload first, rendered page second. The DOM pass only
             # runs when the payload produced nothing at all, so a healthy
-            # sweep never pays for it -- and a doc-id rotation degrades to
+            # sweep never pays for it, and a doc-id rotation degrades to
             # "fewer fields per hit" instead of to "zero results, reported
             # as success".
             chain = await run_strategies(
@@ -1404,13 +1473,15 @@ class Discovery:
             out.extraction = chain
             if chain.degraded:
                 out.source = "dom"
-            if tab == "people" and len(out.hits) > people_cap:
+            if cap and len(out.hits) > cap:
                 # the loop's own cap check (above) stops fetching at the limit, but
                 # reconciliation can still add a page's worth of ids Facebook
                 # already told us about (rendered/processed) before the cap
-                # fired -- trim back to the real limit here too, keeping the
-                # graphql-confirmed hits (sorted first) over backfilled ones
-                out.hits = out.hits[:people_cap]
+                # fired, trim back to the real limit here too, keeping the
+                # graphql-confirmed hits (sorted first) over backfilled ones.
+                # Applies to every tab, not just People, see absorb()'s
+                # comment for why Pages/Groups need this exact-N guarantee too.
+                out.hits = out.hits[:cap]
             out.reported_total = state.total_results if state else None
         except Exception as e:
             out.stopped, out.error = "error", f"{type(e).__name__}: {e}"
@@ -1440,11 +1511,3 @@ class Discovery:
         pairs = await asyncio.gather(*(one(i, k, t) for i, (k, t) in enumerate(jobs)))
         return [s for _, s in sorted(pairs, key=lambda p: p[0])]
 
-
-def merge(sweeps: list[Sweep]) -> list[Hit]:
-    """One row per profile, keeping the first keyword/tab that found it."""
-    seen: dict[str, Hit] = {}
-    for s in sweeps:
-        for h in s.hits:
-            seen.setdefault(h.entity_id, h)
-    return list(seen.values())

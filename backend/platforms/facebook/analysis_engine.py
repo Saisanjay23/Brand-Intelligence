@@ -1,5 +1,5 @@
 """Facebook analysis engine: validation, metadata analysis, and impersonation
-signal extraction -- profile URL -> a scored Row.
+signal extraction, profile URL -> a scored Row.
 
 Session/login-checking and URL/identity normalization live in
 discovery_engine.py (imported below) since discovery produces them first;
@@ -13,13 +13,11 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import sys
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from backend.shared.models.row import Row
-from backend.shared.text import (MONTHS, epoch_to_dt, find_ints, fmt_created,
+from backend.shared.text import (MONTHS, epoch_to_dt, find_ints,
                                is_place, iter_dicts, iter_kv, name_score,
                                parse_count, parse_joined)
 from backend.platforms.facebook.discovery_engine import (RE_CHECKPOINT,
@@ -30,12 +28,11 @@ from backend.platforms.facebook.discovery_engine import (RE_CHECKPOINT,
                                                           normalize_url,
                                                           profile_id, tab_url)
 
-# ────────────────────────── field-reading constants ────────────────────────
-#
+# Field-reading constants
 # Keys and patterns used to read fields off a profile.
 #
 # The K_* tuples are GraphQL key names; the RE_* patterns read rendered text.
-# Both drift when Facebook ships changes -- when a field goes blank across
+# Both drift when Facebook ships changes, when a field goes blank across
 # every profile, suspect these first.
 
 MAX_FOLLOWERS = 5_000_000_000
@@ -57,12 +54,12 @@ K_JOINED = (
     "profile_created_time",
 )
 # "created_time" deliberately excluded. Confirmed live, in the raw payload:
-# it belongs to COMMENT objects specifically --
+# it belongs to COMMENT objects specifically:
 # `"comment":{"created_time":...}` under an `XFBCommentTimestampBadge`
-# typename -- not to posts. `creation_time` (kept) is confirmed genuinely
+# typename, not to posts. `creation_time` (kept) is confirmed genuinely
 # post-scoped in the same capture: it appears alongside the post's own
 # `post_id` field. See read_last_post()/_post_stamps() below for the fuller
-# fix -- a key name match alone (even "creation_time") isn't proof of a
+# fix, a key name match alone (even "creation_time") isn't proof of a
 # real post; _post_stamps() additionally requires the post_id sibling.
 K_POST_TIME = ("publish_time", "creation_time", "publish_time_ts")
 K_LOCATION = (
@@ -93,7 +90,7 @@ RE_CHIP = re.compile(
     re.I,
 )
 # Anchored to the start of a line because these are About-tab FIELD labels,
-# not prose. Unanchored, "From" matched mid-sentence marketing copy -- a
+# not prose. Unanchored, "From" matched mid-sentence marketing copy, a
 # live Page produced "From classrooms to cement plants, from learning
 # concepts to witnessing them" as a candidate location. `is_place` rejected
 # it, so nothing wrong was ever stored, but relying on the validator alone
@@ -110,8 +107,7 @@ RE_NO_POSTS = re.compile(
 GENERIC_NAMES = {"facebook", "notifications"}
 
 
-# ──────────────────────────────── harvest ───────────────────────────────────
-#
+# Harvest
 # Everything collected from one profile visit, and how to read it back.
 #
 # `scoped()` is the important part: it narrows the collected payloads to the
@@ -120,7 +116,7 @@ GENERIC_NAMES = {"facebook", "notifications"}
 #
 # Embedded payloads are kept as raw text and parsed on demand. A profile page
 # ships ~180 of them and only a handful mention the profile at all, so scoping
-# substring-filters first and parses second -- the same answer for a fraction
+# substring-filters first and parses second, the same answer for a fraction
 # of the work.
 
 
@@ -158,7 +154,7 @@ class Harvest:
             return ""
 
     def mentioning(self, needle: str) -> Iterator[Any]:
-        """Parsed payloads whose text contains `needle` -- embedded, then XHR.
+        """Parsed payloads whose text contains `needle`, embedded, then XHR.
 
         The needle is the bare id, not `"id":"<id>"`. Matching the keyed form
         would depend on the payload having no space after the colon, which is
@@ -181,7 +177,7 @@ class Harvest:
     def scoped(self, pid: str) -> "Harvest":
         """A view of the payloads narrowed to this profile.
 
-        `ents` holds the dicts whose own id is the profile id -- the GraphQL
+        `ents` holds the dicts whose own id is the profile id, the GraphQL
         objects that ARE this profile. Reading a field off one of those is
         unambiguous. The wider page carries the notification flyout, friend
         suggestions and sponsored payloads, all with their own name, follower
@@ -212,7 +208,7 @@ class Harvest:
     # ---------- entity readers ----------
 
     def ent_scalar(self, key: str) -> str:
-        """A field read directly off the profile entity -- no nesting, no guessing."""
+        """A field read directly off the profile entity, no nesting, no guessing."""
         for d in self.ents:
             v = d.get(key)
             if isinstance(v, str) and v.strip():
@@ -235,7 +231,7 @@ class Harvest:
         """The header chips: '70 followers', '8 following', '328 friends'.
 
         Facebook ships these already rendered, so this is the only GraphQL form
-        of the follower count -- there is no integer field anywhere in the
+        of the follower count, there is no integer field anywhere in the
         entity. Two shapes occur: content[].text.text, and content[].text as a
         bare string under header_top_row.profile_user.
         """
@@ -304,12 +300,11 @@ class Harvest:
         return "\n".join(self.text.values())
 
 
-# ──────────────────────────────── readers ───────────────────────────────────
-#
+# Readers
 # Turning a Harvest into a Row: one function per report field.
 #
-# Every reader follows the same order -- the profile's own GraphQL entity
-# first, then the rendered header, then progressively looser fallbacks -- and
+# Every reader follows the same order, the profile's own GraphQL entity
+# first, then the rendered header, then progressively looser fallbacks, and
 # records which one answered via `row.mark()`. That provenance is what makes
 # a filled cell auditable and a blank one meaningful.
 #
@@ -363,7 +358,7 @@ def read_name(row: Row, h: Harvest) -> None:
 
 
 def take_chip(row: Row, chip: str, source: str) -> None:
-    """One header counter -- '154M followers', '53 friends', '1.2K likes'.
+    """One header counter, '154M followers', '53 friends', '1.2K likes'.
 
     Pages publish followers (and older ones only likes), personal profiles
     usually publish friends instead, creator profiles publish both.
@@ -394,7 +389,7 @@ def take_chip(row: Row, chip: str, source: str) -> None:
 
 
 def read_counts(row: Row, h: Harvest) -> None:
-    """Followers and friends -- whichever the profile publishes."""
+    """Followers and friends, whichever the profile publishes."""
     for s in h.ent_social():
         take_chip(row, s, "graphql-social-context")
     # the header line holds the same counters when the entity is unreadable
@@ -459,17 +454,17 @@ def _post_stamps(roots) -> list[int]:
     already meant "this profile's own post". That assumption was wrong,
     confirmed live: a comment on one of this profile's posts is ALSO
     nested inside that same entity subtree, and its own `created_time`
-    field was being counted as if it were a post -- letting a stranger's
+    field was being counted as if it were a post, letting a stranger's
     comment on an old post make a dormant page's last-post date look like
-    today. (A different manifestation of the same root cause -- trusting a
-    key name with no structural check -- was closed earlier by dropping
+    today. (A different manifestation of the same root cause, trusting a
+    key name with no structural check, was closed earlier by dropping
     "created_time" from K_POST_TIME entirely, once it was confirmed to
     always be a comment field. This closes the general case: even
     `creation_time`, confirmed genuinely post-scoped, still needs a real
     post to hang off of.)
 
     A genuine post's own dict was confirmed live to always carry a
-    `post_id` sibling in the SAME dict -- e.g.
+    `post_id` sibling in the SAME dict, e.g.
     `{"post_id": "...", "creation_time": 1786353437, "attachments": [...]}`.
     Requiring that sibling is what actually scopes this to posts, not the
     entity-subtree membership that was doing that job before.
@@ -492,18 +487,18 @@ def _post_stamps(roots) -> list[int]:
 
 def read_last_post(row: Row, h: Harvest) -> None:
     # Three tiers, precise-and-narrow first, proven-but-looser as the safety
-    # net -- never silently empty just because the precise method's data
+    # net, never silently empty just because the precise method's data
     # hasn't arrived yet over XHR.
     #
     # 1. Entity-scoped, post_id-gated: this profile's own subtree, only
     #    dicts confirmed (live) to be a real post (they carry a `post_id`
-    #    sibling -- notifications and comments do not, so this is what
+    #    sibling, notifications and comments do not, so this is what
     #    actually excludes them, not the entity-subtree membership alone).
     # 2. Unscoped, still post_id-gated: broader reach across every parsed
     #    payload (embedded script tags + XHR), same real-post proof
     #    required.
     # 3. The original un-gated text-regex scan, INCLUDING the rendered
-    #    page's own HTML -- kept, not removed, because it is the only
+    #    page's own HTML, kept, not removed, because it is the only
     #    source available before certain XHR responses (e.g. the timeline
     #    feed units query) have necessarily arrived, and losing it produced
     #    an empty result live where tiers 1-2 alone found nothing yet. Only
@@ -525,7 +520,7 @@ def read_last_post(row: Row, h: Harvest) -> None:
         tag = "payload-regex-ungated"
     dts = [epoch_to_dt(t) for t in stamps]
     dts = [d for d in dts if d]
-    # a join/creation date can surface under creation_time -- drop it
+    # a join/creation date can surface under creation_time, drop it
     if row.created_iso:
         dts = [d for d in dts if not d.date().isoformat().startswith(row.created_iso)]
     if dts:
@@ -537,7 +532,7 @@ def read_last_post(row: Row, h: Harvest) -> None:
         row.mark("last_post", "no-posts-notice")
 
 
-# ── DOM last-post fallback ────────────────────────────────────────────
+# DOM last-post fallback
 # read_last_post above works from payload timestamps. When Facebook does not
 # ship those for a given profile, the date is still right there on screen:
 # every post's permalink carries the exact publish time in its aria-label,
@@ -546,14 +541,14 @@ def read_last_post(row: Row, h: Harvest) -> None:
 #     <a href=".../posts/pfbid032..." aria-label="Friday 7 August 2026 at 14:14">3d</a>
 #
 # That is a precise absolute timestamp, not the "3d" relative text a person
-# sees -- so it needs no arithmetic against "now" and cannot drift.
+# sees, so it needs no arithmetic against "now" and cannot drift.
 #
 # `/reel/` is in the selector for a Page's own Reel posts, matched the same
-# way as a regular post -- confirmed live via a genuine case
+# way as a regular post, confirmed live via a genuine case
 # (`permalink_url: ".../reel/1711498136706603/"`, authored by the page
 # itself per its `actors` field). It does NOT make this fallback see every
 # Reel, though: confirmed live on that same profile, Facebook does not
-# render Reels inline in the default chronological timeline at all -- the
+# render Reels inline in the default chronological timeline at all, the
 # only `/reel/` link on that view was the nav shortcut to the separate
 # Reels tab (`href="/reel/?s=tab"`, aria-label "Reels", which fails
 # parse_aria_date below harmlessly). Reaching an out-of-timeline Reel would
@@ -561,7 +556,7 @@ def read_last_post(row: Row, h: Harvest) -> None:
 # That gap is acceptable here because it is the least-trusted of three
 # tiers: read_last_post()'s payload-based extraction runs first and is
 # confirmed to capture Reel timestamps correctly (it reads structured data,
-# not the rendered page) -- this DOM path only ever fires when that has
+# not the rendered page), this DOM path only ever fires when that has
 # already returned nothing.
 JS_POST_TIMES = """
 () => {
@@ -639,7 +634,7 @@ def read_location(row: Row, h: Harvest) -> None:
 
 
 def read_pic(row: Row, h: Harvest) -> None:
-    # the entity's own picture, else the header avatar -- not whichever
+    # the entity's own picture, else the header avatar, not whichever
     # fbcdn URL happened to appear first in the pile
     url = h.ent_path(
         "profile_picture.uri",
@@ -663,12 +658,21 @@ def read_pic(row: Row, h: Harvest) -> None:
     if url:
         row.mark("logo", tag)
         # whatever the source, fbcdn signs the crop range up to `cstp`, not
-        # the tiny `ctp` thumbnail actually requested -- this recovers the
+        # the tiny `ctp` thumbnail actually requested, this recovers the
         # real uploaded photo instead of a 40-60px snippet thumbnail
         row.profile_pic_url = hd_picture_url(url)
         row.has_custom_pic = not bool(RE_DEFAULT_PIC.search(url))
     elif RE_DEFAULT_PIC.search(main):
         row.has_custom_pic = False
+
+
+def read_verified(row: Row, h: Harvest) -> None:
+    # only ever set True on an actual detection, never write False, since
+    # a scroll/settle timing miss on one visit must not erase a badge this
+    # or an earlier visit already confirmed (see Row.verified's docstring).
+    if h.dom.get("verified"):
+        row.verified = True
+        row.mark("verified", "dom-header")
 
 
 def read_profile(row: Row, h: Harvest) -> None:
@@ -677,10 +681,10 @@ def read_profile(row: Row, h: Harvest) -> None:
     read_counts(row, h)
     read_last_post(row, h)
     read_pic(row, h)
+    read_verified(row, h)
 
 
-# ──────────────────────────────── scraper ───────────────────────────────────
-#
+# Scraper
 # Drives a logged-in browser over Facebook profiles and reads their fields.
 #
 # This module owns the visit sequence. The browser session itself is
@@ -702,9 +706,7 @@ class Scraper:
         proxy: Optional[dict] = None,
     ):
         self.a = args
-        self.evidence = Path(args.evidence) if args.evidence else None
-        if self.evidence:
-            self.evidence.mkdir(parents=True, exist_ok=True)
+        self.evidence = args.evidence or None  # GridFS key prefix, not a path
         # evidence screenshots need images, so the session must not block them
         self.session = FacebookSession(
             args,
@@ -736,7 +738,7 @@ class Scraper:
 
     # Ready when the profile's own payload has landed: the social-context block
     # plus, once we know it, the entity id. Everything we extract is present at
-    # that point -- typically under 2s -- so waiting a fixed 3.5s is dead time.
+    # that point, typically under 2s, so waiting a fixed 3.5s is dead time.
     JS_READY = """
     (needle) => {
       let ctx = false, id = !needle;
@@ -751,7 +753,7 @@ class Scraper:
     """
 
     # The server render ships far more GraphQL in <script type="application/json">
-    # than the XHR traffic does -- that is where the profile entity lives.
+    # than the XHR traffic does, that is where the profile entity lives.
     JS_EMBEDDED = (
         "() => Array.from(document.querySelectorAll("
         "'script[type=\"application/json\"]')).map(s => s.textContent)"
@@ -800,7 +802,10 @@ class Scraper:
       const pbIds = Array.from(document.querySelectorAll('a[href*="set=pb."]'))
         .map(a => ((a.getAttribute('href') || "").match(/set=pb\\.(\\d+)\\./) || [])[1])
         .filter(Boolean);
-      return {name, followers, counter, postAuthor, avatar, pbIds};
+      // the real, platform-issued badge -- confirmed live against
+      // facebook.com/facebook: <svg role="img" title="Verified account">
+      const verified = !!document.querySelector('svg[title="Verified account"]');
+      return {name, followers, counter, postAuthor, avatar, pbIds, verified};
     }
     """
 
@@ -822,7 +827,7 @@ class Scraper:
                         self.JS_READY, arg=needle, timeout=self.a.settle * 1000
                     )
                 except Exception:
-                    # gone, login-walled or an unusual layout -- fall through and
+                    # gone, login-walled or an unusual layout, fall through and
                     # let the field readers and status checks report what they see
                     await page.wait_for_timeout(1500)
             else:
@@ -849,7 +854,7 @@ class Scraper:
     async def read_dom(self, page, h: Harvest, scrolled: bool = False) -> None:
         try:
             if scrolled:
-                # scrolling can unmount the intro block -- go back up first
+                # scrolling can unmount the intro block, go back up first
                 await page.evaluate("window.scrollTo(0, 0)")
                 await page.wait_for_timeout(700)
             h.dom = await page.evaluate(self.JS_HEADER) or {}
@@ -859,16 +864,23 @@ class Scraper:
     async def screenshot(self, page, row: Row) -> None:
         if not self.evidence:
             return
-        # DETERMINISTIC filename, no timestamp: re-analysing a profile must
+        # DETERMINISTIC key, no timestamp: re-analysing a profile must
         # overwrite its own previous capture, not add another one. With a
-        # timestamp, a daily re-sweep left one PNG per profile per run on
-        # disk forever, and the profile document only ever pointed at the
-        # newest -- every earlier file was unreachable garbage.
+        # timestamp, a daily re-sweep left one PNG per profile per run in
+        # the store forever, and the profile document only ever pointed at
+        # the newest, every earlier one was unreachable garbage.
         stem = re.sub(r"[^A-Za-z0-9._-]", "_", row.profile_id or "entity")[:60]
-        shot = self.evidence / f"{stem}.png"
+        key = f"{self.evidence}/{stem}.png"
         try:
-            await page.screenshot(path=str(shot), full_page=False)
-            row.screenshot = str(shot)
+            # JS_READY (above) is a DATA-readiness check, it can pass while
+            # the screen is still a bare loading splash, since it reads
+            # embedded JSON, never the rendered page. See
+            # Session.wait_for_visible_content for why this is separate.
+            await self.session.wait_for_visible_content(page)
+            data = await page.screenshot(full_page=False)
+            from backend.database.repositories import evidence_repository
+            await evidence_repository.save(key, data)
+            row.screenshot = key
         except Exception:
             pass
 
@@ -908,7 +920,7 @@ class Scraper:
         return max(set(ids), key=ids.count) if ids else ""
 
     def resolve_id(self, row: Row, h: Harvest, url: str) -> str:
-        """Vanity URLs carry no numeric id -- ask the payloads, then the DOM."""
+        """Vanity URLs carry no numeric id, ask the payloads, then the DOM."""
         if row.profile_id.isdigit():
             return row.profile_id
         pid = self.entity_id_for(h, url) or self.owner_id(h)
@@ -918,7 +930,7 @@ class Scraper:
             row.mark("id", pid)
             # adopt the numeric id as this row's identity. Discovery stores the
             # numeric id, so leaving the vanity slug here would file the same
-            # profile twice -- once per URL shape.
+            # profile twice, once per URL shape.
             row.profile_id = pid
         return pid
 
@@ -978,7 +990,16 @@ class Scraper:
             pid = self.resolve_id(row, h, url)
             hs = h.scoped(pid)
 
-            if (hs.ent_scalar("__typename") or "").lower() == "page" or (
+            # the URL itself is the most reliable signal for a group visit:
+            # /groups/<id>/ is unambiguous, unlike sniffing a payload
+            # __typename that may not even be present (see the Page check
+            # right below, which exists precisely because that sniff is a
+            # fallback, not a sure thing)
+            if "/groups/" in url or (hs.ent_scalar("__typename") or "").lower() == "group" or (
+                not hs.ents and re.search(r'"__typename"\s*:\s*"Group"', h.all_html())
+            ):
+                row.entity_type = "group"
+            elif (hs.ent_scalar("__typename") or "").lower() == "page" or (
                 not hs.ents
                 and re.search(
                     r'"__typename"\s*:\s*"Page"|Page transparency', h.all_html()
@@ -992,17 +1013,17 @@ class Scraper:
             # Payload timestamps first (read_profile -> read_last_post,
             # above); the rendered page second. Only runs when the payload
             # carried no usable post time, so a normal visit costs nothing
-            # extra -- and it reads an exact absolute timestamp out of the
+            # extra, and it reads an exact absolute timestamp out of the
             # permalink's aria-label rather than doing arithmetic on the "3d"
             # a human sees.
             #
             # Deliberately BEFORE the About-tab visits below, not after:
             # confirmed live this used to be dead code in production
             # (ScanOptions.about defaults False, but the two About-tab page
-            # visits happen unconditionally regardless -- only the FIELD
+            # visits happen unconditionally regardless, only the FIELD
             # READ off them is opt-in). By the time this used to run at the
             # end of process(), page.url had already moved to
-            # ".../about" -- a page with no post permalinks at all, so this
+            # ".../about", a page with no post permalinks at all, so this
             # fallback always found nothing and never actually fell back to
             # anything. Running it here, while the page is still the
             # timeline that was just visited, is what makes it work.
@@ -1013,11 +1034,11 @@ class Scraper:
                     row.posts_seen = "yes"
                     row.mark("last_post", "dom-aria")
 
-            # The main profile page rarely carries a location -- Facebook Pages
+            # The main profile page rarely carries a location. Facebook Pages
             # put their city/country on the About tab instead, so this visit
             # happens unconditionally: accuracy on a field the report actually
             # promises beats saving one page load. Join date is a different
-            # story -- Facebook does not expose it to an ordinary session at
+            # story. Facebook does not expose it to an ordinary session at
             # all, not in the rendered tab and not in any payload, so that
             # attempt alone stays opt-in via --about since it essentially
             # never succeeds and isn't worth chasing by default.

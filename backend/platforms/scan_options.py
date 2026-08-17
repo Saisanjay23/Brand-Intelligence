@@ -1,9 +1,8 @@
-"""How a scan/sweep is run -- the configuration every platform adapter's
+"""How a scan/sweep is run, the configuration every platform adapter's
 constructor takes.
 
-Lives beside `contracts.py` rather than inside `analysis` or `discovery`
-because it is a parameter type for the ports themselves (`ScraperPort`,
-`DiscovererPort`), used by every caller that constructs an adapter --
+Lives here rather than inside `analysis` or `discovery` because it is a
+shared parameter type used by every caller that constructs an adapter:
 the analysis module's job runner, the sessions module's on-demand health
 check, and the CLI alike. Ported unchanged from `backend/core/options.py`
 and `backend/core/discovery_options.py`.
@@ -17,7 +16,7 @@ from typing import Optional
 
 @dataclass
 class ScanOptions:
-    evidence: Optional[str] = None  # screenshot dir; disables asset blocking
+    evidence: Optional[str] = None  # GridFS key prefix for screenshots; disables asset blocking
     headful: bool = False
     timeout: int = 45  # per-navigation, seconds
     settle: float = 12  # cap on waiting for the profile payload
@@ -37,9 +36,20 @@ class DiscoveryOptions:
 
     headful: bool = False
     timeout: int = 45
-    settle: float = 12  # cap on waiting for the first results render
-    page_wait: float = 6.0  # cap on waiting for one more results page
-    patience: int = 3  # scrolls with no new ids before calling it stalled
+    # The network/GraphQL response is the primary data source on every
+    # platform that has one (run_strategies tries "network:..." before
+    # "dom:...", see each engine's sweep(), shared/extraction.py); DOM
+    # only stands in when the network payload comes up completely empty.
+    # These three numbers are what stand between "the response was just
+    # slow" and "gave up and fell back to DOM (or stopped) too early",
+    # raised from 12/6/3 specifically to make missing a real response as
+    # unlikely as practical, since a sweep that never captures it either
+    # falls back to the weaker DOM read or reports fewer results than
+    # actually exist. Still bounded (not infinite): discovery_max_seconds
+    # (default 300s/sweep) is the real backstop against a sweep hanging.
+    settle: float = 20  # cap on waiting for the first results render
+    page_wait: float = 10.0  # cap on waiting for one more results page
+    patience: int = 5  # scrolls with no new ids before calling it stalled
     concurrency: int = 2  # keyword sweeps in flight at once
     progress_every: int = 5  # log a progress line every N result pages
 

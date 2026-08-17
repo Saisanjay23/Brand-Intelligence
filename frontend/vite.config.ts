@@ -9,8 +9,17 @@ import react from "@vitejs/plugin-react";
 // headless engine, not a UI-serving app (see backend/main.py's docstring).
 const BACKEND = "http://127.0.0.1:8000";
 const proxy = Object.fromEntries(
-  ["/clients", "/discovery", "/analysis", "/jobs", "/profiles", "/sessions", "/health", "/incidents", "/metrics", "/docs", "/redoc", "/openapi.json"]
-    .map((path) => [path, { target: BACKEND, changeOrigin: true }]),
+  [
+    "/clients", "/discovery", "/analysis", "/jobs", "/profiles", "/sessions", "/health",
+    "/incidents", "/metrics", "/docs", "/redoc", "/openapi.json",
+    // Scheduler and Mail-settings admin tabs -- missing here meant every
+    // request to them fell through to Vite's own SPA fallback and got
+    // index.html back instead of JSON (confirmed live: "Unexpected token
+    // '<', \"<!doctype \"... is not valid JSON" on the Scheduler tab).
+    // Never surfaced in production because the built app is served
+    // same-origin by the backend itself there, with no proxy involved.
+    "/scheduler", "/settings",
+  ].map((path) => [path, { target: BACKEND, changeOrigin: true }]),
 );
 
 export default defineConfig({

@@ -1,17 +1,23 @@
 // API calls for the backend's sessions module (backend/api/session_routes.py).
-// One call per platform id (facebook/twitter/instagram/youtube/telegram) --
+// One call per platform id (facebook/twitter/instagram/youtube/telegram),
 // the backend has no per-platform route, `platform` is always a parameter
 // here, not a separate resource, so this one file covers every platform's
 // session/credential management rather than one file each.
 import { json, post, url } from "./httpClient";
 import type { SessionInfo } from "./types";
 
-// No bulk "all sessions" route -- one call per known platform id (get the
-// id list from healthApi.platformsHealth()).
 export const sessionsApi = {
+  // Every platform's pool in one request. Preferred over fanning
+  // sessionStatus out across the platform list: it's one round trip instead
+  // of six per poll, and every platform in the response is read against the
+  // same snapshot of the server's health cache, so they can't disagree with
+  // each other about a sweep that landed mid-fan-out.
+  allSessionStatus: () => fetch(url("/sessions")).then(json<{ items: SessionInfo[] }>),
   sessionStatus: (platform: string) => fetch(url(`/sessions/${platform}`)).then(json<SessionInfo>),
   saveCookies: (platform: string, blob: string, identifier = "") =>
     post(`/sessions/${platform}/cookies`, { blob, identifier }).then(json<SessionInfo>),
+  saveCredentials: (platform: string, data: { username: string; password: string; two_factor_secret?: string; identifier?: string }) =>
+    post(`/sessions/${platform}/credentials`, data).then(json<SessionInfo>),
   saveApiKey: (platform: string, key: string, identifier = "") =>
     post(`/sessions/${platform}/api-key`, { key, identifier }).then(json<SessionInfo>),
   updateSessionItem: (
@@ -30,6 +36,13 @@ export const sessionsApi = {
     ),
   checkSessionNow: (platform: string) =>
     post(`/sessions/${platform}/check`, {}).then(json<{ ok: boolean; detail: string }>),
+  // Verify ONE named account rather than whichever the sweep considers most
+  // overdue, what you want right after re-pasting cookies. Returns the
+  // refreshed pool alongside the verdict.
+  checkSessionItem: (platform: string, sessionId: string) =>
+    post(`/sessions/${platform}/${sessionId}/check`, {}).then(
+      json<{ ok: boolean; detail: string; conclusive: boolean; session: SessionInfo }>,
+    ),
   setSessionProxy: (
     platform: string,
     sessionId: string,
@@ -40,7 +53,7 @@ export const sessionsApi = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ proxy }),
     }).then(json<SessionInfo>),
-  // Backend has no separate DELETE-proxy route -- clearing is PUT with
+  // Backend has no separate DELETE-proxy route, clearing is PUT with
   // proxy: null (see backend/controllers/session_controller.py::set_proxy).
   clearSessionProxy: (platform: string, sessionId: string) =>
     fetch(url(`/sessions/${platform}/${sessionId}/proxy`), {
@@ -55,7 +68,7 @@ export const sessionsApi = {
 
   // Telegram's MTProto login is multi-step (code, then optionally a 2FA
   // password) so it can't reuse launchLogin's single-shot headful-browser
-  // shape -- see backend/services/telegram_login_service.py.
+  // shape, see backend/services/telegram_login_service.py.
   telegramLoginStart: (apiId: number, apiHash: string, phone: string) =>
     post("/sessions/telegram/login/start", { api_id: apiId, api_hash: apiHash, phone }).then(
       json<{ status: string; phone: string }>,

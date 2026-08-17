@@ -22,7 +22,7 @@ import pytest
 from backend.database.repositories import profile_repository as repo
 
 
-# ── 1. retry semantics ─────────────────────────────────────────────────────
+# 1. retry semantics
 
 def test_retryable_statuses_are_incomplete_or_never_read():
     """OK/GONE are complete verdicts. The other four mean the reading is
@@ -147,7 +147,7 @@ def test_attempt_cap_eventually_stops_a_dead_url():
     assert not _matches_any(branches, exhausted)
 
 
-# ── 2. publish hold ────────────────────────────────────────────────────────
+# 2. publish hold
 
 def _hold_branches(now: datetime) -> list[dict]:
     """The visibility clause find() builds for include_held=False."""
@@ -261,7 +261,7 @@ async def test_publish_all_skips_never_read_rows(monkeypatch):
     assert captured["q"]["status"] == {"$ne": "rejected"}
 
 
-# ── identity protection ────────────────────────────────────────────────────
+# Identity protection
 
 def test_entity_id_is_not_writable_by_analysis():
     """Analysis derives entity_id from the URL it was handed and only

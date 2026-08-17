@@ -13,11 +13,11 @@ never issues that call passively for a logged-in view of someone else's
 profile. So this now asks for it directly instead of waiting: `fetch_via_api()`
 below calls the exact same private mobile endpoint discovery_engine.py's
 search sweep already uses successfully (`PROFILE_INFO_API`, a sibling of
-`MOBILE_SEARCH_API`), the same way, with the same headers -- a plain
+`MOBILE_SEARCH_API`), the same way, with the same headers, a plain
 authenticated HTTP request via `ctx.request`, not a page navigation. That
 sidesteps the passive-interception dead end entirely, and since it's a raw
 JSON response rather than a rendered page, it does not depend on whether
-images are allowed to load in the browser -- fixing the logo/avatar field
+images are allowed to load in the browser, fixing the logo/avatar field
 being blank by default (see below). Passive network interception is kept as
 a second-chance source in case the direct call is ever rate-limited or the
 endpoint returns nothing for a particular account, and DOM reading remains
@@ -25,12 +25,12 @@ the last resort.
 
 What's reliable when both the API call and interception come up empty: the
 header numbers render straight into the page ("685M followers", "8,534
-posts") in a fixed, stable order -- username, full name, posts, followers,
+posts") in a fixed, stable order, username, full name, posts, followers,
 following. That DOM read is the final fallback.
 
 The avatar carries a conventional `alt="<username>'s profile picture"` in the
 DOM fallback path, but Instagram unmounts that <img> entirely when its fetch
-is blocked -- so before this change, the logo/avatar field only populated via
+is blocked, so before this change, the logo/avatar field only populated via
 DOM when images were allowed to load, i.e. with --evidence set (the same
 posture Facebook already uses). The direct API call above does not have this
 problem (it's JSON, not a rendered image), so the logo/avatar field now
@@ -44,13 +44,13 @@ analyst's own photo to whichever profile was being scored.
 
 LAST-POST DATE: the header gives a post COUNT, not a date, and re-verified
 live (2026-07-27, against a real active account) that network interception
-still does not fire the target's own profile/timeline payload -- the two
+still does not fire the target's own profile/timeline payload, the two
 GraphQL calls that DO fire are the viewer's own SSO/credentials request and
 the viewer's own home-feed recommendations, neither naming the profile being
 scored. What DOES work: the profile's own most recent post/reel page renders
 a real `<time datetime="...">` element (confirmed live: an exact UTC
 timestamp, not a relative guess). `read_last_post_date()` below is one extra
-page visit -- to the first post link already sitting in the grid DOM -- to
+page visit, to the first post link already sitting in the grid DOM, to
 read that element directly. Skipped for private accounts and accounts with
 no posts, where there is nothing to visit.
 
@@ -62,14 +62,12 @@ from __future__ import annotations
 
 import asyncio
 import re
-import sys
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 from urllib.parse import quote, urlparse
 
 from backend.shared.models.row import Row
-from backend.shared.text import (MONTHS, fmt_created, name_score,
+from backend.shared.text import (MONTHS, name_score,
                                    normalized_host, parse_count,
                                    parse_normalized_url)
 from backend.platforms.instagram.discovery_engine import (DEFAULT_PIC_HINTS,
@@ -118,9 +116,7 @@ class Scraper:
         proxy: dict | None = None,
     ):
         self.a = args
-        self.evidence = Path(args.evidence) if args.evidence else None
-        if self.evidence:
-            self.evidence.mkdir(parents=True, exist_ok=True)
+        self.evidence = args.evidence or None  # GridFS key prefix, not a path
         self.session = InstagramSession(
             args,
             cookies,
@@ -150,13 +146,13 @@ class Scraper:
     async def fetch_via_api(self, username: str) -> Optional[InstagramUser]:
         """Ask Instagram's own profile-info endpoint directly, the same
         request discovery_engine.py's search sweep already makes
-        successfully (PROFILE_INFO_API, a sibling of MOBILE_SEARCH_API) --
+        successfully (PROFILE_INFO_API, a sibling of MOBILE_SEARCH_API),
         rather than waiting for the browser's own JS to fire it passively,
         which it no longer does for a logged-in view of someone else's
         profile (see module docstring). A plain authenticated HTTP call, so
         unlike the DOM fallback it does not depend on whether images are
         allowed to load in the browser. Returns None on anything short of a
-        clean parse -- callers fall through to interception/DOM."""
+        clean parse, callers fall through to interception/DOM."""
         try:
             res = await self.ctx.request.get(
                 PROFILE_INFO_API.format(u=quote(username)),
@@ -180,8 +176,8 @@ class Scraper:
     # ─────────────────────────── DOM fallback ─────────────────────────── #
 
     # Confirmed on two unrelated real accounts: the header always renders as
-    # username, full name, "N posts", "N followers", "N following", bio -- in
-    # that fixed order -- so the name is simply "whatever precedes the posts
+    # username, full name, "N posts", "N followers", "N following", bio, in
+    # that fixed order, so the name is simply "whatever precedes the posts
     # line" rather than a guess at a CSS class that Instagram will rename.
     #
     # The avatar is intentionally scoped by an exact alt="<username>'s profile
@@ -225,13 +221,13 @@ class Scraper:
         except Exception:
             return {}
 
-    # The grid's own post/reel links are NOT reliably newest-first --
+    # The grid's own post/reel links are NOT reliably newest-first,
     # confirmed live (adanifoundationschools, 2026-08-10): the first three
     # tiles were all dated 2025-09-01 while a genuinely newer post sat in
-    # 4th position -- Instagram's "pin to grid" feature, which holds up to
+    # 4th position. Instagram's "pin to grid" feature, which holds up to
     # 3 posts at the top regardless of date. No pin marker is visible in a
     # third party's view of the DOM at all (checked the full ancestor chain
-    # of the pinned tiles up 4 levels -- no icon, no aria-label, nothing to
+    # of the pinned tiles up 4 levels, no icon, no aria-label, nothing to
     # key off of the way Twitter's TimelinePinEntry or a "Pinned" badge
     # would give), so this can't be fixed by detecting "is this one
     # pinned." Fixed the same way underneath as Twitter/Facebook were,
@@ -248,7 +244,7 @@ class Scraper:
     }
     """
 
-    # Instagram's own pin cap is 3 -- visiting this many candidate links
+    # Instagram's own pin cap is 3, visiting this many candidate links
     # guarantees at least one genuinely-newest, non-pinned post is checked
     # regardless of how many (0 to 3) are actually pinned right now.
     JS_GRID_POST_LINKS = """
@@ -265,9 +261,9 @@ class Scraper:
 
     # "Photo by X on September 01, 2025." / "...on August 09, 2026. May be
     # an image..." / "Photo shared by X on August 08, 2026 tagging @Y."
-    # -- confirmed live across several accounts, always this "on <Month>
+    #, confirmed live across several accounts, always this "on <Month>
     # <Day>, <Year>" shape for a PHOTO post's own accessibility alt text.
-    # Reels carry only their caption as alt text, no date -- yields nothing
+    # Reels carry only their caption as alt text, no date, yields nothing
     # here, which is why tier 2 below still exists.
     _RE_ALT_DATE = re.compile(r"\bon\s+([A-Za-z]+)\s+(\d{1,2}),\s+(\d{4})\b")
 
@@ -298,22 +294,22 @@ class Scraper:
         JS_GRID_ALT_DATES' comment above for the live-confirmed gap this
         closes).
 
-        Tier 1, free -- no extra navigation: every currently-rendered grid
+        Tier 1, free, no extra navigation: every currently-rendered grid
         tile's own photo already carries its publish date in its
         accessibility alt text. Reading every tile (not just the first)
         and taking the real max is what survives pinning, at zero added
         cost over the page visit already made to reach this profile.
 
-        Tier 2, up to 3 extra page visits -- only when tier 1 found no
+        Tier 2, up to 3 extra page visits, only when tier 1 found no
         parseable date at all (an all-Reels account, most often). Visits
-        the first 3 grid links -- Instagram's own pin cap -- and reads each
+        the first 3 grid links. Instagram's own pin cap, and reads each
         one's real `<time datetime>` element directly, taking the max.
         Confirmed live: that page renders a
         `<time datetime="2026-07-23T16:00:21.000Z">` element with an exact
         UTC timestamp.
 
         Returns "" on anything short of a clean read: a private/postless
-        account, no candidates, or failed navigations -- never a guess.
+        account, no candidates, or failed navigations, never a guess.
         """
         if private or not has_posts:
             return ""
@@ -343,7 +339,7 @@ class Scraper:
                 await page.wait_for_timeout(1500)
                 iso = await page.evaluate(self.JS_POST_TIME)
                 # the element's own datetime attribute is already a UTC ISO
-                # string ("...T...Z") -- the date is just its first 10
+                # string ("...T...Z"), the date is just its first 10
                 # characters, no parsing needed
                 if iso and len(iso) >= 10:
                     found.append(iso[:10])
@@ -358,7 +354,7 @@ class Scraper:
         row = Row(url=url, target=target, original_feed=feed)
         row.profile_id = username_of(url)
 
-        # Try the direct API call first (see fetch_via_api's docstring) --
+        # Try the direct API call first (see fetch_via_api's docstring),
         # independent of the page visit below, so it costs nothing extra
         # even when it comes up empty and we fall through to interception/DOM.
         api_user = await self.fetch_via_api(row.profile_id) if row.profile_id else None
@@ -432,7 +428,7 @@ class Scraper:
                     return row
 
                 # the payload interception has not been observed to fire in
-                # practice (see module docstring) -- read the rendered header
+                # practice (see module docstring), read the rendered header
                 dom = await self.read_dom(page, row.profile_id)
                 if dom.get("posts") or dom.get("followers") or dom.get("name"):
                     self.fill_from_dom(row, dom)
@@ -497,7 +493,7 @@ class Scraper:
         """Same fields as fill(), read from the rendered header instead.
 
         The header itself gives a post COUNT, not a date, so `posts_seen`
-        is set here for read_last_post_date() to act on (see process()) --
+        is set here for read_last_post_date() to act on (see process()),
         the actual date comes from that separate post-page visit, not from
         this header read.
         """
@@ -543,16 +539,24 @@ class Scraper:
     async def screenshot(self, page, row: Row) -> None:
         if not self.evidence:
             return
-        # DETERMINISTIC filename, no timestamp: re-analysing a profile must
+        # DETERMINISTIC key, no timestamp: re-analysing a profile must
         # overwrite its own previous capture, not add another one. With a
-        # timestamp, a daily re-sweep left one PNG per profile per run on
-        # disk forever, and the profile document only ever pointed at the
-        # newest -- every earlier file was unreachable garbage.
+        # timestamp, a daily re-sweep left one PNG per profile per run in
+        # the store forever, and the profile document only ever pointed at
+        # the newest, every earlier one was unreachable garbage.
         stem = re.sub(r"[^A-Za-z0-9._-]", "_", row.profile_id or "entity")[:60]
-        shot = self.evidence / f"{stem}.png"
+        key = f"{self.evidence}/{stem}.png"
         try:
-            await page.screenshot(path=str(shot), full_page=False)
-            row.screenshot = str(shot)
+            # See Session.wait_for_visible_content: field extraction here
+            # comes from intercepted API responses, which can land well
+            # before the page has visually painted anything, a screenshot
+            # taken right after would capture the loading state, not the
+            # profile.
+            await self.session.wait_for_visible_content(page)
+            data = await page.screenshot(full_page=False)
+            from backend.database.repositories import evidence_repository
+            await evidence_repository.save(key, data)
+            row.screenshot = key
         except Exception:
             pass
 

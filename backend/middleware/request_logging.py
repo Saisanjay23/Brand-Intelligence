@@ -1,4 +1,4 @@
-"""Structured request logs + Prometheus counters -- method/path/status/
+"""Structured request logs + Prometheus counters, method/path/status/
 duration only. No correlation id, no auth: the caller's own gateway
 already owns both, this just keeps this process's own logs operable.
 """

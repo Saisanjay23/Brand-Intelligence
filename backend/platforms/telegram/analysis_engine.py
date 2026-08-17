@@ -1,4 +1,4 @@
-"""Telegram analysis engine: validation -- t.me URL -> scored Row, over
+"""Telegram analysis engine: validation, t.me URL -> scored Row, over
 MTProto.
 
 The MTProto connection (`Telegram`) and its entity/error types live in
@@ -12,16 +12,15 @@ description and member count, and the newest message gives the activity date.
 WHAT TELEGRAM GIVES that the browser platforms do not: channels and groups
 carry a real creation date, so the Created Date column is filled for them.
 User accounts have no such field anywhere in the protocol, so it stays blank
-for people -- the honest answer rather than a guess.
+for people, the honest answer rather than a guess.
 """
 
 from __future__ import annotations
 
-import sys
 from urllib.parse import urlparse
 
 from backend.shared.models.row import Row
-from backend.shared.text import (fmt_created, name_score, normalized_host,
+from backend.shared.text import (name_score, normalized_host,
                                    parse_normalized_url)
 from backend.platforms.telegram.discovery_engine import (FloodWait,
                                                           NotAuthorised,
@@ -61,7 +60,7 @@ class Scraper:
     normalize_url = staticmethod(normalize_url)
 
     def __init__(self, args, cookies=None, session_id: str = "", proxy=None):
-        # MTProto, not cookies -- session_id/proxy exist only so jobs.py can
+        # MTProto, not cookies, session_id/proxy exist only so jobs.py can
         # call every platform's Scraper with the same signature.
         self.a = args
         self.tg = Telegram(args)
@@ -76,10 +75,11 @@ class Scraper:
         await self.tg.pause(getattr(self.a, "delay", 2.0) * mult)
 
     async def check_session(self) -> bool:
+        from backend.shared.logging import get_logger as _gl
         try:
             return await self.tg.check_session()
         except NotAuthorised as e:
-            print(f"SESSION: {e}", file=sys.stderr)
+            _gl("platforms.telegram.analysis").warning(f"SESSION: {e}")
             return False
 
     # ───────────────────────────── per URL ────────────────────────────── #
@@ -136,6 +136,7 @@ class Scraper:
         if e.about:
             row.note(f"bio: {e.about[:120]}")
         if e.verified:
+            row.verified = True
             row.note("verified by telegram")
         if e.scam:
             row.note("FLAGGED BY TELEGRAM AS SCAM")
@@ -162,14 +163,11 @@ class Scraper:
 
     @staticmethod
     def report(i: int, total: int, u: str, row: Row) -> None:
-        print(f"[{i}/{total}] {u}", file=sys.stderr)
-        print(
-            f"    {row.status:<14} name={row.profile_name[:22]:<22} "
-            f"created={fmt_created(row.created_iso) or '-':<10} "
-            f"members={row.followers if row.followers is not None else '-':<9} "
-            f"active={row.active_yes or '-':<3} "
-            f"risk={row.risk} {row.priority}",
-            file=sys.stderr,
+        from backend.shared.logging import get_logger as _gl
+        _gl("platforms.telegram.analysis").info(
+            f"[{i}/{total}] {u} | {row.status} name={row.profile_name[:22]} "
+            f"members={row.followers if row.followers is not None else '-'} "
+            f"active={row.active_yes or '-'} risk={row.risk} {row.priority}"
         )
 
     async def run(self, jobs: list[tuple[str, str, str]]) -> list[Row]:
@@ -179,8 +177,9 @@ class Scraper:
             rows.append(row)
             self.report(i, len(jobs), u, row)
             if row.status == "CHECKPOINT":
-                print(
-                    "\nFLOOD WAIT -- stopping to protect the account.", file=sys.stderr
+                from backend.shared.logging import get_logger as _gl
+                _gl("platforms.telegram.analysis").warning(
+                    "FLOOD WAIT -- stopping to protect the account."
                 )
                 break
             if i < len(jobs):

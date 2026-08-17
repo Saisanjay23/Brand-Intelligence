@@ -1,9 +1,9 @@
-"""Prometheus metrics -- the counters/histogram every module increments
+"""Prometheus metrics, the counters/histogram every module increments
 through this one module, and the `/metrics` route (registered public,
 alongside `/health/*`) that exposes them in the standard text format.
 
 Deliberately minimal: request count/latency (who's calling, how fast) and
-job outcomes per platform/kind (is the actual scraping work succeeding) --
+job outcomes per platform/kind (is the actual scraping work succeeding),
 the two things an operator actually watches, not a metric for every
 internal counter in the engine.
 """

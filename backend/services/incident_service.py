@@ -1,7 +1,7 @@
 """When something breaks, say why in plain English and how to fix it.
 
 `health` answers "is this platform degraded" as one number. This answers
-"what exactly broke, and what does an operator do about it" -- one row per
+"what exactly broke, and what does an operator do about it", one row per
 failure, diagnosed against known failure shapes (a stale session, a
 checkpoint, a quota, a flood-wait, ...) rather than left as a bare
 traceback for someone to interpret from scratch.
@@ -12,7 +12,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
 
 from backend.database.repositories import incident_repository as incidents_db
 
@@ -91,10 +90,10 @@ def diagnose(error_type: str, message: str) -> Diagnosis:
 
 def _source_file(platform: str, kind: str) -> str:
     """The exact scraper module a "what broke" email should point an
-    operator at -- e.g. `backend.platforms.facebook.discovery_engine:Discovery`
-    -- so a fix means opening one named file, not guessing across five
+    operator at, e.g. `backend.platforms.facebook.discovery_engine:Discovery`
+   ; so a fix means opening one named file, not guessing across five
     platforms' worth of engine code. `platform="all"` (the breaker
-    incidents -- no single platform down, or the whole pool exhausted) has
+    incidents; no single platform down, or the whole pool exhausted) has
     no one file to name."""
     if platform == "all":
         return ""
@@ -104,7 +103,7 @@ def _source_file(platform: str, kind: str) -> str:
     if not plat:
         return ""
     # "session-check" (the periodic live-probe) exercises the same
-    # check_session() the analysis engine uses -- see
+    # check_session() the analysis engine uses, see
     # sessions/manager.py::verify_session_item.
     return plat.discovery_path if kind == "discovery" else plat.analysis_path
 
@@ -115,7 +114,7 @@ async def record(
     where: str = "",
 ) -> None:
     """`where` is the precise blame trail from an extraction strategy chain
-    (see shared/extraction.py::ExtractionResult.report) -- the file, line
+    (see shared/extraction.py::ExtractionResult.report), the file, line
     and source text of each method that failed. `source_file` alone names
     the module; this names the line inside it to change, which is the
     difference between "Facebook discovery broke" and an actionable ticket."""
@@ -136,10 +135,6 @@ async def record(
         asyncio.create_task(notify_incident(doc))
     except Exception:
         pass
-
-
-async def recent(limit: int = 50, platform: Optional[str] = None) -> list[dict]:
-    return await incidents_db.recent(limit, platform)
 
 
 async def ensure_indexes() -> None:

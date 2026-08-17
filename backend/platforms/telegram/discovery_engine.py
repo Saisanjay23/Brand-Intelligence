@@ -1,4 +1,4 @@
-"""Telegram discovery engine: search and entity extraction -- keywords in,
+"""Telegram discovery engine: search and entity extraction, keywords in,
 candidate users/channels/groups out, over MTProto (Telethon).
 
 Also owns the MTProto connection itself (the `Telegram` class): it is
@@ -7,21 +7,21 @@ rather than redefining it, so there is exactly one definition across the two
 files.
 
 Telegram publishes the real protocol, so there is no browser, no page to
-render and nothing to intercept -- this talks the same wire the official
+render and nothing to intercept, this talks the same wire the official
 clients do. That makes it the most accurate surface of the six and, like
 YouTube, one with no fingerprint to detect.
 
 WHAT LIMITS IT is FloodWait, not rate limiting: ask too fast and the server
 replies "wait N seconds" rather than blocking you. That is a first-class
-signal here -- it is surfaced as a checkpoint so a run stops rather than
+signal here, it is surfaced as a checkpoint so a run stops rather than
 digging the account deeper into a limit.
 
 AUTH is a saved session plus the account's api_id/api_hash. Logging in needs a
 phone code, which is interactive, so this never attempts it: an unauthorised
 session is reported, not repaired.
 
-Telegram's global search returns a single capped page per keyword -- there is
-no cursor and no "load more" -- so a sweep is one request and is genuinely
+Telegram's global search returns a single capped page per keyword, there is
+no cursor and no "load more", so a sweep is one request and is genuinely
 complete when it returns. Unlike the browser platforms there is nothing to
 scroll and nothing to miss. A sweep is only incomplete if Telegram asked us
 to wait (FloodWait), which is reported rather than retried.
@@ -44,7 +44,9 @@ log = get_logger("telegram")
 
 try:
     from telethon import TelegramClient
-    from telethon.errors import (ChannelPrivateError, FloodWaitError,
+    from telethon.errors import (AuthKeyUnregisteredError, ChannelPrivateError,
+                                 FloodWaitError, SessionRevokedError,
+                                 UserDeactivatedBanError, UserDeactivatedError,
                                  UsernameInvalidError,
                                  UsernameNotOccupiedError)
     from telethon.tl.functions.channels import GetFullChannelRequest
@@ -59,6 +61,18 @@ except ImportError:  # pragma: no cover
     class FloodWaitError(Exception):  # type: ignore
         seconds = 0
 
+    class AuthKeyUnregisteredError(Exception):  # type: ignore
+        pass
+
+    class SessionRevokedError(Exception):  # type: ignore
+        pass
+
+    class UserDeactivatedError(Exception):  # type: ignore
+        pass
+
+    class UserDeactivatedBanError(Exception):  # type: ignore
+        pass
+
     class ChannelPrivateError(Exception):  # type: ignore
         pass
 
@@ -69,7 +83,7 @@ except ImportError:  # pragma: no cover
         pass
 
 
-# ─────────────────────────── connection / auth state ───────────────────────
+# Connection / auth state
 
 
 class NotAuthorised(RuntimeError):
@@ -98,6 +112,9 @@ class TelegramEntity:
     verified: bool = False
     scam: bool = False
     restricted: bool = False
+    fake: bool = False
+    is_bot: bool = False
+    premium: bool = False
     avatar: str = ""
     has_photo: bool = False
     last_post_iso: str = ""
@@ -131,10 +148,6 @@ def entity_from(obj: Any) -> Optional[TelegramEntity]:
         kind = "profile"
     if not username and not name:
         return None
-    # Telethon's own signal for "does this entity actually have a photo" --
-    # both User and Chat/Channel report a *PhotoEmpty variant when there is
-    # none, so guessing from the avatar URL (which resolves for any public
-    # username regardless of whether a photo exists) was never accurate.
     photo = getattr(obj, "photo", None)
     has_photo = photo is not None and "Empty" not in type(photo).__name__
     return TelegramEntity(
@@ -143,18 +156,20 @@ def entity_from(obj: Any) -> Optional[TelegramEntity]:
         title=name,
         kind=kind,
         members=getattr(obj, "participants_count", None),
-        # channels expose their creation date; user accounts never do
         created_iso=_iso(getattr(obj, "date", None)) if kind != "profile" else "",
         verified=bool(getattr(obj, "verified", False)),
         scam=bool(getattr(obj, "scam", False)),
         restricted=bool(getattr(obj, "restricted", False)),
+        fake=bool(getattr(obj, "fake", False)),
+        is_bot=bool(getattr(obj, "bot", False)),
+        premium=bool(getattr(obj, "premium", False)),
         avatar=f"https://t.me/i/userpic/320/{username}.jpg" if username and has_photo else "",
         has_photo=has_photo,
     )
 
 
 class Telegram:
-    """A connected MTProto session. One at a time -- the session file is a lock."""
+    """A connected MTProto session. One at a time, the session file is a lock."""
 
     def __init__(self, options=None):
         if not HAVE_TELETHON:
@@ -169,14 +184,19 @@ class Telegram:
 
     async def start(self) -> None:
         if not (self.api_id and self.api_hash):
-            raise NotAuthorised("TELEGRAM_API_ID / TELEGRAM_API_HASH not set")
+            raise NotAuthorised("TELEGRAM_API_ID / TELEGRAM_API_HASH not set -- not authenticated")
         self.client = TelegramClient(self.session_file, self.api_id, self.api_hash)
         # connect(), never start(): start() prompts for a phone code on stdin
         await self.client.connect()
         if not await self.client.is_user_authorized():
             await self.stop()
+            # "not authenticated" is deliberate phrasing, not just English.
+            # It is one of shared/resilience.py::classify_failure's matched
+            # auth tokens, so this correctly quarantines the session/fires
+            # the SessionInvalid alert instead of reading as an
+            # unclassified, left-alone error.
             raise NotAuthorised(
-                "telegram session is not logged in -- run an interactive login "
+                "telegram session is not authenticated -- run an interactive login "
                 "once to create session/telegram.session"
             )
 
@@ -189,12 +209,31 @@ class Telegram:
             self.client = None
 
     async def check_session(self) -> bool:
+        """False means CONCLUSIVELY dead. Telegram itself says this
+        auth key/account no longer works, the MTProto equivalent of a
+        browser landing on a login wall. Anything else (a network drop,
+        a connection reset, FloodWait) is not evidence the session itself
+        is bad and is left to propagate as a raised exception, exactly
+        like every browser-based platform's check_session already does
+        (see stealth/browser.py's docstring), the caller
+        (sessions/manager.py::verify_session_item) treats a raised
+        exception as inconclusive and leaves the session's status
+        untouched, instead of a transient blip getting recorded as "this
+        session is now expired" and quarantining a perfectly good account.
+
+        This used to catch bare `Exception`, which made a dropped
+        connection during the health check indistinguishable from Telegram
+        actually revoking the session, the single most common false
+        positive this file could produce.
+        """
         try:
             me = await self.client.get_me()
-        except Exception as e:
-            log.error(f"session check failed: {type(e).__name__}: {e}")
+        except (AuthKeyUnregisteredError, SessionRevokedError,
+                 UserDeactivatedError, UserDeactivatedBanError) as e:
+            log.error(f"session INVALID -- {type(e).__name__}: {e}")
             return False
         if me is None:
+            log.error("session INVALID -- get_me() returned nothing")
             return False
         log.info(f"session valid -> @{me.username or me.id}")
         return True
@@ -207,7 +246,7 @@ class Telegram:
             raise FloodWait(int(getattr(e, "seconds", 0))) from e
 
     async def search(self, keyword: str, limit: int = 50) -> list[TelegramEntity]:
-        """Global search. Telegram returns one capped page -- there is no cursor."""
+        """Global search. Telegram returns one capped page, there is no cursor."""
         res = await self._call(SearchRequest(q=keyword, limit=limit))
         out: list[TelegramEntity] = []
         for obj in list(getattr(res, "users", [])) + list(getattr(res, "chats", [])):
@@ -265,7 +304,7 @@ class Telegram:
             await asyncio.sleep(seconds)
 
 
-# ───────────────────────────── crawling / search ────────────────────────────
+# Crawling / search
 
 # global search caps well below this; asking for more costs nothing
 SEARCH_LIMIT = 100
@@ -288,10 +327,10 @@ class Sweep:
 
 
 class Discovery:
-    """`ctx` is accepted and unused -- MTProto needs no browser.
+    """`ctx` is accepted and unused. MTProto needs no browser.
 
-    `sweep()` connects `self.tg` itself, lazily, the first time it's called
-    -- discovery_service.py's shared harness (_run_incremental) drives every
+    `sweep()` connects `self.tg` itself, lazily, the first time it's called:
+    discovery_service.py's shared harness (_run_incremental) drives every
     platform by calling `sweep(keyword, tab)` per keyword directly, it never
     calls `run()` below. `run()` predates that harness and is dead code from
     the caller's perspective (nothing imports/calls it), but every keyword
@@ -317,14 +356,14 @@ class Discovery:
             await tg.start()
             if not await tg.check_session():
                 await tg.stop()
-                raise NotAuthorised("telegram session rejected")
+                raise NotAuthorised("telegram session rejected -- not authenticated")
             self.tg = tg
 
     async def stop(self) -> None:
         """Release the MTProto connection `sweep()` opened.
 
         Confirmed live: without this, discovery_service.py's caller had
-        nothing to call it FROM either -- every discovery sweep for this
+        nothing to call it FROM either, every discovery sweep for this
         platform left `self.tg` connected, holding the local SQLite
         `.session` file locked. Reproduced the real symptom directly: a
         discovery sweep followed immediately by an analysis run for the
@@ -352,9 +391,6 @@ class Discovery:
                     name=e.title,
                     url=e.url,
                     avatar=e.avatar,
-                    # Telethon's own PhotoEmpty check -- see the Telegram
-                    # class above -- not a guess from whether the avatar URL
-                    # happens to resolve
                     has_custom_pic=e.has_photo,
                     entity_type=e.kind,
                     keyword=keyword,
@@ -384,7 +420,7 @@ class Discovery:
         try:
             await self.tg.start()
             if not await self.tg.check_session():
-                raise NotAuthorised("telegram session rejected")
+                raise NotAuthorised("telegram session rejected -- not authenticated")
             for i, keyword in enumerate(keywords):
                 s = await self.sweep(keyword)
                 sweeps.append(s)

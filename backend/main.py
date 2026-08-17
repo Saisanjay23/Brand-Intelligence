@@ -3,7 +3,7 @@ Brand Intelligence Engine (headless)
 
     uvicorn backend.main:app --port 8000
 
-Single worker, by design -- job state lives in this process's memory (see
+Single worker, by design, job state lives in this process's memory (see
 `services/job_service.py`). No auth, no rate limiting, no frontend: this is
 reached only by your own SaaS backend over a trusted internal path, which
 already owns authenticating and rate-limiting its own callers before it
@@ -23,18 +23,22 @@ from backend.api.analysis_routes import router as analysis_router
 from backend.api.client_routes import router as clients_router
 from backend.api.discovery_routes import router as discovery_router
 from backend.api.health_routes import router as health_router
-from backend.api.incident_routes import router as incidents_router
 from backend.api.job_routes import router as jobs_router
 from backend.api.profile_routes import router as profiles_router
+from backend.api.published_incident_routes import router as published_incidents_router
+from backend.api.scheduler_routes import router as scheduler_router
 from backend.api.session_routes import router as sessions_router
+from backend.api.settings_routes import router as settings_router
 from backend.database.repositories import client_repository as clients_db
 from backend.database.repositories import incident_repository as incidents_db
 from backend.database.repositories import profile_repository as profiles_db
 from backend.database.repositories import published_incident_repository as published_incidents_db
 from backend.database.repositories import session_repository as sessions_db
+from backend.services import round_robin_service as round_robin
 from backend.services import scheduler_service as scheduler
 from backend.sessions import manager as sessions_engine
 from backend.services.job_service import job_manager
+from backend.config.settings import settings
 from backend.shared.errors import DomainError
 from backend.shared.logging import configure_logging, get_logger
 from backend.database.connection import close as mongo_close
@@ -58,9 +62,14 @@ async def lifespan(app: FastAPI):
             await registry.session_state(p)
         sessions_engine.start_monitor()
         scheduler.start()
+        if settings.scheduler_autostart:
+            round_robin.start()
+        else:
+            log.info("startup: scheduler_autostart is off -- round-robin engine stays paused until POST /scheduler/start")
     else:
         log.warning("startup: mongo unreachable -- /health/ready will report degraded")
     yield
+    round_robin.stop()
     scheduler.stop()
     sessions_engine.stop_monitor()
     await job_manager.cancel_all()
@@ -78,7 +87,11 @@ app = FastAPI(
 app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    # "*" remains the default (this engine was designed for a trusted
+    # internal path and the bundled UI is served same-origin), but it is
+    # also what lets any page in any browser on the network drive the whole
+    # API. Set CORS_ALLOW_ORIGINS to the UI's origin in staging/production.
+    allow_origins=settings.cors_allow_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -97,12 +110,45 @@ app.include_router(analysis_router)
 app.include_router(profiles_router)
 app.include_router(sessions_router)
 app.include_router(jobs_router)
-app.include_router(incidents_router)
+app.include_router(published_incidents_router)
+app.include_router(scheduler_router)
+app.include_router(settings_router)
 
 from pathlib import Path
+
+from fastapi import HTTPException
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+
+# Every path prefix the API owns. A request under one of these that matched
+# no route above is a genuine 404 and must say so as JSON.
+#
+# Mounting the SPA at "/" with html=True used to swallow those: an
+# unmatched API path returned index.html with status 200, so a client's
+# error handling never fired and the caller got an HTML parse error instead
+# of the backend's own {"detail": ...}. Debugging a typo'd endpoint meant
+# reading an HTML document.
+_API_PREFIXES = (
+    "analysis", "clients", "discovery", "health", "incidents",
+    "jobs", "metrics", "profiles", "published-incidents", "scheduler", "sessions", "settings",
+    "docs", "redoc", "openapi.json",
+)
 
 _dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 if _dist.is_dir():
-    app.mount("/", StaticFiles(directory=str(_dist), html=True), name="ui")
+    # assets keep the real static mount, hashed filenames, long-lived
+    app.mount("/assets", StaticFiles(directory=str(_dist / "assets")), name="ui-assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa(full_path: str):
+        head = full_path.split("/", 1)[0]
+        if head in _API_PREFIXES:
+            raise HTTPException(status_code=404, detail=f"no such endpoint: /{full_path}")
+        candidate = (_dist / full_path).resolve()
+        # a real file (favicon, manifest, robots.txt) is served as itself;
+        # containment check because full_path is caller-supplied
+        if full_path and candidate.is_file() and candidate.is_relative_to(_dist.resolve()):
+            return FileResponse(str(candidate))
+        # everything else is a client-side route -> the SPA shell
+        return FileResponse(str(_dist / "index.html"))
 

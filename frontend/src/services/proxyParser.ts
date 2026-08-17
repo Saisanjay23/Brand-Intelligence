@@ -3,7 +3,7 @@
  * analyst's provider actually handed them, and normalizes it into the
  * {server, username, password} shape Playwright's own context-launch
  * option expects (see backend/stealth/proxy.py::build_proxy_config, which
- * passes `server` straight through unvalidated -- backend/sessions/
+ * passes `server` straight through unvalidated, backend/sessions/
  * manager.py::_validate_proxy is the server-side backstop for whatever
  * gets past this).
  *
@@ -15,7 +15,7 @@
  *   scheme://host:port
  *   scheme://username:password@host:port
  *
- * `scheme` defaults to "http" when omitted -- most proxy providers serve
+ * `scheme` defaults to "http" when omitted, most proxy providers serve
  * plain HTTP(S) proxies, and Playwright's `server` option requires SOME
  * scheme, so a bare `host:port` can't be passed through as-is.
  */
@@ -39,7 +39,7 @@ function safeDecode(s: string): string {
 }
 
 /** "host:port" (nothing else) -> "host:port" with the port range-checked,
- * or null. Deliberately simple (no IPv6 bracket support) -- proxy list
+ * or null. Deliberately simple (no IPv6 bracket support), proxy list
  * providers essentially never hand out IPv6 endpoints; a value that needs
  * it can still be entered via the explicit scheme:// form with brackets,
  * which this function is not responsible for validating port-wise. */
@@ -65,7 +65,7 @@ function splitAuth(authPart: string): { username: string; password?: string } | 
 
 /**
  * Parses ANY of the supported shapes (see module docstring). Returns null
- * for anything that doesn't match one of them -- callers should show
+ * for anything that doesn't match one of them, callers should show
  * `PROXY_FORMAT_EXAMPLES` as a hint rather than guessing at a partial parse.
  */
 export function parseProxyString(raw: string): ParsedProxy | null {

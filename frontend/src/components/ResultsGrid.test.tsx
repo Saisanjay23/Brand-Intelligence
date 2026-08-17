@@ -146,12 +146,12 @@ describe("validate / reject -- optimistic update and rollback", () => {
     await user.click(screen.getByRole("button", { name: /⏳ Pending/ }));
     await user.click(screen.getByTitle("Table view"));
     const row = (await screen.findByText("Test Channel")).closest("tr")!;
-    // scoped to the row -- the status filter chips above the table also
+    // scoped to the row, the status filter chips above the table also
     // render a "✅ Validated" button and would otherwise match /Validate/ too
     await user.click(within(row).getByRole("button", { name: /Validate/ }));
 
     // optimistic: the row's own status cell already reads "approved" before
-    // the PATCH resolves -- scoped to the row, since the status filter chips
+    // the PATCH resolves, scoped to the row, since the status filter chips
     // above the table render the same word regardless of any row's state
     expect(await within(row).findByText("approved")).toBeInTheDocument();
     resolvePatch();
@@ -174,7 +174,7 @@ describe("validate / reject -- optimistic update and rollback", () => {
     await user.click(screen.getByRole("button", { name: /⏳ Pending/ }));
     await user.click(screen.getByTitle("Table view"));
     const row = (await screen.findByText("Test Channel")).closest("tr")!;
-    // scoped to the row -- the status filter chips above the table also
+    // scoped to the row, the status filter chips above the table also
     // render a "✅ Validated" button and would otherwise match /Validate/ too
     await user.click(within(row).getByRole("button", { name: /Validate/ }));
 
@@ -210,7 +210,7 @@ describe("phase toggle", () => {
     });
     render(<ResultsGrid {...baseProps()} />);
     await user.click(screen.getByText("Analysis"));
-    // analysis has no card/table toggle -- it's table-only (see ResultsGrid.tsx)
+    // analysis has no card/table toggle, it's table-only (see ResultsGrid.tsx)
 
     expect(await screen.findByText("Risk")).toBeInTheDocument();
   });

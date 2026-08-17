@@ -49,6 +49,16 @@ class TestIterResults:
         hits = list(iter_results(blob))
         assert hits[0].entity_type == "page"
 
+    def test_group_typename_maps_to_group_entity_type(self):
+        # live-confirmed (2026-08-11, a real search/groups/?q= response):
+        # a Group result rides the EXACT SAME SearchProfileViewModel/
+        # .profile shape as User/Page, just with __typename "Group" -- no
+        # separate parsing branch, this is the whole difference
+        blob = {"edges": [_search_edge("152272458887295", "Allu Arjun Fans", typename="Group")]}
+        hits = list(iter_results(blob))
+        assert hits[0].entity_type == "group"
+        assert hits[0].entity_id == "152272458887295"
+
     def test_rank_follows_the_edges_array_index(self):
         blob = {"edges": [
             _search_edge("1", "First"), _search_edge("2", "Second"), _search_edge("3", "Third"),
