@@ -1,13 +1,9 @@
-// Live Activity: everything a discovery/analysis job is doing right now,
-// across every client, which platform is being scraped and for how long,
-// which keywords/URLs are done vs up next, a Stop button per job, and a
-// browser to inspect/delete the profile records those jobs produced.
+// Live Activity: rebuilt as a 3-tab workspace:
+//   1) ⚡ In-Flight Runs  – live job cards with platform chips, progress, cyber terminal
+//   2) 📜 Job History    – table of past sweeps + log viewer
+//   3) 🗄 Record Manager – database profile browser with filters & bulk delete
 //
-// Deliberately polls the SAME `GET /jobs` list the rest of the app already
-// uses (backend/api/job_routes.py) rather than opening anything new:
-// job.to_dict() already carries the full per-platform breakdown
-// (job_service.py's Job.platform_progress), so one list poll is the whole
-// live view; no per-job event-stream subscription needed for this tab.
+// Data still comes from GET /jobs and GET /jobs/{id}/events (job_routes.py).
 import { useEffect, useMemo, useRef, useState } from "react";
 import { clientsApi } from "../api/clientsApi";
 import { jobsApi } from "../api/jobsApi";
@@ -17,8 +13,10 @@ import { confirmAction } from "../utils/confirmAction";
 import { download } from "../utils/download";
 
 const JOBS_REFRESH_MS = 4_000;
-const LOG_REFRESH_MS = 2_000;
+const LOG_REFRESH_MS  = 2_000;
 const BROWSE_PAGE_SIZE = 50;
+
+// ─── helpers ────────────────────────────────────────────────────────────────
 
 function useNowTick(): number {
   const [now, setNow] = useState(() => Date.now());
@@ -40,7 +38,8 @@ function durationLabel(seconds: number | null | undefined): string {
 function exactTime(iso: string | null | undefined): string {
   if (!iso) return "";
   return new Date(iso).toLocaleString(undefined, {
-    year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit",
+    year: "numeric", month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
   });
 }
 
@@ -54,115 +53,178 @@ function relativeTime(iso: string | null | undefined): string {
   return hours < 24 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`;
 }
 
-const JOB_STATUS_LOOK: Record<string, { color: string; label: string }> = {
-  queued: { color: "var(--text-dim, #667085)", label: "queued" },
-  running: { color: "var(--accent, #7c5cff)", label: "running" },
-  done: { color: "var(--success, #36b5a0)", label: "done" },
-  failed: { color: "var(--danger, #e95053)", label: "failed" },
-  cancelled: { color: "var(--warn-yellow, #fdb71b)", label: "cancelled" },
+const PLATFORM_ICON: Record<string, string> = {
+  facebook: "📘", instagram: "📸", twitter: "𝕏",
+  youtube: "▶️", telegram: "✈️", tiktok: "🎵",
 };
 
-const PLATFORM_STATUS_LOOK: Record<string, string> = {
-  pending: "var(--text-dim, #667085)",
-  running: "var(--accent, #7c5cff)",
-  done: "var(--success, #36b5a0)",
-  partial: "var(--warn-yellow, #fdb71b)",
-  failed: "var(--danger, #e95053)",
-  skipped: "var(--text-dim, #667085)",
+const PLATFORM_COLOR: Record<string, string> = {
+  facebook: "#1877f2", instagram: "#e1306c", twitter: "#1da1f2",
+  youtube: "#ff0000", telegram: "#0088cc", tiktok: "#69c9d0",
 };
+
+const PLAT_STATUS_LOOK: Record<string, { bg: string; fg: string }> = {
+  pending:  { bg: "rgba(102,112,133,0.15)", fg: "var(--text-dim, #667085)" },
+  running:  { bg: "rgba(124,92,255,0.15)",  fg: "var(--accent, #7c5cff)" },
+  done:     { bg: "rgba(54,181,160,0.15)",  fg: "var(--success, #36b5a0)" },
+  partial:  { bg: "rgba(253,183,27,0.15)",  fg: "var(--warn-yellow, #fdb71b)" },
+  failed:   { bg: "rgba(233,80,83,0.15)",   fg: "var(--danger, #e95053)" },
+  skipped:  { bg: "rgba(102,112,133,0.1)",  fg: "var(--text-dim, #667085)" },
+};
+
+const JOB_STATUS_COLOR: Record<string, string> = {
+  queued:    "var(--text-dim, #667085)",
+  running:   "var(--accent, #7c5cff)",
+  done:      "var(--success, #36b5a0)",
+  failed:    "var(--danger, #e95053)",
+  cancelled: "var(--warn-yellow, #fdb71b)",
+};
+
+const PROFILE_STATUS_BADGE: Record<string, string> = {
+  pending:  "var(--warn-yellow, #fdb71b)",
+  approved: "var(--success, #36b5a0)",
+  rejected: "var(--danger, #e95053)",
+};
+
+// ─── Embedded CSS ─────────────────────────────────────────────────────────────
+
+const PANEL_STYLES = `
+@keyframes radarPulse {
+  0%,100% { transform: scale(1);   opacity: 0.9; }
+  50%      { transform: scale(1.5); opacity: 0.2; }
+}
+@keyframes progressPulse {
+  0%,100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
+@keyframes chipGlow {
+  0%,100% { box-shadow: 0 0 0 0 rgba(124,92,255,0); }
+  50%      { box-shadow: 0 0 10px 2px rgba(124,92,255,0.3); }
+}
+.la-tab { transition: all 0.2s ease; }
+.la-tab:hover { background: rgba(255,255,255,0.06) !important; }
+.la-tab.active { background: var(--bg-surface,#1e2837) !important; color: var(--accent,#7c5cff) !important; }
+.la-job-card { transition: border-color 0.2s ease; }
+.la-job-card:hover { border-color: rgba(124,92,255,0.35) !important; }
+.la-action-btn { transition: all 0.18s ease; }
+.la-action-btn:hover { background: var(--bg-surface-3,#344054) !important; }
+.la-platform-chip { transition: transform 0.2s ease; }
+.la-platform-chip:hover { transform: translateY(-1px); }
+.la-terminal-line:hover { background: rgba(255,255,255,0.03); border-radius: 3px; }
+.la-records-btn { transition: all 0.2s ease; }
+.la-records-btn:hover { background: rgba(54,181,160,0.18) !important; border-color: var(--success,#36b5a0) !important; color: var(--success,#36b5a0) !important; }
+`;
+
+// ─── Atoms ───────────────────────────────────────────────────────────────────
+
+function StatusDot({ color }: { color: string }) {
+  return (
+    <span style={{ position: "relative", display: "inline-flex", alignItems: "center", justifyContent: "center", width: 10, height: 10 }}>
+      <span style={{ width: 8, height: 8, borderRadius: "50%", background: color, display: "block" }} />
+      <span style={{ position: "absolute", width: 14, height: 14, borderRadius: "50%", background: color, opacity: 0.25, animation: "radarPulse 1.8s ease-in-out infinite" }} />
+    </span>
+  );
+}
 
 function Badge({ color, children }: { color: string; children: React.ReactNode }) {
   return (
-    <span style={{
-      display: "inline-flex", alignItems: "center", gap: "5px", color, fontWeight: 700,
-      fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.4px",
-    }}>
-      <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: color, flexShrink: 0 }} />
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 5, color, fontWeight: 700, fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.4px" }}>
+      <span style={{ width: 6, height: 6, borderRadius: "50%", background: color, flexShrink: 0 }} />
       {children}
     </span>
   );
 }
 
-function ItemPreview({
-  label, items, overflow, tone,
-}: { label: string; items: string[] | null | undefined; overflow?: number | null; tone: string }) {
-  // Defensive against a backend that hasn't picked up these fields yet
-  // (they're new, a running process started before this shipped simply
-  // won't send them). Missing data here must degrade to "nothing to show",
-  // never crash the whole page, a single bad prop shape used to take
-  // down this entire tab with no error boundary to catch it.
-  const list = items ?? [];
-  const extra = overflow ?? 0;
-  if (!list.length && !extra) return null;
+function EmptyState({ icon, text }: { icon: string; text: string }) {
   return (
-    <div style={{ fontSize: "11px", color: "var(--text-dim, #98a2b3)" }}>
-      <span style={{ fontWeight: 600, color: tone }}>{label}</span>{" "}
-      {list.length ? (
-        <span title={list.join(", ")}>
-          {list.slice(-6).join(", ")}
-          {extra ? ` … +${extra} more` : ""}
-        </span>
-      ) : (
-        <span>—</span>
-      )}
+    <div style={{ padding: "40px 24px", textAlign: "center", background: "var(--bg-surface,#1e2837)", border: "1px dashed rgba(255,255,255,0.1)", borderRadius: 12 }}>
+      <div style={{ fontSize: 32, marginBottom: 10 }}>{icon}</div>
+      <div style={{ fontSize: 13, color: "var(--text-dim,#667085)", maxWidth: 360, margin: "0 auto" }}>{text}</div>
     </div>
   );
 }
 
-function PlatformRow({ pid, p, now }: { pid: string; p: PlatformProgress; now: number }) {
+// ─── Platform Progress Chip ──────────────────────────────────────────────────
+
+function PlatformChip({ pid, p, now }: { pid: string; p: PlatformProgress; now: number }) {
+  const look = PLAT_STATUS_LOOK[p.status] ?? { bg: "rgba(102,112,133,0.1)", fg: "var(--text-dim)" };
   const pct = p.total > 0 ? Math.min(100, Math.round((p.processed / p.total) * 100)) : 0;
-  const color = PLATFORM_STATUS_LOOK[p.status] ?? "var(--text-dim)";
   const liveElapsed = p.started
-    ? p.status === "running"
-      ? Math.floor((now - p.started * 1000) / 1000)
-      : p.elapsed_seconds
+    ? p.status === "running" ? Math.floor((now - p.started * 1000) / 1000) : p.elapsed_seconds
     : null;
-  return (
-    <div style={{
-      border: "1px solid var(--border-subtle, rgba(255,255,255,0.08))", borderRadius: "8px",
-      padding: "8px 10px", background: "var(--bg-inner, rgba(255,255,255,0.02))",
-    }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          <strong style={{ fontSize: "12px", color: "var(--text-primary, #fff)", textTransform: "capitalize" }}>{pid}</strong>
-          <Badge color={color}>{p.status}</Badge>
-        </div>
-        <div style={{ display: "flex", gap: "12px", fontSize: "11px", color: "var(--text-dim, #98a2b3)" }}>
-          <span title="Wall-clock time this platform has taken">⏱ {durationLabel(liveElapsed)}</span>
-          {p.status === "running" && p.eta_seconds !== null && <span title="Rough estimate to finish">ETA ~{durationLabel(p.eta_seconds)}</span>}
-        </div>
-      </div>
+  const icon = PLATFORM_ICON[pid] ?? "🌐";
+  const accentColor = PLATFORM_COLOR[pid] ?? "#7c5cff";
+  const isRunning = p.status === "running";
 
+  return (
+    <div className="la-platform-chip" style={{
+      background: look.bg,
+      border: `1px solid ${isRunning ? accentColor + "55" : "rgba(255,255,255,0.08)"}`,
+      borderRadius: 10, padding: "10px 14px", minWidth: 165, flex: "1 1 165px",
+      display: "flex", flexDirection: "column", gap: 6,
+      boxShadow: isRunning ? `0 0 14px ${accentColor}22` : "none",
+      animation: isRunning ? "chipGlow 2.5s ease-in-out infinite" : "none",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontSize: 16 }}>{icon}</span>
+          <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-primary,#fff)", textTransform: "capitalize" }}>{pid}</span>
+        </div>
+        <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 999, background: look.bg, color: look.fg, border: `1px solid ${look.fg}55`, textTransform: "uppercase", letterSpacing: "0.4px" }}>
+          {p.status}
+        </span>
+      </div>
       {p.total > 0 && (
-        <div style={{ margin: "6px 0 4px" }}>
-          <div style={{ height: "5px", borderRadius: "3px", background: "rgba(255,255,255,0.08)", overflow: "hidden" }}>
-            <div style={{ height: "100%", width: `${pct}%`, background: color, transition: "width 0.4s ease" }} />
+        <div>
+          <div style={{ height: 4, borderRadius: 2, background: "rgba(255,255,255,0.08)", overflow: "hidden" }}>
+            <div style={{ height: "100%", width: `${pct}%`, background: isRunning ? `linear-gradient(90deg, ${accentColor}bb, ${accentColor})` : look.fg, transition: "width 0.5s ease", animation: isRunning ? "progressPulse 2s ease-in-out infinite" : "none" }} />
           </div>
-          <div style={{ fontSize: "10px", color: "var(--text-dim, #98a2b3)", marginTop: "2px" }}>
-            {p.processed} / {p.total} done ({pct}%)
+          <div style={{ fontSize: 10, color: "var(--text-dim,#667085)", marginTop: 2, display: "flex", justifyContent: "space-between" }}>
+            <span>{p.processed}/{p.total} ({pct}%)</span>
+            {liveElapsed !== null && <span>⏱ {durationLabel(liveElapsed)}</span>}
           </div>
         </div>
       )}
-
-      <ItemPreview label="Just finished:" items={p.done_items} tone="var(--success, #36b5a0)" />
-      <ItemPreview label="Up next:" items={p.pending_items} overflow={p.pending_overflow} tone="var(--text-muted, #98a2b3)" />
+      {isRunning && p.done_items && p.done_items.length > 0 && (
+        <div style={{ fontSize: 10, color: "var(--text-dim)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          <span style={{ color: look.fg, fontWeight: 600 }}>Just:</span>{" "}{p.done_items[p.done_items.length - 1]}
+        </div>
+      )}
+      {isRunning && p.eta_seconds != null && (
+        <div style={{ fontSize: 10, color: look.fg, fontWeight: 600 }}>ETA ~{durationLabel(p.eta_seconds)}</div>
+      )}
     </div>
   );
 }
 
-// The actual scrolling log line-by-line, per job, straight off
-// `GET /jobs/{id}/events`, which reads `job.events` (job_service.py's
-// Event ring). That list lives ONLY on the in-memory Job object for as
-// long as the job is tracked (capped at MAX_EVENTS_PER_JOB, and the whole
-// Job is dropped once MAX_JOBS_IN_MEMORY is exceeded), nothing here is
-// ever written to Mongo/any database; closing this tab (or the backend
-// restarting) is the only way this history goes away.
-function JobLiveLog({ jobId }: { jobId: string }) {
-  const [events, setEvents] = useState<JobEvent[]>([]);
+// ─── Cyber Terminal ───────────────────────────────────────────────────────────
+
+const LOG_TYPE_COLOR: Record<string, string> = {
+  info:      "var(--text-dim,#667085)",
+  debug:     "var(--text-dim,#667085)",
+  warning:   "var(--warn-yellow,#fdb71b)",
+  warn:      "var(--warn-yellow,#fdb71b)",
+  error:     "var(--danger,#e95053)",
+  failed:    "var(--danger,#e95053)",
+  discovery: "#2ee9d6",
+  analysis:  "var(--accent,#7c5cff)",
+  success:   "var(--success,#36b5a0)",
+  hit:       "var(--success,#36b5a0)",
+};
+
+const LOG_FILTER_PILLS = [
+  { id: "",                               label: "All" },
+  { id: "hit,discovery,analysis,success", label: "Hits" },
+  { id: "error,failed,warning,warn",      label: "⚠ Errors" },
+];
+
+function CyberTerminal({ jobId, onClose }: { jobId: string; onClose?: () => void }) {
+  const [events, setEvents]     = useState<JobEvent[]>([]);
   const [filterText, setFilterText] = useState("");
+  const [filterPill, setFilterPill] = useState("");
   const [autoScroll, setAutoScroll] = useState(true);
   const lastSeq = useRef(0);
-  const boxRef = useRef<HTMLDivElement>(null);
+  const boxRef  = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -172,7 +234,7 @@ function JobLiveLog({ jobId }: { jobId: string }) {
       jobsApi.jobEvents(jobId, lastSeq.current).then((r) => {
         if (cancelled || !r.items.length) return;
         lastSeq.current = r.items[r.items.length - 1].seq;
-        setEvents((prev) => [...prev, ...r.items].slice(-500));
+        setEvents((prev) => [...prev, ...r.items].slice(-600));
       }).catch(() => {});
     };
     poll();
@@ -181,199 +243,176 @@ function JobLiveLog({ jobId }: { jobId: string }) {
   }, [jobId]);
 
   useEffect(() => {
-    if (autoScroll && boxRef.current) {
-      boxRef.current.scrollTop = boxRef.current.scrollHeight;
-    }
+    if (autoScroll && boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight;
   }, [events, autoScroll]);
 
   const filteredEvents = useMemo(() => {
-    if (!filterText.trim()) return events;
-    const q = filterText.toLowerCase();
-    return events.filter((e) => e.message.toLowerCase().includes(q) || e.type.toLowerCase().includes(q));
-  }, [events, filterText]);
+    let list = events;
+    if (filterPill) {
+      const types = new Set(filterPill.split(","));
+      list = list.filter((e) => types.has(e.type.toLowerCase()));
+    }
+    if (filterText.trim()) {
+      const q = filterText.toLowerCase();
+      list = list.filter((e) => e.message.toLowerCase().includes(q) || e.type.toLowerCase().includes(q));
+    }
+    return list;
+  }, [events, filterText, filterPill]);
 
-  const handleDownloadLog = () => {
+  const handleDownload = () => {
     const text = events.map((e) => `[${e.ts || new Date().toISOString()}] [${e.type.toUpperCase()}] ${e.message}`).join("\n");
     download(`job-${jobId}-log.txt`, text, "text/plain");
   };
 
   return (
-    <div style={{ marginTop: "10px" }}>
-      <div className="job-log-toolbar">
-        <input
-          type="text"
-          className="job-log-search-input"
-          placeholder="🔍 Filter logs..."
-          value={filterText}
-          onChange={(e) => setFilterText(e.target.value)}
-        />
-        <div style={{ display: "flex", gap: "6px" }}>
-          <button
-            type="button"
-            className={`job-log-action-btn ${autoScroll ? "active" : ""}`}
-            onClick={() => setAutoScroll((v) => !v)}
-            title="Toggle automatic scrolling to latest log line"
-          >
-            {autoScroll ? "🔒 Auto-scroll ON" : "🔓 Auto-scroll OFF"}
+    <div style={{ background: "#080f1e", border: "1px solid rgba(124,92,255,0.3)", borderRadius: 10, overflow: "hidden", marginTop: 10 }}>
+      {/* Title bar */}
+      <div style={{ background: "rgba(124,92,255,0.08)", borderBottom: "1px solid rgba(124,92,255,0.2)", padding: "6px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ display: "flex", gap: 5 }}>
+            <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#e95053" }} />
+            <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#fdb71b" }} />
+            <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#36b5a0" }} />
+          </div>
+          <span style={{ fontSize: 11, color: "var(--text-dim)", fontFamily: "var(--font-mono)", letterSpacing: "0.5px" }}>
+            ● LIVE STREAM — job/{jobId.slice(0, 8)}…
+          </span>
+          {events.length > 0 && <StatusDot color="var(--success,#36b5a0)" />}
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button type="button" onClick={() => setAutoScroll((v) => !v)} style={{ fontSize: 10, padding: "3px 8px", borderRadius: 5, background: autoScroll ? "rgba(54,181,160,0.15)" : "rgba(255,255,255,0.06)", border: `1px solid ${autoScroll ? "var(--success,#36b5a0)" : "rgba(255,255,255,0.1)"}`, color: autoScroll ? "var(--success,#36b5a0)" : "var(--text-dim)", cursor: "pointer", fontWeight: 600 }}>
+            {autoScroll ? "🔒 Scroll ON" : "🔓 Scroll OFF"}
           </button>
-          <button
-            type="button"
-            className="job-log-action-btn"
-            onClick={handleDownloadLog}
-            disabled={!events.length}
-            title="Download full job event log as text file"
-          >
-            📥 Download Log
+          <button type="button" onClick={handleDownload} disabled={!events.length} style={{ fontSize: 10, padding: "3px 8px", borderRadius: 5, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", color: "var(--text-dim)", cursor: events.length ? "pointer" : "not-allowed", fontWeight: 600 }}>
+            📥 Export
           </button>
+          {onClose && (
+            <button type="button" onClick={onClose} style={{ fontSize: 12, padding: "3px 8px", borderRadius: 5, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", color: "var(--text-muted)", cursor: "pointer", fontWeight: 700 }}>✕</button>
+          )}
         </div>
       </div>
-      <div
-        ref={boxRef}
-        style={{
-          maxHeight: "220px", overflowY: "auto", background: "var(--bg-inner, #0b1220)",
-          border: "1px solid var(--border-subtle, rgba(255,255,255,0.08))", borderRadius: "8px",
-          padding: "8px 10px", fontFamily: "var(--font-mono)", fontSize: "11px",
-        }}
-      >
+      {/* Filter bar */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+        {LOG_FILTER_PILLS.map((pill) => (
+          <button key={pill.id} type="button" onClick={() => setFilterPill(pill.id)} style={{ fontSize: 10, padding: "3px 9px", borderRadius: 999, cursor: "pointer", fontWeight: 600, background: filterPill === pill.id ? "rgba(124,92,255,0.2)" : "transparent", border: `1px solid ${filterPill === pill.id ? "var(--accent,#7c5cff)" : "rgba(255,255,255,0.1)"}`, color: filterPill === pill.id ? "var(--accent,#7c5cff)" : "var(--text-dim)" }}>
+            {pill.label}
+          </button>
+        ))}
+        <input type="text" value={filterText} onChange={(e) => setFilterText(e.target.value)} placeholder="🔍 Filter…" style={{ flex: 1, fontSize: 11, padding: "3px 8px", borderRadius: 5, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)", color: "var(--text-main)", outline: "none", fontFamily: "var(--font-mono)" }} />
+        <span style={{ fontSize: 10, color: "var(--text-dim)", whiteSpace: "nowrap" }}>{filteredEvents.length}/{events.length} lines</span>
+      </div>
+      {/* Stream */}
+      <div ref={boxRef} style={{ height: 240, overflowY: "auto", padding: "8px 12px", fontFamily: "var(--font-mono)", fontSize: 11, lineHeight: "1.65" }}>
         {filteredEvents.length === 0 ? (
-          <div style={{ color: "var(--text-dim)" }}>
-            {events.length === 0 ? "waiting for activity…" : "No log lines match the filter."}
+          <div style={{ color: "var(--text-dim)", textAlign: "center", paddingTop: 40 }}>
+            {events.length === 0 ? "⏳ Waiting for activity…" : "No lines match the current filter."}
           </div>
         ) : (
-          filteredEvents.map((e) => (
-            <div key={e.seq} style={{ color: e.type === "failed" ? "var(--danger, #e95053)" : "var(--text-muted, #98a2b3)" }}>
-              <span style={{ color: "var(--text-dim)" }}>[{e.type}]</span> {e.message}
-            </div>
-          ))
+          filteredEvents.map((e) => {
+            const t   = e.type.toLowerCase();
+            const col = LOG_TYPE_COLOR[t] ?? "var(--text-dim)";
+            return (
+              <div key={e.seq} className="la-terminal-line" style={{ display: "flex", gap: 8, padding: "1px 4px" }}>
+                <span style={{ color: "rgba(255,255,255,0.2)", flexShrink: 0, userSelect: "none" }}>
+                  {e.ts ? new Date(e.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : ""}
+                </span>
+                <span style={{ color: col, flexShrink: 0, fontWeight: 700, minWidth: 80, textTransform: "uppercase", letterSpacing: "0.3px" }}>[{e.type}]</span>
+                <span style={{ color: col !== "var(--text-dim,#667085)" ? "rgba(255,255,255,0.85)" : col }}>{e.message}</span>
+              </div>
+            );
+          })
         )}
       </div>
     </div>
   );
 }
 
+// ─── Job Card ────────────────────────────────────────────────────────────────
+
 function JobCard({
   job, clientName, now, onStop, onBrowse, stopping, expanded, onToggleExpand,
 }: {
   job: Job; clientName: string; now: number; onStop: (id: string) => void;
-  onBrowse: (clientId: string, platform: string | null) => void; stopping: boolean;
-  expanded: boolean; onToggleExpand: () => void;
+  onBrowse: (clientId: string, platform: string | null) => void;
+  stopping: boolean; expanded: boolean; onToggleExpand: () => void;
 }) {
-  const look = JOB_STATUS_LOOK[job.status] ?? { color: "var(--text-dim)", label: job.status };
-  const elapsed = job.started ? Math.floor((now - new Date(job.started).getTime()) / 1000) : null;
+  const statusColor = JOB_STATUS_COLOR[job.status] ?? "var(--text-dim)";
+  const elapsed     = job.started ? Math.floor((now - new Date(job.started).getTime()) / 1000) : null;
   const platformIds = Object.keys(job.platforms || {});
-  const canStop = job.status === "queued" || job.status === "running";
+  const canStop     = job.status === "queued" || job.status === "running";
+  const isRunning   = job.status === "running";
+  const totalDone   = platformIds.reduce((s, pid) => s + (job.platforms[pid]?.processed ?? 0), 0);
+  const throughput  = elapsed && elapsed > 30 ? Math.round((totalDone / elapsed) * 60) : null;
 
   return (
-    <div style={{
-      background: "var(--bg-surface, #101828)", border: "1px solid var(--border-subtle, rgba(255,255,255,0.08))",
-      borderRadius: "12px", padding: "14px 16px",
-    }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "10px" }}>
-        <div>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <span style={{ fontSize: "16px" }}>{job.kind === "discovery" ? "🔍" : "🧪"}</span>
-            <strong style={{ fontSize: "14px", color: "var(--text-primary, #fff)" }}>{clientName}</strong>
-            <span style={{ fontSize: "11px", color: "var(--text-dim, #98a2b3)", textTransform: "capitalize" }}>{job.kind}</span>
-            <Badge color={look.color}>{look.label}</Badge>
+    <div className="la-job-card" style={{ background: "var(--bg-surface,#1e2837)", border: `1px solid ${isRunning ? "rgba(124,92,255,0.25)" : "rgba(255,255,255,0.06)"}`, borderRadius: 12, padding: "14px 16px", boxShadow: isRunning ? "0 4px 20px rgba(124,92,255,0.1)" : "none" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 16 }}>{job.kind === "discovery" ? "🔍" : "🧪"}</span>
+            <strong style={{ fontSize: 14, color: "var(--text-primary,#fff)" }}>{clientName}</strong>
+            <span style={{ fontSize: 11, color: "var(--text-dim)", textTransform: "capitalize", background: "rgba(255,255,255,0.06)", padding: "2px 8px", borderRadius: 999 }}>{job.kind}</span>
+            {isRunning ? <StatusDot color="var(--accent,#7c5cff)" /> : <Badge color={statusColor}>{job.status}</Badge>}
           </div>
-          <div style={{ fontSize: "11px", color: "var(--text-dim, #98a2b3)", marginTop: "3px" }} title={exactTime(job.started)}>
-            started {relativeTime(job.started)} · running for {durationLabel(elapsed)}
-            {job.blocked_by && (
-              <span style={{ color: "var(--warn-yellow, #fdb71b)" }}>
-                {" "}· waiting on {job.blocked_by.client_id}'s {job.blocked_by.kind}
-              </span>
-            )}
+          <div style={{ fontSize: 11, color: "var(--text-dim,#98a2b3)", display: "flex", flexWrap: "wrap", gap: "4px 12px" }}>
+            <span title={exactTime(job.started)}>Started {relativeTime(job.started)}</span>
+            {elapsed !== null && <span>· ⏱ {durationLabel(elapsed)}</span>}
+            {throughput !== null && <span>· ⚡ ~{throughput} items/min</span>}
+            {job.blocked_by && <span style={{ color: "var(--warn-yellow,#fdb71b)" }}>· ⏳ waiting on {job.blocked_by.client_id}'s {job.blocked_by.kind}</span>}
           </div>
         </div>
-        <div style={{ display: "flex", gap: "8px" }}>
-          <button
-            onClick={onToggleExpand}
-            style={{
-              padding: "6px 12px", borderRadius: "8px",
-              background: expanded ? "rgba(124,92,255,0.15)" : "var(--bg-surface-3, #1d2939)",
-              border: `1px solid ${expanded ? "var(--accent, #7c5cff)" : "var(--border-subtle, rgba(255,255,255,0.1))"}`,
-              color: expanded ? "var(--accent, #7c5cff)" : "var(--text-body, #fff)",
-              fontSize: "12px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap",
-            }}
-            title="Show/hide this job's live scrolling log"
-          >
-            {expanded ? "▾" : "▸"} Live log
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button type="button" className="la-action-btn" onClick={onToggleExpand} style={{ padding: "6px 12px", borderRadius: 8, background: expanded ? "rgba(124,92,255,0.15)" : "var(--bg-surface-3,#1d2939)", border: `1px solid ${expanded ? "var(--accent,#7c5cff)" : "rgba(255,255,255,0.1)"}`, color: expanded ? "var(--accent,#7c5cff)" : "var(--text-body,#fff)", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+            {expanded ? "▾ Terminal" : "▸ Terminal"}
           </button>
-          <button
-            onClick={() => onBrowse(job.client_id, job.platform)}
-            style={{
-              padding: "6px 12px", borderRadius: "8px", background: "var(--bg-surface-3, #1d2939)",
-              border: "1px solid var(--border-subtle, rgba(255,255,255,0.1))", color: "var(--text-body, #fff)",
-              fontSize: "12px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap",
-            }}
-            title="Jump to this client's results below"
-          >
-            View results
+          <button type="button" className="la-action-btn" onClick={() => onBrowse(job.client_id, job.platform)} style={{ padding: "6px 12px", borderRadius: 8, background: "var(--bg-surface-3,#1d2939)", border: "1px solid rgba(255,255,255,0.1)", color: "var(--text-body,#fff)", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+            🗄 Records
           </button>
           {canStop && (
-            <button
-              onClick={() => onStop(job.id)}
-              disabled={stopping}
-              style={{
-                padding: "6px 12px", borderRadius: "8px", background: "rgba(233,80,83,0.12)",
-                border: "1px solid rgba(233,80,83,0.4)", color: "var(--danger, #e95053)",
-                fontSize: "12px", fontWeight: 700, cursor: stopping ? "wait" : "pointer", whiteSpace: "nowrap",
-              }}
-            >
+            <button type="button" onClick={() => onStop(job.id)} disabled={stopping} style={{ padding: "6px 12px", borderRadius: 8, background: "rgba(233,80,83,0.12)", border: "1px solid rgba(233,80,83,0.4)", color: "var(--danger,#e95053)", fontSize: 12, fontWeight: 700, cursor: stopping ? "wait" : "pointer" }}>
               ⏹ Stop
             </button>
           )}
         </div>
       </div>
-
       {platformIds.length > 0 && (
-        <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "12px" }}>
-          {platformIds.map((pid) => (
-            <PlatformRow key={pid} pid={pid} p={job.platforms[pid]} now={now} />
-          ))}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 14 }}>
+          {platformIds.map((pid) => <PlatformChip key={pid} pid={pid} p={job.platforms[pid]} now={now} />)}
         </div>
       )}
-      {job.message && (
-        <div style={{ marginTop: "8px", fontSize: "11px", color: "var(--text-dim, #98a2b3)", fontFamily: "var(--font-mono)" }}>
-          {job.message}
-        </div>
-      )}
-      {expanded && <JobLiveLog jobId={job.id} />}
+      {job.message && <div style={{ marginTop: 10, fontSize: 11, color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>{job.message}</div>}
+      {expanded && <CyberTerminal jobId={job.id} onClose={onToggleExpand} />}
     </div>
   );
 }
 
-const STATUS_BADGE: Record<string, string> = {
-  pending: "var(--warn-yellow, #fdb71b)", approved: "var(--success, #36b5a0)", rejected: "var(--danger, #e95053)",
+// ─── Main ────────────────────────────────────────────────────────────────────
+
+const LA_SELECT_STYLE: React.CSSProperties = {
+  background: "var(--bg-inner,#0b1220)", border: "1px solid var(--border-color,#344054)",
+  borderRadius: 8, padding: "8px 10px", color: "var(--text-main)", fontSize: 12, outline: "none",
 };
 
 export function LiveActivityPanel() {
-  const [jobs, setJobs] = useState<Job[]>([]);
-  const [clients, setClients] = useState<Client[]>([]);
-  const [error, setError] = useState("");
-  const [stoppingId, setStoppingId] = useState<string>("");
+  const [activeTab,   setActiveTab]   = useState<"live" | "history" | "records">("live");
+  const [jobs,        setJobs]        = useState<Job[]>([]);
+  const [clients,     setClients]     = useState<Client[]>([]);
+  const [error,       setError]       = useState("");
+  const [stoppingId,  setStoppingId]  = useState("");
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const now = useNowTick();
 
-  const toggleExpand = (jobId: string) => {
-    setExpandedIds((prev) => {
-      const next = new Set(prev);
-      next.has(jobId) ? next.delete(jobId) : next.add(jobId);
-      return next;
-    });
-  };
-
-  // Browse & manage section
-  const [browseClientId, setBrowseClientId] = useState("");
-  const [browsePlatform, setBrowsePlatform] = useState("");
-  const [browseStatus, setBrowseStatus] = useState("");
-  const [browseSearch, setBrowseSearch] = useState("");
-  const [profiles, setProfiles] = useState<Profile[]>([]);
-  const [profilesTotal, setProfilesTotal] = useState(0);
-  const [offset, setOffset] = useState(0);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [browseLoading, setBrowseLoading] = useState(false);
-  const [deleting, setDeleting] = useState(false);
+  // Record Manager state
+  const [browseClientId,  setBrowseClientId]  = useState("");
+  const [browsePlatform,  setBrowsePlatform]  = useState("");
+  const [browseStatus,    setBrowseStatus]    = useState("");
+  const [browseSearch,    setBrowseSearch]    = useState("");
+  const [profiles,        setProfiles]        = useState<Profile[]>([]);
+  const [profilesTotal,   setProfilesTotal]   = useState(0);
+  const [offset,          setOffset]          = useState(0);
+  const [selected,        setSelected]        = useState<Set<string>>(new Set());
+  const [browseLoading,   setBrowseLoading]   = useState(false);
+  const [deleting,        setDeleting]        = useState(false);
 
   useEffect(() => {
     clientsApi.listClients().then((r) => setClients(r.items)).catch(() => {});
@@ -382,9 +421,8 @@ export function LiveActivityPanel() {
   useEffect(() => {
     let cancelled = false;
     const load = () => {
-      jobsApi.jobs("", 100).then((r) => {
-        if (!cancelled) setJobs(r.items);
-      }).catch((e) => !cancelled && setError((e as Error).message));
+      jobsApi.jobs("", 100).then((r) => { if (!cancelled) setJobs(r.items); })
+        .catch((e) => !cancelled && setError((e as Error).message));
     };
     load();
     const t = setInterval(load, JOBS_REFRESH_MS);
@@ -396,37 +434,37 @@ export function LiveActivityPanel() {
     return (id: string) => m.get(id) || id;
   }, [clients]);
 
-  const active = jobs.filter((j) => j.status === "queued" || j.status === "running");
-  const recentTerminal = jobs
-    .filter((j) => j.status === "done" || j.status === "failed" || j.status === "cancelled")
-    .slice(0, 8);
+  const activeJobs   = jobs.filter((j) => j.status === "queued" || j.status === "running");
+  const terminalJobs = jobs.filter((j) => j.status === "done" || j.status === "failed" || j.status === "cancelled");
+
+  // HUD metrics
+  const totalProcessed   = activeJobs.reduce((s, j) => s + Object.values(j.platforms || {}).reduce((ps, p) => ps + (p.processed ?? 0), 0), 0);
+  const totalElapsedSecs = activeJobs.reduce((s, j) => s + (j.started ? Math.floor((now - new Date(j.started).getTime()) / 1000) : 0), 0);
+  const throughputPerMin = totalElapsedSecs > 30 ? Math.round((totalProcessed / totalElapsedSecs) * 60) : null;
+
+  const toggleExpand = (id: string) =>
+    setExpandedIds((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
   const stop = async (jobId: string) => {
-    if (!(await confirmAction("Stop this job now? Whatever it hasn't finished scraping/analysing will be left as-is."))) return;
+    if (!(await confirmAction("Stop this job? Whatever hasn't been scraped/analysed yet will be left as-is."))) return;
     setStoppingId(jobId);
     try {
       await jobsApi.cancelJob(jobId);
       const r = await jobsApi.jobs("", 100);
       setJobs(r.items);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setStoppingId("");
-    }
+    } catch (e) { setError((e as Error).message); }
+    finally { setStoppingId(""); }
   };
 
   const browseTo = (clientId: string, platform: string | null) => {
     setBrowseClientId(clientId);
     setBrowsePlatform(platform || "");
     setOffset(0);
-    document.getElementById("live-activity-browse")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    setActiveTab("records");
   };
 
   const loadProfiles = () => {
-    if (!browseClientId) {
-      setProfiles([]); setProfilesTotal(0);
-      return;
-    }
+    if (!browseClientId) { setProfiles([]); setProfilesTotal(0); return; }
     setBrowseLoading(true);
     profilesApi.profiles({
       client_id: browseClientId, platform: browsePlatform || undefined,
@@ -440,245 +478,217 @@ export function LiveActivityPanel() {
 
   useEffect(loadProfiles, [browseClientId, browsePlatform, browseStatus, offset]);
 
-  const toggleOne = (id: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-  };
-
-  const toggleAll = () => {
-    setSelected((prev) => (prev.size === profiles.length ? new Set() : new Set(profiles.map((p) => p.id))));
-  };
-
   const deleteSelected = async () => {
     if (selected.size === 0) return;
     if (!(await confirmAction(`Permanently delete ${selected.size} profile record(s)? This cannot be undone.`))) return;
     setDeleting(true);
-    try {
-      await profilesApi.deleteProfiles(Array.from(selected));
-      loadProfiles();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setDeleting(false);
-    }
+    try { await profilesApi.deleteProfiles(Array.from(selected)); loadProfiles(); }
+    catch (e) { setError((e as Error).message); }
+    finally { setDeleting(false); }
   };
 
+  const toggleOne = (id: string) =>
+    setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleAll = () =>
+    setSelected((prev) => prev.size === profiles.length ? new Set() : new Set(profiles.map((p) => p.id)));
+
+  const TABS: Array<{ id: "live" | "history" | "records"; label: string; badge?: number }> = [
+    { id: "live",    label: "⚡ In-Flight Runs", badge: activeJobs.length || undefined },
+    { id: "history", label: "📜 Job History",   badge: terminalJobs.length || undefined },
+    { id: "records", label: "🗄 Record Manager" },
+  ];
+
   return (
-    <div style={{ color: "var(--text-main, #f2f4f7)" }}>
-      <div style={{ marginBottom: "16px" }}>
-        <h2 style={{ fontSize: "18px", fontWeight: 700, color: "var(--text-primary, #fff)", margin: 0 }}>⚡ Live Activity</h2>
-        <p style={{ fontSize: "13px", color: "var(--text-muted, #98a2b3)", margin: "4px 0 0 0" }}>
-          Every discovery/analysis job in flight right now -- which platform, which keywords/URLs are done vs.
-          up next, and how long each has taken. Stop a job here, or jump straight to its client's results below.
+    <div style={{ color: "var(--text-main,#f2f4f7)" }}>
+      <style>{PANEL_STYLES}</style>
+
+      {/* Page header */}
+      <div style={{ marginBottom: 16 }}>
+        <h2 style={{ fontSize: 20, fontWeight: 700, color: "var(--text-primary,#fff)", margin: 0 }}>⚡ Live Activity</h2>
+        <p style={{ fontSize: 13, color: "var(--text-muted,#98a2b3)", margin: "4px 0 0 0" }}>
+          Monitor every in-flight scrape engine, inspect job logs, and manage the discovered profile database.
         </p>
       </div>
 
+      {/* HUD banner */}
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20, padding: "12px 16px", background: "var(--bg-surface,#1e2837)", border: "1px solid rgba(124,92,255,0.2)", borderRadius: 12, boxShadow: "0 4px 20px rgba(0,0,0,0.25)" }}>
+        {([
+          { label: "Active Engines",  value: activeJobs.length ? `${activeJobs.length} Running` : "Idle",  color: activeJobs.length ? "var(--accent,#7c5cff)" : "var(--text-dim)", dot: activeJobs.length > 0 },
+          { label: "Queued",          value: `${activeJobs.filter((j) => j.status === "queued").length} Pending`, color: "var(--warn-yellow,#fdb71b)", dot: false },
+          { label: "Throughput",      value: throughputPerMin !== null ? `~${throughputPerMin}/min` : "—", color: "var(--success,#36b5a0)", dot: false },
+          { label: "Jobs Done",       value: String(terminalJobs.length), color: "var(--text-body,#fff)", dot: false },
+        ] as const).map((stat) => (
+          <div key={stat.label} style={{ flex: "1 1 130px", display: "flex", flexDirection: "column", gap: 2 }}>
+            <span style={{ fontSize: 10, color: "var(--text-dim)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" }}>{stat.label}</span>
+            <span style={{ fontSize: 17, fontWeight: 800, color: stat.color, display: "flex", alignItems: "center", gap: 6 }}>
+              {stat.dot && <StatusDot color={stat.color} />}
+              {stat.value}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      {/* Error banner */}
       {error && (
-        <div style={{
-          padding: "10px 16px", background: "rgba(233,80,83,0.1)", border: "1px solid rgba(233,80,83,0.25)",
-          color: "var(--danger)", borderRadius: "10px", marginBottom: "16px", fontSize: "13px",
-        }}>
-          ⚠️ {error}
+        <div style={{ padding: "10px 16px", background: "rgba(233,80,83,0.1)", border: "1px solid rgba(233,80,83,0.25)", color: "var(--danger,#e95053)", borderRadius: 10, marginBottom: 16, fontSize: 13, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span>⚠️ {error}</span>
+          <button type="button" onClick={() => setError("")} style={{ background: "transparent", border: "none", color: "var(--danger,#e95053)", cursor: "pointer", fontWeight: 700, fontSize: 14 }}>✕</button>
         </div>
       )}
 
-      {active.length === 0 ? (
-        <div style={{
-          padding: "24px", textAlign: "center", color: "var(--text-dim)", background: "var(--bg-surface, #101828)",
-          border: "1px dashed var(--border-subtle, rgba(255,255,255,0.1))", borderRadius: "12px", marginBottom: "20px",
-        }}>
-          Nothing running right now -- the round-robin engine or a manual sweep will show up here the moment it starts.
-        </div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginBottom: "24px" }}>
-          {active.map((job) => (
-            <JobCard
-              key={job.id} job={job} clientName={clientName(job.client_id)} now={now}
-              onStop={stop} onBrowse={browseTo} stopping={stoppingId === job.id}
-              expanded={expandedIds.has(job.id)} onToggleExpand={() => toggleExpand(job.id)}
-            />
-          ))}
-        </div>
-      )}
-
-      {recentTerminal.length > 0 && (
-        <details style={{ marginBottom: "24px" }}>
-          <summary style={{ cursor: "pointer", fontSize: "12px", color: "var(--text-dim, #98a2b3)", fontWeight: 600 }}>
-            Recently finished ({recentTerminal.length})
-          </summary>
-          <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "8px" }}>
-            {recentTerminal.map((job) => {
-              const look = JOB_STATUS_LOOK[job.status] ?? { color: "var(--text-dim)", label: job.status };
-              const took = job.started && job.finished
-                ? Math.round((new Date(job.finished).getTime() - new Date(job.started).getTime()) / 1000)
-                : null;
-              return (
-                <div
-                  key={job.id}
-                  onClick={() => browseTo(job.client_id, job.platform)}
-                  style={{
-                    display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer",
-                    padding: "8px 12px", background: "var(--bg-surface, #101828)", borderRadius: "8px",
-                    border: "1px solid var(--border-subtle, rgba(255,255,255,0.06))", fontSize: "12px",
-                  }}
-                >
-                  <span>
-                    <strong style={{ color: "var(--text-primary, #fff)" }}>{clientName(job.client_id)}</strong>{" "}
-                    <span style={{ color: "var(--text-dim)", textTransform: "capitalize" }}>{job.kind}</span>
-                  </span>
-                  <span style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-                    <Badge color={look.color}>{look.label}</Badge>
-                    <span style={{ color: "var(--text-dim)" }} title={exactTime(job.finished)}>
-                      took {durationLabel(took)} · {relativeTime(job.finished)}
-                    </span>
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        </details>
-      )}
-
-      <div id="live-activity-browse" style={{ borderTop: "1px solid var(--border-subtle, rgba(255,255,255,0.08))", paddingTop: "20px" }}>
-        <h3 style={{ fontSize: "15px", fontWeight: 700, color: "var(--text-primary, #fff)", margin: "0 0 4px 0" }}>
-          🗄 Browse &amp; manage results
-        </h3>
-        <p style={{ fontSize: "12px", color: "var(--text-muted, #98a2b3)", margin: "0 0 12px 0" }}>
-          Inspect what a job actually saved to the database, and permanently delete records if needed.
-        </p>
-
-        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "12px" }}>
-          <select
-            value={browseClientId}
-            onChange={(e) => { setBrowseClientId(e.target.value); setOffset(0); }}
-            style={selectStyle}
-          >
-            <option value="">Select a client…</option>
-            {clients.map((c) => (
-              <option key={c.client_id} value={c.client_id}>{c.name || c.client_id}</option>
-            ))}
-          </select>
-          <select value={browsePlatform} onChange={(e) => { setBrowsePlatform(e.target.value); setOffset(0); }} style={selectStyle}>
-            <option value="">All platforms</option>
-            {["facebook", "instagram", "twitter", "youtube", "telegram", "tiktok"].map((p) => (
-              <option key={p} value={p}>{p}</option>
-            ))}
-          </select>
-          <select value={browseStatus} onChange={(e) => { setBrowseStatus(e.target.value); setOffset(0); }} style={selectStyle}>
-            <option value="">All statuses</option>
-            <option value="pending">Pending</option>
-            <option value="approved">Approved</option>
-            <option value="rejected">Rejected</option>
-          </select>
-          <input
-            value={browseSearch}
-            onChange={(e) => setBrowseSearch(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && (setOffset(0), loadProfiles())}
-            placeholder="🔎 Search name/URL…"
-            style={{ ...selectStyle, flex: "1 1 200px" }}
-          />
-          <button onClick={() => { setOffset(0); loadProfiles(); }} style={{ ...selectStyle, cursor: "pointer", fontWeight: 700 }}>
-            Search
+      {/* 3-Tab nav */}
+      <div style={{ display: "flex", gap: 4, background: "var(--bg-app,#101828)", padding: 4, borderRadius: 10, border: "1px solid var(--border-color,#344054)", marginBottom: 20 }}>
+        {TABS.map((tab) => (
+          <button key={tab.id} type="button" className={`la-tab${activeTab === tab.id ? " active" : ""}`} onClick={() => setActiveTab(tab.id)} style={{ flex: 1, padding: "8px 10px", borderRadius: 8, border: "none", background: activeTab === tab.id ? "var(--bg-surface,#1e2837)" : "transparent", color: activeTab === tab.id ? "var(--accent,#7c5cff)" : "var(--text-muted,#98a2b3)", fontSize: 13, fontWeight: activeTab === tab.id ? 700 : 500, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, boxShadow: activeTab === tab.id ? "0 1px 6px rgba(0,0,0,0.25)" : "none" }}>
+            {tab.label}
+            {tab.badge !== undefined && (
+              <span style={{ padding: "1px 7px", borderRadius: 999, fontSize: 10, fontWeight: 800, background: activeTab === tab.id ? "var(--accent,#7c5cff)" : "var(--bg-surface-3,#344054)", color: "#fff" }}>{tab.badge}</span>
+            )}
           </button>
+        ))}
+      </div>
+
+      {/* ══ TAB 1: IN-FLIGHT RUNS ══ */}
+      {activeTab === "live" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {activeJobs.length === 0 ? (
+            <EmptyState icon="🛸" text="No active scrapes right now — launch a Discovery Sweep or Re-run Analysis from the Clients tab, or wait for the round-robin engine to pick up the next job." />
+          ) : (
+            activeJobs.map((job) => (
+              <JobCard key={job.id} job={job} clientName={clientName(job.client_id)} now={now}
+                onStop={stop} onBrowse={browseTo} stopping={stoppingId === job.id}
+                expanded={expandedIds.has(job.id)} onToggleExpand={() => toggleExpand(job.id)} />
+            ))
+          )}
         </div>
+      )}
 
-        {!browseClientId ? (
-          <div style={{ padding: "20px", textAlign: "center", color: "var(--text-dim)", fontSize: "13px" }}>
-            Pick a client above (or click "View results" on a job) to browse its records.
-          </div>
-        ) : (
-          <>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
-              <span style={{ fontSize: "12px", color: "var(--text-dim)" }}>
-                {browseLoading ? "Loading…" : `${profilesTotal} record(s)`}
-                {selected.size > 0 && ` · ${selected.size} selected`}
-              </span>
-              <button
-                onClick={deleteSelected}
-                disabled={selected.size === 0 || deleting}
-                style={{
-                  padding: "6px 14px", borderRadius: "8px",
-                  background: selected.size ? "rgba(233,80,83,0.15)" : "var(--bg-surface-3, #1d2939)",
-                  border: `1px solid ${selected.size ? "rgba(233,80,83,0.4)" : "var(--border-subtle, rgba(255,255,255,0.1))"}`,
-                  color: selected.size ? "var(--danger, #e95053)" : "var(--text-dim)",
-                  fontSize: "12px", fontWeight: 700, cursor: selected.size ? "pointer" : "not-allowed",
-                }}
-              >
-                🗑 Delete selected {selected.size > 0 ? `(${selected.size})` : ""}
-              </button>
-            </div>
-
+      {/* ══ TAB 2: JOB HISTORY ══ */}
+      {activeTab === "history" && (
+        <div>
+          {terminalJobs.length === 0 ? (
+            <EmptyState icon="📜" text="No completed jobs yet. Run a sweep to see history here." />
+          ) : (
             <div style={{ overflowX: "auto" }}>
-              <table className="core_table">
+              <table className="core_table" style={{ minWidth: 680 }}>
                 <thead>
                   <tr>
-                    <th><input type="checkbox" checked={profiles.length > 0 && selected.size === profiles.length} onChange={toggleAll} /></th>
-                    <th>Platform</th>
-                    <th>Name</th>
-                    <th>URL</th>
-                    <th>Status</th>
-                    <th>Risk</th>
-                    <th>Phase</th>
-                    <th>Last seen</th>
+                    <th>Client</th><th>Type</th><th>Status</th><th>Duration</th><th>Finished</th><th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {profiles.length === 0 ? (
-                    <tr><td colSpan={8} style={{ textAlign: "center", padding: "20px", color: "var(--text-dim)" }}>
-                      {browseLoading ? "Loading…" : "No records match these filters."}
-                    </td></tr>
-                  ) : (
-                    profiles.map((p) => (
+                  {terminalJobs.map((job) => {
+                    const took = job.started && job.finished
+                      ? Math.round((new Date(job.finished).getTime() - new Date(job.started).getTime()) / 1000) : null;
+                    const isExpanded = expandedIds.has(job.id);
+                    return (
+                      <>
+                        <tr key={job.id}>
+                          <td style={{ fontWeight: 600, color: "var(--text-primary,#fff)" }}>{clientName(job.client_id)}</td>
+                          <td><span style={{ fontSize: 11, background: "rgba(255,255,255,0.06)", padding: "2px 8px", borderRadius: 999 }}>{job.kind === "discovery" ? "🔍" : "🧪"} {job.kind}</span></td>
+                          <td><Badge color={JOB_STATUS_COLOR[job.status] ?? "var(--text-dim)"}>{job.status}</Badge></td>
+                          <td style={{ fontSize: 12, color: "var(--text-dim)" }}>{durationLabel(took)}</td>
+                          <td style={{ fontSize: 12, color: "var(--text-dim)" }} title={exactTime(job.finished)}>{relativeTime(job.finished)}</td>
+                          <td>
+                            <div style={{ display: "flex", gap: 6 }}>
+                              <button type="button" className="la-records-btn" onClick={() => browseTo(job.client_id, job.platform)} style={{ fontSize: 11, padding: "4px 10px", borderRadius: 6, cursor: "pointer", background: "rgba(54,181,160,0.1)", border: "1px solid rgba(54,181,160,0.3)", color: "var(--text-muted)", fontWeight: 600 }}>🗄 Records</button>
+                              <button type="button" className="la-action-btn" onClick={() => toggleExpand(job.id)} style={{ fontSize: 11, padding: "4px 10px", borderRadius: 6, cursor: "pointer", background: isExpanded ? "rgba(124,92,255,0.15)" : "rgba(255,255,255,0.06)", border: `1px solid ${isExpanded ? "var(--accent,#7c5cff)" : "rgba(255,255,255,0.1)"}`, color: isExpanded ? "var(--accent,#7c5cff)" : "var(--text-muted)", fontWeight: 600 }}>{isExpanded ? "▾ Logs" : "▸ Logs"}</button>
+                            </div>
+                          </td>
+                        </tr>
+                        {isExpanded && (
+                          <tr key={`${job.id}-log`}>
+                            <td colSpan={6} style={{ paddingTop: 0 }}>
+                              <CyberTerminal jobId={job.id} onClose={() => toggleExpand(job.id)} />
+                            </td>
+                          </tr>
+                        )}
+                      </>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ══ TAB 3: RECORD MANAGER ══ */}
+      {activeTab === "records" && (
+        <div>
+          <div style={{ marginBottom: 16 }}>
+            <h3 style={{ fontSize: 15, fontWeight: 700, color: "var(--text-primary,#fff)", margin: "0 0 4px 0" }}>🗄 Browse & Manage Discovery Records</h3>
+            <p style={{ fontSize: 12, color: "var(--text-muted,#98a2b3)", margin: 0 }}>Inspect what each job saved to the database — filter, search, and permanently delete records.</p>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+            <select value={browseClientId} onChange={(e) => { setBrowseClientId(e.target.value); setOffset(0); }} style={LA_SELECT_STYLE}>
+              <option value="">Select a client…</option>
+              {clients.map((c) => <option key={c.client_id} value={c.client_id}>{c.name || c.client_id}</option>)}
+            </select>
+            <select value={browsePlatform} onChange={(e) => { setBrowsePlatform(e.target.value); setOffset(0); }} style={LA_SELECT_STYLE}>
+              <option value="">All platforms</option>
+              {["facebook", "instagram", "twitter", "youtube", "telegram", "tiktok"].map((p) => (
+                <option key={p} value={p}>{PLATFORM_ICON[p] || ""} {p}</option>
+              ))}
+            </select>
+            <select value={browseStatus} onChange={(e) => { setBrowseStatus(e.target.value); setOffset(0); }} style={LA_SELECT_STYLE}>
+              <option value="">All statuses</option>
+              <option value="pending">Pending</option>
+              <option value="approved">Approved</option>
+              <option value="rejected">Rejected</option>
+            </select>
+            <input value={browseSearch} onChange={(e) => setBrowseSearch(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (setOffset(0), loadProfiles())} placeholder="🔎 Search name / URL…" style={{ ...LA_SELECT_STYLE, flex: "1 1 200px" }} />
+            <button type="button" onClick={() => { setOffset(0); loadProfiles(); }} style={{ ...LA_SELECT_STYLE, cursor: "pointer", fontWeight: 700 }}>Search</button>
+          </div>
+          {!browseClientId ? (
+            <EmptyState icon="🔍" text="Select a client above, or click '🗄 Records' on any job to jump straight here." />
+          ) : (
+            <>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
+                  {browseLoading ? "Loading…" : `${profilesTotal} record(s)`}{selected.size > 0 && ` · ${selected.size} selected`}
+                </span>
+                <button type="button" onClick={deleteSelected} disabled={selected.size === 0 || deleting} style={{ padding: "6px 14px", borderRadius: 8, background: selected.size ? "rgba(233,80,83,0.15)" : "var(--bg-surface-3,#1d2939)", border: `1px solid ${selected.size ? "rgba(233,80,83,0.4)" : "rgba(255,255,255,0.1)"}`, color: selected.size ? "var(--danger,#e95053)" : "var(--text-dim)", fontSize: 12, fontWeight: 700, cursor: selected.size ? "pointer" : "not-allowed" }}>
+                  🗑 Delete selected{selected.size > 0 ? ` (${selected.size})` : ""}
+                </button>
+              </div>
+              <div style={{ overflowX: "auto" }}>
+                <table className="core_table">
+                  <thead>
+                    <tr>
+                      <th><input type="checkbox" checked={profiles.length > 0 && selected.size === profiles.length} onChange={toggleAll} /></th>
+                      <th>Platform</th><th>Name</th><th>URL</th><th>Status</th><th>Risk</th><th>Phase</th><th>Last seen</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {profiles.length === 0 ? (
+                      <tr><td colSpan={8} style={{ textAlign: "center", padding: 24, color: "var(--text-dim)" }}>{browseLoading ? "Loading…" : "No records match these filters."}</td></tr>
+                    ) : profiles.map((p) => (
                       <tr key={p.id}>
                         <td><input type="checkbox" checked={selected.has(p.id)} onChange={() => toggleOne(p.id)} /></td>
-                        <td style={{ textTransform: "capitalize" }}>{p.platform}</td>
-                        <td style={{ maxWidth: "180px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {p.profile_name || "—"}
+                        <td style={{ textTransform: "capitalize" }}>{PLATFORM_ICON[p.platform] || ""} {p.platform}</td>
+                        <td style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.profile_name || "—"}</td>
+                        <td style={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          <a href={p.url} target="_blank" rel="noreferrer" style={{ color: "var(--accent,#7c5cff)" }}>{p.url}</a>
                         </td>
-                        <td style={{ maxWidth: "220px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          <a href={p.url} target="_blank" rel="noreferrer" style={{ color: "var(--accent, #7c5cff)" }}>{p.url}</a>
-                        </td>
-                        <td><Badge color={STATUS_BADGE[p.status] ?? "var(--text-dim)"}>{p.status}</Badge></td>
+                        <td><Badge color={PROFILE_STATUS_BADGE[p.status] ?? "var(--text-dim)"}>{p.status}</Badge></td>
                         <td>{p.risk_score ?? "—"}</td>
                         <td style={{ textTransform: "capitalize" }}>{p.phase || "—"}</td>
                         <td title={exactTime(p.analysed_at)}>{relativeTime(p.analysed_at) !== "—" ? relativeTime(p.analysed_at) : "—"}</td>
                       </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            <div style={{ display: "flex", justifyContent: "center", gap: "12px", alignItems: "center", marginTop: "12px" }}>
-              <button
-                onClick={() => setOffset(Math.max(0, offset - BROWSE_PAGE_SIZE))}
-                disabled={offset === 0}
-                style={{ ...selectStyle, cursor: offset === 0 ? "not-allowed" : "pointer" }}
-              >
-                ← Prev
-              </button>
-              <span style={{ fontSize: "12px", color: "var(--text-dim)" }}>
-                {offset + 1}–{Math.min(offset + BROWSE_PAGE_SIZE, profilesTotal)} of {profilesTotal}
-              </span>
-              <button
-                onClick={() => setOffset(offset + BROWSE_PAGE_SIZE)}
-                disabled={offset + BROWSE_PAGE_SIZE >= profilesTotal}
-                style={{ ...selectStyle, cursor: offset + BROWSE_PAGE_SIZE >= profilesTotal ? "not-allowed" : "pointer" }}
-              >
-                Next →
-              </button>
-            </div>
-          </>
-        )}
-      </div>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ display: "flex", justifyContent: "center", gap: 12, alignItems: "center", marginTop: 12 }}>
+                <button type="button" onClick={() => setOffset(Math.max(0, offset - BROWSE_PAGE_SIZE))} disabled={offset === 0} style={{ ...LA_SELECT_STYLE, cursor: offset === 0 ? "not-allowed" : "pointer" }}>← Prev</button>
+                <span style={{ fontSize: 12, color: "var(--text-dim)" }}>{offset + 1}–{Math.min(offset + BROWSE_PAGE_SIZE, profilesTotal)} of {profilesTotal}</span>
+                <button type="button" onClick={() => setOffset(offset + BROWSE_PAGE_SIZE)} disabled={offset + BROWSE_PAGE_SIZE >= profilesTotal} style={{ ...LA_SELECT_STYLE, cursor: offset + BROWSE_PAGE_SIZE >= profilesTotal ? "not-allowed" : "pointer" }}>Next →</button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
-
-const selectStyle: React.CSSProperties = {
-  background: "var(--bg-inner, #0b1220)", border: "1px solid var(--border-color, #344054)",
-  borderRadius: "8px", padding: "8px 10px", color: "var(--text-main)", fontSize: "12px", outline: "none",
-};
