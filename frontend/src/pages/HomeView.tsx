@@ -992,7 +992,7 @@ export function HomeView({
   };
 
   return (
-    <div className="bento-clients-layout">
+    <div className="clients-workspace-layout">
       {globalSearchOpen && (
         <GlobalSearchModal
           clients={clients}
@@ -1001,458 +1001,581 @@ export function HomeView({
         />
       )}
 
-      {/* CREATE / EDIT CLIENT MODAL */}
-      {(mode === "create" || editing) && (
-        <div
-          className="bento-modal-backdrop"
-          onClick={() => {
-            if (editing) cancelEditing();
-            else setMode("select");
-          }}
-        >
-          <div className="bento-modal-box" onClick={(e) => e.stopPropagation()}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--border-subtle)", paddingBottom: "12px" }}>
-              <div style={{ fontSize: "16px", fontWeight: 800, color: "var(--text-main)", display: "flex", alignItems: "center", gap: "8px" }}>
-                <span>{editing ? "✏️ Edit Client Information" : "➕ Create New Client Organization"}</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  if (editing) cancelEditing();
-                  else setMode("select");
-                }}
-                style={{ background: "transparent", border: "none", color: "var(--text-muted)", fontSize: "16px", cursor: "pointer" }}
-              >
-                ✕
-              </button>
-            </div>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-              <div>
-                <label style={{ fontSize: "11px", fontWeight: 700, textTransform: "uppercase", color: "var(--text-dim)", display: "block", marginBottom: "4px" }}>
-                  Organization ID (Slug)
-                </label>
-                <input
-                  value={idInput}
-                  onChange={(e) => setIdInput(e.target.value)}
-                  placeholder="e.g. adani, tesla, acme..."
-                  disabled={editing}
-                  className="client-select-input"
-                  style={{ width: "100%", opacity: editing ? 0.6 : 1 }}
-                />
-              </div>
-
-              <div>
-                <label style={{ fontSize: "11px", fontWeight: 700, textTransform: "uppercase", color: "var(--text-dim)", display: "block", marginBottom: "4px" }}>
-                  Organization Display Name
-                </label>
-                <input
-                  value={nameInput}
-                  onChange={(e) => setNameInput(e.target.value)}
-                  placeholder="e.g. Adani Group, Tesla Inc..."
-                  className="client-select-input"
-                  style={{ width: "100%" }}
-                />
-              </div>
-
-              <div>
-                <label style={{ fontSize: "11px", fontWeight: 700, textTransform: "uppercase", color: "var(--text-dim)", display: "block", marginBottom: "4px" }}>
-                  Primary Domain
-                </label>
-                <input
-                  value={domainInput}
-                  onChange={(e) => setDomainInput(e.target.value)}
-                  placeholder="e.g. adanigroup.com..."
-                  className="client-select-input"
-                  style={{ width: "100%" }}
-                />
-              </div>
-            </div>
-
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "10px", borderTop: "1px solid var(--border-subtle)", paddingTop: "14px" }}>
-              <button
-                type="button"
-                className="bento-action-btn"
-                onClick={() => {
-                  if (editing) cancelEditing();
-                  else setMode("select");
-                }}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={async () => {
-                  const savedClient = await saveConfig();
-                  if (savedClient) {
-                    setEditing(false);
-                    setMode("select");
-                  }
-                }}
-                disabled={saving || !idInput.trim()}
-                className="bento-runner-btn-sweep"
-                style={{ padding: "8px 20px", fontSize: "13px" }}
-              >
-                {saving ? "Saving…" : "💾 Save Organization"}
-              </button>
-            </div>
+      {/* LEFT SIDEBAR: Client Directory */}
+      <div className="clients-sidebar-card">
+        <div className="clients-sidebar-header">
+          <div className="clients-sidebar-title">
+            <span>🏢</span>
+            <span>Clients Directory</span>
+            <span style={{ fontSize: "11px", color: "var(--text-dim)", fontWeight: 500 }}>
+              ({clients.length})
+            </span>
           </div>
-        </div>
-      )}
-
-      {/* ──────────────── 1. BENTO HERO COMMAND BAR ──────────────── */}
-      <div className="bento-hero-bar">
-        <div className="bento-hero-left">
-          <div className="bento-hero-avatar">
-            {activeClient
-              ? (activeClient.name || activeClient.client_id).charAt(0).toUpperCase()
-              : "🏢"}
-          </div>
-
-          <div className="bento-hero-info">
-            {activeClient ? (
-              <>
-                <button
-                  type="button"
-                  className="bento-client-dropdown-trigger"
-                  onClick={() => setGlobalSearchOpen(true)}
-                  title="Click or press Ctrl+K to switch client"
-                >
-                  <span>{activeClient.name || activeClient.client_id}</span>
-                  <span style={{ fontSize: "14px", color: "var(--text-dim)", marginTop: "2px" }}>▾</span>
-                </button>
-
-                <div className="bento-hero-meta-row">
-                  <span className="bento-hero-pill">🆔 {activeClient.client_id}</span>
-                  {activeClient.domain && (
-                    <a
-                      href={`https://${activeClient.domain.replace(/^https?:\/\//, "")}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="bento-hero-pill link"
-                      title="Open website in new tab"
-                    >
-                      🌐 {activeClient.domain} ↗
-                    </a>
-                  )}
-                  <span className="bento-hero-pill" style={{ color: "var(--success)", borderColor: "rgba(16, 185, 129, 0.3)" }}>
-                    <span className="bento-session-indicator ready" /> Active Monitoring
-                  </span>
-                </div>
-              </>
-            ) : (
-              <div style={{ fontSize: "18px", fontWeight: 800, color: "var(--text-main)" }}>
-                Select or Create a Client
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="bento-hero-actions">
           <button
             type="button"
-            className="bento-action-btn"
-            onClick={() => setGlobalSearchOpen(true)}
-            title="Search & switch client (Ctrl+K)"
-          >
-            <span>🔍</span>
-            <span>Switch Client</span>
-            <span style={{ fontSize: "10px", opacity: 0.6, background: "rgba(255,255,255,0.08)", padding: "1px 5px", borderRadius: "4px" }}>Ctrl+K</span>
-          </button>
-
-          {activeClient && (
-            <>
-              <button
-                type="button"
-                className="bento-action-btn"
-                onClick={() => setEditing(true)}
-                title="Edit organization information"
-              >
-                <span>✏️</span>
-                <span>Edit</span>
-              </button>
-
-              <button
-                type="button"
-                className="bento-action-btn"
-                onClick={() => cloneClient(activeClient)}
-                title="Duplicate configuration"
-              >
-                <span>📋</span>
-                <span>Clone</span>
-              </button>
-            </>
-          )}
-
-          <button
-            type="button"
-            className="bento-action-btn primary"
+            className="btn-new-client-pill"
             onClick={switchToCreate}
             title="Create a new client"
           >
-            <span>➕</span>
-            <span>New Client</span>
+            <span>➕</span> New
           </button>
+        </div>
 
-          {activeClient && (
-            <button
-              type="button"
-              className="bento-action-btn danger"
-              onClick={handleDelete}
-              disabled={deleting}
-              title="Delete client organization"
-            >
-              <span>{deleting ? "Deleting…" : "🗑️"}</span>
-            </button>
+        <div className="client-search-box">
+          <span className="client-search-icon">🔍</span>
+          <input
+            value={sidebarSearch}
+            onChange={(e) => setSidebarSearch(e.target.value)}
+            placeholder="Search clients..."
+          />
+          <span className="client-search-shortcut">Ctrl K</span>
+        </div>
+
+        <div className="client-filter-pills">
+          <button
+            type="button"
+            className={`client-filter-pill-btn ${sidebarFilter === "all" ? "active" : ""}`}
+            onClick={() => setSidebarFilter("all")}
+          >
+            All
+          </button>
+          <button
+            type="button"
+            className={`client-filter-pill-btn ${sidebarFilter === "active" ? "active" : ""}`}
+            onClick={() => setSidebarFilter("active")}
+          >
+            Active ({clients.filter((c) => (c.name_keywords?.length || 0) + (c.domain_keywords?.length || 0) > 0).length})
+          </button>
+          <button
+            type="button"
+            className={`client-filter-pill-btn ${sidebarFilter === "empty" ? "active" : ""}`}
+            onClick={() => setSidebarFilter("empty")}
+          >
+            Needs Setup
+          </button>
+        </div>
+
+        <div className="client-directory-list">
+          {loadingClients ? (
+            <div style={{ textAlign: "center", padding: "24px", color: "var(--text-dim)", fontSize: "12px" }}>
+              Loading clients...
+            </div>
+          ) : !filteredClients.length ? (
+            <div style={{ textAlign: "center", padding: "24px", color: "var(--text-dim)", fontSize: "12px" }}>
+              {sidebarSearch ? "No matching clients found." : "No clients configured."}
+            </div>
+          ) : (
+            filteredClients.map((c) => {
+              const isSelected = mode === "select" && activeClient?.client_id === c.client_id;
+              const kwCount = (c.name_keywords?.length || 0) + (c.domain_keywords?.length || 0);
+              return (
+                <div
+                  key={c.client_id}
+                  className={`client-directory-item ${isSelected ? "active" : ""}`}
+                  onClick={() => selectSavedClient(c.client_id)}
+                >
+                  <div className="client-dir-avatar">
+                    {(c.name || c.client_id).charAt(0).toUpperCase()}
+                  </div>
+                  <div className="client-dir-info">
+                    <div className="client-dir-name">{c.name || c.client_id}</div>
+                    <div className="client-dir-meta">
+                      <span>{c.domain || c.client_id}</span>
+                    </div>
+                  </div>
+                  <span className="client-dir-badge" title={`${kwCount} total keywords`}>
+                    {kwCount} kw
+                  </span>
+                </div>
+              );
+            })
           )}
         </div>
       </div>
 
-      {/* ──────────────── 2. BENTO GRID TILES ──────────────── */}
-      {activeClient ? (
-        <div className="bento-grid">
-          {/* ⚡ TILE 1: MULTI-PLATFORM SCAN DECK (Span 7) */}
-          <div className="bento-tile bento-span-7 bento-scan-deck">
-            <div className="bento-tile-header">
-              <div className="bento-tile-title-group">
-                <div className="bento-tile-title">
-                  <span>⚡ Multi-Platform Scan Deck</span>
-                </div>
+      {/* RIGHT DETAIL WORKSPACE */}
+      <div className="client-workspace-pane">
+        {mode === "create" ? (
+          /* CREATE CLIENT WORKSPACE */
+          <div className="dashboard-card-box" style={{ background: "var(--bg-card)", padding: "24px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", borderBottom: "1px solid var(--border-subtle)", paddingBottom: "12px" }}>
+              <div style={{ fontSize: "18px", fontWeight: 800, color: "var(--text-main)", display: "flex", alignItems: "center", gap: "8px" }}>
+                <span>✨ Create New Client</span>
               </div>
+              <button
+                type="button"
+                className="text-link-btn"
+                onClick={() => {
+                  if (clients.length) {
+                    selectSavedClient(clients[0].client_id);
+                  } else {
+                    setMode("select");
+                  }
+                }}
+              >
+                ✕ Cancel
+              </button>
+            </div>
 
-              <div className="bento-status-subline">
-                <span className="bento-session-indicator ready" />
-                <span>
-                  {platforms.filter((p) => p.session_state === "ready").length} of {platforms.length} platforms ready
-                </span>
+            <div style={{ marginBottom: "20px" }}>
+              <label className="field-label">1. Organization Details</label>
+              <div className="client-setup-box" style={{ flexWrap: "wrap", marginTop: "8px" }}>
+                <input
+                  value={idInput}
+                  onChange={(e) => setIdInput(e.target.value)}
+                  placeholder="🆔 org id (unique slug, e.g. acme-corp)…"
+                  className="client-select-input"
+                />
+                <input
+                  value={nameInput}
+                  onChange={(e) => setNameInput(e.target.value)}
+                  placeholder="🏢 organization / client display name…"
+                  className="client-select-input"
+                />
+                <input
+                  value={domainInput}
+                  onChange={(e) => setDomainInput(e.target.value)}
+                  placeholder="🌐 official website domain (e.g. acme.com)…"
+                  className="client-select-input"
+                />
               </div>
             </div>
 
-            <div className="bento-platform-chips-row">
-              <button
-                type="button"
-                className={`bento-platform-chip ${targetPlatform === "" ? "selected" : ""}`}
-                onClick={() => setTargetPlatform("")}
-                disabled={busy || analysisBusy}
-              >
-                <span>🌐</span>
-                <span>All Platforms</span>
-              </button>
-              {platforms.map((p) => {
-                const isSelected = targetPlatform === p.platform;
-                const dotClass =
-                  p.session_state === "ready"
-                    ? "ready"
-                    : p.session_state === "login_required"
-                    ? "warn"
-                    : "error";
-                return (
-                  <button
-                    key={p.platform}
-                    type="button"
-                    className={`bento-platform-chip ${isSelected ? "selected" : ""}`}
-                    onClick={() => setTargetPlatform(p.platform)}
-                    disabled={busy || analysisBusy}
-                    title={`${p.name} (Session: ${p.session_state})`}
-                  >
-                    <PlatformIcon platform={p.platform} size={15} />
-                    <span>{p.name}</span>
-                    <span className={`bento-session-indicator ${dotClass}`} />
-                  </button>
-                );
-              })}
+            <div style={{ marginBottom: "20px" }}>
+              <label className="field-label">2. Search Keywords</label>
+              <div style={{ marginTop: "8px" }}>
+                <KeywordTabs
+                  activeTab={activeTab}
+                  onTab={setActiveTab}
+                  nameKeywords={nameKeywords}
+                  domainKeywords={domainKeywords}
+                  onAddName={(v) => setNameKeywords((prev) => (prev.some((k) => k.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]))}
+                  onRemoveName={(i) => setNameKeywords((prev) => prev.filter((_, idx) => idx !== i))}
+                  onAddDomain={(v) => setDomainKeywords((prev) => (prev.some((k) => k.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]))}
+                  onRemoveDomain={(i) => setDomainKeywords((prev) => prev.filter((_, idx) => idx !== i))}
+                  assetNameIndividualKw={assetNameIndividualKw}
+                  assetNameDomainKw={assetNameDomainKw}
+                  onAddAssetIndividual={(v) => setAssetNameIndividualKw((prev) => (prev.some((k) => k.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]))}
+                  onRemoveAssetIndividual={(i) => setAssetNameIndividualKw((prev) => prev.filter((_, idx) => idx !== i))}
+                  onAddAssetDomain={(v) => setAssetNameDomainKw((prev) => (prev.some((k) => k.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]))}
+                  onRemoveAssetDomain={(i) => setAssetNameDomainKw((prev) => prev.filter((_, idx) => idx !== i))}
+                  disabled={busy}
+                />
+              </div>
             </div>
 
-            <div className="bento-runner-grid">
-              <button
-                type="button"
-                className="bento-runner-btn-sweep"
-                disabled={busy || !activeKeywordCount}
-                onClick={handleSearch}
-              >
-                <span>{busy ? "⚡" : "🔍"}</span>
-                <span>
-                  {busy
-                    ? "Discovery Sweep Running…"
-                    : sweepPlatformName
-                    ? `Sweep ${sweepPlatformName}`
-                    : "Launch Discovery Sweep (All)"}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                className="bento-runner-btn-analysis"
-                disabled={analysisBusy}
-                onClick={handleRunAnalysis}
-              >
-                <span>{analysisBusy ? "⚙️" : "🔁"}</span>
-                <span>
-                  {analysisBusy
-                    ? "Analysis Running…"
-                    : analysisPlatformName
-                    ? `Re-run Analysis (${analysisPlatformName})`
-                    : "Re-run All Validated Analysis"}
-                </span>
-              </button>
+            <div style={{ marginBottom: "20px" }}>
+              <PlatformLimitsEditor
+                platforms={platforms}
+                individualLimits={platformLimitsIndividual}
+                domainLimits={platformLimitsDomain}
+                onIndividualChange={(platform, value) => setPlatformLimitsIndividual((prev) => ({ ...prev, [platform]: value }))}
+                onDomainChange={(platform, value) => setPlatformLimitsDomain((prev) => ({ ...prev, [platform]: value }))}
+                facebookTabLimits={facebookTabLimits}
+                onFacebookTabChange={(tab, kwType, value) =>
+                  setFacebookTabLimits((prev) => ({ ...prev, [tab]: { ...prev[tab], [kwType]: value } }))
+                }
+                disabled={busy}
+              />
             </div>
 
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11.5px", color: "var(--text-dim)", paddingTop: "4px" }}>
-              <span>
-                🎯 Active Target: <strong>{sweepPlatformName || "All 6 Platforms"}</strong> ({activeKeywordCount} keywords)
-              </span>
-              <span>⚡ High-speed parallel dispatch</span>
-            </div>
+            <button
+              onClick={saveConfig}
+              disabled={saving || !idInput.trim()}
+              className="btn-cyber-primary"
+              style={{ marginTop: "16px" }}
+            >
+              {saving ? "Creating Client…" : "💾 Save & Create Client"}
+            </button>
           </div>
-
-          {/* 👤 TILE 2: EXECUTIVE & INDIVIDUAL NAMES (Span 5) */}
-          <div className="bento-tile bento-span-5">
-            <div className="bento-tile-header">
-              <div className="bento-tile-title-group">
-                <div className="bento-tile-title">
-                  <span>👤 Executive Names</span>
+        ) : !activeClient ? (
+          /* NO CLIENT SELECTED EMPTY STATE */
+          <div
+            className="dashboard-card-box"
+            style={{
+              background: "var(--bg-card)",
+              padding: "60px 24px",
+              textAlign: "center",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: "12px",
+            }}
+          >
+            <div style={{ fontSize: "42px" }}>🏢</div>
+            <div style={{ fontSize: "18px", fontWeight: 800, color: "var(--text-main)" }}>
+              Select or Create a Client
+            </div>
+            <div style={{ fontSize: "13px", color: "var(--text-dim)", maxWidth: "420px" }}>
+              Choose a client from the sidebar directory on the left or click <strong>+ New</strong> to set up monitoring for a new brand.
+            </div>
+            <button
+              type="button"
+              className="btn-cyber-primary"
+              style={{ width: "auto", padding: "10px 24px", marginTop: "12px" }}
+              onClick={switchToCreate}
+            >
+              ➕ Create New Client
+            </button>
+          </div>
+        ) : (
+          /* ACTIVE CLIENT DETAIL WORKSPACE */
+          <>
+            {/* HERO HEADER */}
+            <div className="client-hero-header-card">
+              <div className="client-hero-left">
+                <div className="client-hero-avatar">
+                  {(activeClient.name || activeClient.client_id).charAt(0).toUpperCase()}
                 </div>
-                <span className="bento-tile-badge">{nameKeywords.length}</span>
+                <div className="client-hero-title-group">
+                  <div className="client-hero-name">{activeClient.name || activeClient.client_id}</div>
+                  <div className="client-hero-meta-row">
+                    <span className="client-hero-id">🆔 {activeClient.client_id}</span>
+                    {activeClient.domain && (
+                      <span className="client-hero-domain">🌐 {activeClient.domain}</span>
+                    )}
+                    <span className="status-dot-badge">
+                      <span className="status-dot" /> Active
+                    </span>
+                  </div>
+                </div>
               </div>
 
-              <div style={{ display: "flex", gap: "6px" }}>
+              <div className="client-hero-actions">
                 <button
                   type="button"
-                  onClick={saveConfig}
-                  disabled={saving}
-                  className="bento-action-btn primary"
-                  style={{ padding: "4px 10px", fontSize: "11px" }}
+                  className="client-hero-btn"
+                  onClick={startEditing}
+                  title="Edit client configuration"
                 >
-                  {saving ? "Saving…" : saved ? "✓ Saved" : "💾 Save"}
+                  ✏️ Edit
+                </button>
+                <button
+                  type="button"
+                  className="client-hero-btn"
+                  onClick={() => cloneClient(activeClient)}
+                  title="Duplicate configuration"
+                >
+                  📋 Clone
+                </button>
+                <button
+                  type="button"
+                  className="client-hero-btn danger"
+                  onClick={handleDelete}
+                  disabled={deleting}
+                  title="Permanently delete client"
+                >
+                  {deleting ? "Deleting…" : "🗑️"}
                 </button>
               </div>
             </div>
 
-            <ChipInput
-              chips={nameKeywords}
-              onAdd={(v) => setNameKeywords((prev) => (prev.some((k) => k.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]))}
-              onRemove={(i) => setNameKeywords((prev) => prev.filter((_, idx) => idx !== i))}
-              placeholder="Add executive name (e.g. Gautam Adani)..."
-              disabled={busy}
-            />
-          </div>
-
-          {/* 🎯 TILE 3: PLATFORM SCRAPING LIMITS (Span 7) */}
-          <div className="bento-tile bento-span-7">
-            <div className="bento-tile-header">
-              <div className="bento-tile-title-group">
-                <div className="bento-tile-title">
-                  <span>🎯 Platform Scraping Guardrails & Limits</span>
-                </div>
-              </div>
+            {/* WORKSPACE TABS NAV */}
+            <div className="client-workspace-nav">
+              <button
+                type="button"
+                className={`client-workspace-tab-btn ${activeWorkspaceTab === "overview" ? "active" : ""}`}
+                onClick={() => setActiveWorkspaceTab("overview")}
+              >
+                <span>⚡</span>
+                <span>Run & Overview</span>
+              </button>
 
               <button
                 type="button"
-                onClick={saveConfig}
-                disabled={saving}
-                className="bento-action-btn primary"
-                style={{ padding: "4px 12px", fontSize: "11.5px" }}
+                className={`client-workspace-tab-btn ${activeWorkspaceTab === "keywords" ? "active" : ""}`}
+                onClick={() => setActiveWorkspaceTab("keywords")}
               >
-                {saving ? "Saving…" : saved ? "✓ Saved" : "💾 Save Limits"}
+                <span>🏷️</span>
+                <span>Keywords & Assets</span>
+                <span className="workspace-tab-counter">{activeKeywordCount}</span>
               </button>
-            </div>
-
-            <PlatformLimitsEditor
-              platforms={platforms}
-              individualLimits={platformLimitsIndividual}
-              domainLimits={platformLimitsDomain}
-              onIndividualChange={(platform, value) => setPlatformLimitsIndividual((prev) => ({ ...prev, [platform]: value }))}
-              onDomainChange={(platform, value) => setPlatformLimitsDomain((prev) => ({ ...prev, [platform]: value }))}
-              facebookTabLimits={facebookTabLimits}
-              onFacebookTabChange={(tab, kwType, value) =>
-                setFacebookTabLimits((prev) => ({ ...prev, [tab]: { ...prev[tab], [kwType]: value } }))
-              }
-              disabled={busy}
-            />
-          </div>
-
-          {/* 🏷️ TILE 4: BRAND & DOMAIN KEYWORDS (Span 5) */}
-          <div className="bento-tile bento-span-5">
-            <div className="bento-tile-header">
-              <div className="bento-tile-title-group">
-                <div className="bento-tile-title">
-                  <span>🏷️ Brand & Domain Terms</span>
-                </div>
-                <span className="bento-tile-badge">{domainKeywords.length}</span>
-              </div>
 
               <button
                 type="button"
-                onClick={saveConfig}
-                disabled={saving}
-                className="bento-action-btn primary"
-                style={{ padding: "4px 10px", fontSize: "11px" }}
+                className={`client-workspace-tab-btn ${activeWorkspaceTab === "limits" ? "active" : ""}`}
+                onClick={() => setActiveWorkspaceTab("limits")}
               >
-                {saving ? "Saving…" : saved ? "✓ Saved" : "💾 Save"}
+                <span>🎯</span>
+                <span>Scraping Limits</span>
+              </button>
+
+              <button
+                type="button"
+                className={`client-workspace-tab-btn ${activeWorkspaceTab === "settings" ? "active" : ""}`}
+                onClick={() => setActiveWorkspaceTab("settings")}
+              >
+                <span>⚙️</span>
+                <span>Client Settings</span>
               </button>
             </div>
 
-            <ChipInput
-              chips={domainKeywords}
-              onAdd={(v) => setDomainKeywords((prev) => (prev.some((k) => k.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]))}
-              onRemove={(i) => setDomainKeywords((prev) => prev.filter((_, idx) => idx !== i))}
-              placeholder="Add brand domain keyword (e.g. adanigroup)..."
-              disabled={busy}
-            />
+            {/* TAB CONTENT 1: RUN & OVERVIEW */}
+            {activeWorkspaceTab === "overview" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+                {/* UNIFIED COMMAND RUNNER */}
+                <div className="unified-runner-card">
+                  <div className="runner-header">
+                    <div>
+                      <div className="runner-title">
+                        <span>⚡ Platform Target & Run Hub</span>
+                      </div>
+                      <div className="runner-subtitle">
+                        Select target platform to execute discovery sweep or re-run deep analysis.
+                      </div>
+                    </div>
+                  </div>
 
-            {/* Asset Names Overrides Section */}
-            <div style={{ borderTop: "1px solid rgba(255, 255, 255, 0.06)", paddingTop: "12px", marginTop: "6px" }}>
-              <div style={{ fontSize: "12px", fontWeight: 700, color: "var(--text-main)", marginBottom: "6px", display: "flex", alignItems: "center", gap: "6px" }}>
-                <span>🏷️ Target Asset Names</span>
-                <span className="bento-tile-badge">{(assetNameIndividualKw.length + assetNameDomainKw.length)}</span>
+                  <div className="unified-platform-selector">
+                    <button
+                      type="button"
+                      className={`unified-platform-btn ${targetPlatform === "" ? "active" : ""}`}
+                      onClick={() => setTargetPlatform("")}
+                      disabled={busy || analysisBusy}
+                    >
+                      <span>🌐</span>
+                      <span>All Platforms</span>
+                    </button>
+                    {platforms.map((p) => {
+                      const dotClass =
+                        p.session_state === "ready"
+                          ? "ready"
+                          : p.session_state === "login_required"
+                          ? "warn"
+                          : "error";
+                      return (
+                        <button
+                          key={p.platform}
+                          type="button"
+                          className={`unified-platform-btn ${targetPlatform === p.platform ? "active" : ""}`}
+                          onClick={() => setTargetPlatform(p.platform)}
+                          disabled={busy || analysisBusy}
+                          title={`Platform: ${p.name} (Session: ${p.session_state})`}
+                        >
+                          <PlatformIcon platform={p.platform} size={15} />
+                          <span>{p.name}</span>
+                          <span className={`runner-session-dot ${dotClass}`} />
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="runner-actions-grid">
+                    <button
+                      type="button"
+                      className="runner-btn-primary"
+                      disabled={busy || !activeKeywordCount}
+                      onClick={handleSearch}
+                    >
+                      <span>{busy ? "⚡" : "🔍"}</span>
+                      <span>
+                        {busy
+                          ? "Discovery Sweep Running…"
+                          : sweepPlatformName
+                          ? `Search on ${sweepPlatformName}`
+                          : "Launch Discovery Sweep (All)"}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      className="runner-btn-secondary"
+                      disabled={analysisBusy}
+                      onClick={handleRunAnalysis}
+                    >
+                      <span>{analysisBusy ? "⚙️" : "🔁"}</span>
+                      <span>
+                        {analysisBusy
+                          ? "Analysis Running…"
+                          : analysisPlatformName
+                          ? `Re-run Analysis (${analysisPlatformName})`
+                          : "Re-run Analysis (All Validated)"}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* QUICK STATS METRIC GRID */}
+                <div className="client-quick-stats-grid">
+                  <div className="client-quick-stat-box">
+                    <span className="quick-stat-label">Executive Names</span>
+                    <span className="quick-stat-value">{activeClient.name_keywords?.length || 0}</span>
+                    <span className="quick-stat-sub">Individual keywords</span>
+                  </div>
+
+                  <div className="client-quick-stat-box">
+                    <span className="quick-stat-label">Brand Domains</span>
+                    <span className="quick-stat-value">{activeClient.domain_keywords?.length || 0}</span>
+                    <span className="quick-stat-sub">Brand keywords</span>
+                  </div>
+
+                  <div className="client-quick-stat-box">
+                    <span className="quick-stat-label">Active Limits</span>
+                    <span className="quick-stat-value">
+                      {new Set([
+                        ...Object.keys(activeClient.platform_limits_individual || {}),
+                        ...Object.keys(activeClient.platform_limits_domain || {}),
+                      ]).size}
+                    </span>
+                    <span className="quick-stat-sub">Capped platforms</span>
+                  </div>
+
+                  <div className="client-quick-stat-box">
+                    <span className="quick-stat-label">Monitoring</span>
+                    <span className="quick-stat-value" style={{ fontSize: "15px", marginTop: "4px", color: "var(--success)" }}>
+                      ● Active
+                    </span>
+                    <span className="quick-stat-sub">Continuous protection</span>
+                  </div>
+                </div>
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                <ChipInput
-                  chips={assetNameIndividualKw}
-                  onAdd={(v) => setAssetNameIndividualKw((prev) => (prev.some((k) => k.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]))}
-                  onRemove={(i) => setAssetNameIndividualKw((prev) => prev.filter((_, idx) => idx !== i))}
-                  placeholder="Target individual asset override..."
+            )}
+
+            {/* TAB CONTENT 2: KEYWORDS & ASSETS */}
+            {activeWorkspaceTab === "keywords" && (
+              <div className="dashboard-card-box" style={{ background: "var(--bg-card)", padding: "20px" }}>
+                <KeywordTabs
+                  activeTab={activeTab}
+                  onTab={setActiveTab}
+                  nameKeywords={nameKeywords}
+                  domainKeywords={domainKeywords}
+                  onAddName={(v) => setNameKeywords((prev) => (prev.some((k) => k.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]))}
+                  onRemoveName={(i) => setNameKeywords((prev) => prev.filter((_, idx) => idx !== i))}
+                  onAddDomain={(v) => setDomainKeywords((prev) => (prev.some((k) => k.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]))}
+                  onRemoveDomain={(i) => setDomainKeywords((prev) => prev.filter((_, idx) => idx !== i))}
+                  assetNameIndividualKw={assetNameIndividualKw}
+                  assetNameDomainKw={assetNameDomainKw}
+                  onAddAssetIndividual={(v) => setAssetNameIndividualKw((prev) => (prev.some((k) => k.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]))}
+                  onRemoveAssetIndividual={(i) => setAssetNameIndividualKw((prev) => prev.filter((_, idx) => idx !== i))}
+                  onAddAssetDomain={(v) => setAssetNameDomainKw((prev) => (prev.some((k) => k.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]))}
+                  onRemoveAssetDomain={(i) => setAssetNameDomainKw((prev) => prev.filter((_, idx) => idx !== i))}
                   disabled={busy}
                 />
-                <ChipInput
-                  chips={assetNameDomainKw}
-                  onAdd={(v) => setAssetNameDomainKw((prev) => (prev.some((k) => k.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]))}
-                  onRemove={(i) => setAssetNameDomainKw((prev) => prev.filter((_, idx) => idx !== i))}
-                  placeholder="Target domain asset override..."
+
+                <div style={{ marginTop: "20px", display: "flex", justifyContent: "flex-end" }}>
+                  <button
+                    onClick={saveConfig}
+                    disabled={saving}
+                    className="btn-cyber-primary"
+                    style={{ width: "auto", padding: "10px 24px", margin: 0 }}
+                  >
+                    {saving ? "Saving…" : saved ? "✓ Saved" : "💾 Save Keyword Changes"}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* TAB CONTENT 3: SCRAPING LIMITS */}
+            {activeWorkspaceTab === "limits" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+                <PlatformLimitsEditor
+                  platforms={platforms}
+                  individualLimits={platformLimitsIndividual}
+                  domainLimits={platformLimitsDomain}
+                  onIndividualChange={(platform, value) => setPlatformLimitsIndividual((prev) => ({ ...prev, [platform]: value }))}
+                  onDomainChange={(platform, value) => setPlatformLimitsDomain((prev) => ({ ...prev, [platform]: value }))}
+                  facebookTabLimits={facebookTabLimits}
+                  onFacebookTabChange={(tab, kwType, value) =>
+                    setFacebookTabLimits((prev) => ({ ...prev, [tab]: { ...prev[tab], [kwType]: value } }))
+                  }
                   disabled={busy}
                 />
+
+                <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                  <button
+                    onClick={saveConfig}
+                    disabled={saving}
+                    className="btn-cyber-primary"
+                    style={{ width: "auto", padding: "10px 24px", margin: 0 }}
+                  >
+                    {saving ? "Saving…" : saved ? "✓ Saved" : "💾 Save Scrape Limits"}
+                  </button>
+                </div>
               </div>
-            </div>
-          </div>
-        </div>
-      ) : (
-        /* NO CLIENT SELECTED STATE */
-        <div className="bento-tile" style={{ textAlign: "center", padding: "60px 20px" }}>
-          <div style={{ fontSize: "42px", marginBottom: "12px" }}>🏢</div>
-          <div style={{ fontSize: "18px", fontWeight: 800, color: "var(--text-main)", marginBottom: "6px" }}>
-            No Client Selected
-          </div>
-          <div style={{ fontSize: "13px", color: "var(--text-dim)", marginBottom: "20px", maxWidth: "420px", margin: "0 auto 20px" }}>
-            Select an existing organization from your workspace or create a new client to configure target keywords and launch threat sweeps.
-          </div>
-          <div style={{ display: "flex", justifyContent: "center", gap: "10px" }}>
-            <button
-              type="button"
-              className="bento-action-btn"
-              onClick={() => setGlobalSearchOpen(true)}
-            >
-              <span>🔍 Select Existing Client</span>
-            </button>
-            <button
-              type="button"
-              className="bento-action-btn primary"
-              onClick={switchToCreate}
-            >
-              <span>➕ Create New Client</span>
-            </button>
-          </div>
-        </div>
-      )}
+            )}
+
+            {/* TAB CONTENT 4: SETTINGS */}
+            {activeWorkspaceTab === "settings" && (
+              <div className="dashboard-card-box" style={{ background: "var(--bg-card)", padding: "24px", display: "flex", flexDirection: "column", gap: "20px" }}>
+                <div>
+                  <div style={{ fontSize: "15px", fontWeight: 700, color: "var(--text-main)", marginBottom: "4px" }}>
+                    🏢 Client Information
+                  </div>
+                  <div style={{ fontSize: "12px", color: "var(--text-dim)", marginBottom: "12px" }}>
+                    Update organization display name, associated domain, and identifier.
+                  </div>
+                  <div className="client-setup-box" style={{ flexWrap: "wrap", margin: 0 }}>
+                    <input
+                      value={idInput}
+                      onChange={(e) => setIdInput(e.target.value)}
+                      placeholder="🆔 org id…"
+                      disabled={true}
+                      className="client-select-input"
+                      style={{ opacity: 0.6 }}
+                      title="Organization ID cannot be modified after creation"
+                    />
+                    <input
+                      value={nameInput}
+                      onChange={(e) => setNameInput(e.target.value)}
+                      placeholder="🏢 organization name…"
+                      className="client-select-input"
+                    />
+                    <input
+                      value={domainInput}
+                      onChange={(e) => setDomainInput(e.target.value)}
+                      placeholder="🌐 domain, e.g. xyz.com…"
+                      className="client-select-input"
+                    />
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", borderTop: "1px solid var(--border-subtle)", paddingTop: "16px" }}>
+                  {editing && (
+                    <button
+                      type="button"
+                      className="action-btn"
+                      onClick={cancelEditing}
+                      style={{
+                        background: "rgba(255, 255, 255, 0.06)",
+                        color: "var(--text-main)",
+                        border: "1px solid var(--border-subtle)",
+                        borderRadius: "8px",
+                        padding: "8px 16px",
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  )}
+                  <button
+                    onClick={saveConfig}
+                    disabled={saving}
+                    className="btn-cyber-primary"
+                    style={{ width: "auto", padding: "10px 24px", margin: 0 }}
+                  >
+                    {saving ? "Saving…" : saved ? "✓ Saved" : "💾 Save Changes"}
+                  </button>
+                </div>
+
+                <div style={{ borderTop: "1px solid rgba(239, 68, 68, 0.2)", paddingTop: "18px", marginTop: "10px" }}>
+                  <div style={{ fontSize: "14px", fontWeight: 700, color: "var(--danger)", marginBottom: "4px" }}>
+                    ⚠️ Danger Zone
+                  </div>
+                  <div style={{ fontSize: "12px", color: "var(--text-dim)", marginBottom: "12px" }}>
+                    Permanently delete this organization and cascade remove all associated discovery hits, validated profiles, and incident tickets.
+                  </div>
+                  <button
+                    onClick={handleDelete}
+                    disabled={deleting}
+                    className="danger-link-btn"
+                  >
+                    {deleting ? "Deleting Organization…" : "🗑️ Delete Organization & All Associated Data"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }
