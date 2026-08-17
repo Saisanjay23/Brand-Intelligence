@@ -1306,7 +1306,7 @@ export function HomeView({
                 onClick={() => setActiveWorkspaceTab("settings")}
               >
                 <span>⚙️</span>
-                <span>Settings & Schedule</span>
+                <span>Client Settings</span>
               </button>
             </div>
 
@@ -1421,11 +1421,11 @@ export function HomeView({
                   </div>
 
                   <div className="client-quick-stat-box">
-                    <span className="quick-stat-label">Automation</span>
-                    <span className="quick-stat-value" style={{ fontSize: "14px", marginTop: "4px" }}>
-                      {activeClient.cron ? activeClient.cron : "Manual"}
+                    <span className="quick-stat-label">Monitoring</span>
+                    <span className="quick-stat-value" style={{ fontSize: "15px", marginTop: "4px", color: "var(--success)" }}>
+                      ● Active
                     </span>
-                    <span className="quick-stat-sub">Round-robin cycle</span>
+                    <span className="quick-stat-sub">Continuous protection</span>
                   </div>
                 </div>
               </div>
@@ -1494,7 +1494,7 @@ export function HomeView({
               </div>
             )}
 
-            {/* TAB CONTENT 4: SETTINGS & SCHEDULE */}
+            {/* TAB CONTENT 4: SETTINGS */}
             {activeWorkspaceTab === "settings" && (
               <div className="dashboard-card-box" style={{ background: "var(--bg-card)", padding: "24px", display: "flex", flexDirection: "column", gap: "20px" }}>
                 <div>
@@ -1529,25 +1529,20 @@ export function HomeView({
                   </div>
                 </div>
 
-                <div>
-                  <div style={{ fontSize: "15px", fontWeight: 700, color: "var(--text-main)", marginBottom: "4px" }}>
-                    ⏰ Automated Schedule (Cron)
-                  </div>
-                  <div style={{ fontSize: "12px", color: "var(--text-dim)", marginBottom: "8px" }}>
-                    Standard 5-part cron expression (e.g. <code>0 */6 * * *</code> for every 6 hours). Leave blank for manual runs.
-                  </div>
-                  <input
-                    value={cron}
-                    onChange={(e) => setCron(e.target.value)}
-                    placeholder="e.g. 0 0 * * * (daily at midnight)"
-                    className="client-select-input"
-                    style={{ width: "100%", maxWidth: "400px" }}
-                  />
-                </div>
-
                 <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", borderTop: "1px solid var(--border-subtle)", paddingTop: "16px" }}>
                   {editing && (
-                    <button type="button" className="action-btn" onClick={cancelEditing}>
+                    <button
+                      type="button"
+                      className="action-btn"
+                      onClick={cancelEditing}
+                      style={{
+                        background: "rgba(255, 255, 255, 0.06)",
+                        color: "var(--text-main)",
+                        border: "1px solid var(--border-subtle)",
+                        borderRadius: "8px",
+                        padding: "8px 16px",
+                      }}
+                    >
                       Cancel
                     </button>
                   )}
