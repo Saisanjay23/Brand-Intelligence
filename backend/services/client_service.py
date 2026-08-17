@@ -53,11 +53,6 @@ async def delete(client_id: str) -> dict:
     deleted_incidents = await incidents_db.delete_for_client(client_id)
     deleted_published = await published_incidents_db.delete_for_client(client_id)
     deleted_evidence = await evidence_db.delete_for_client(client_id)
-    # Resume positions are client-scoped too; leaving them behind would hand
-    # a future client reusing this id a stale cursor into someone else's
-    # search results.
-    from backend.database.repositories import cursor_repository as cursors_db
-    await cursors_db.delete_for_client(client_id)
     out = await clients_db.delete(client_id)
     return {
         **out, "deleted_profiles": deleted_profiles, "deleted_incidents": deleted_incidents,

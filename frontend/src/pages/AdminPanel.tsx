@@ -10,6 +10,13 @@ import { MailPanel } from "./MailPanel";
 import { ProxyPanel } from "./ProxyPanel";
 import { SchedulerPanel } from "./SchedulerPanel";
 import { SessionPanel } from "./SessionPanel";
+import {
+  SessionsKeyIcon,
+  MailAlertIcon,
+  ProxyNodeIcon,
+  SchedulerClockIcon,
+  ActivityWaveIcon,
+} from "../components/AppIcons";
 
 interface Props {
   sessions: SessionInfo[];
@@ -18,12 +25,12 @@ interface Props {
 
 type AdminTab = "sessions" | "mail" | "proxies" | "scheduler" | "activity";
 
-const TABS: { id: AdminTab; label: string; icon: string }[] = [
-  { id: "sessions", label: "Sessions", icon: "🔑" },
-  { id: "mail", label: "Mail", icon: "📧" },
-  { id: "proxies", label: "Proxies", icon: "🌐" },
-  { id: "scheduler", label: "Scheduler", icon: "🔁" },
-  { id: "activity", label: "Live Activity", icon: "⚡" },
+const TABS: { id: AdminTab; label: string; icon: (active: boolean) => React.ReactNode }[] = [
+  { id: "sessions", label: "Sessions", icon: (a) => <SessionsKeyIcon size={15} color={a ? "#00F0FF" : "currentColor"} /> },
+  { id: "mail", label: "Mail", icon: (a) => <MailAlertIcon size={15} color={a ? "#00F0FF" : "currentColor"} /> },
+  { id: "proxies", label: "Proxies", icon: (a) => <ProxyNodeIcon size={15} color={a ? "#00F0FF" : "currentColor"} /> },
+  { id: "scheduler", label: "Scheduler", icon: (a) => <SchedulerClockIcon size={15} color={a ? "#00F0FF" : "currentColor"} /> },
+  { id: "activity", label: "Live Activity", icon: (a) => <ActivityWaveIcon size={15} color={a ? "#00F0FF" : "currentColor"} /> },
 ];
 
 export function AdminPanel({ sessions, onChanged }: Props) {
@@ -38,7 +45,7 @@ export function AdminPanel({ sessions, onChanged }: Props) {
             className={`mode-tab-btn ${tab === t.id ? "active" : ""}`}
             onClick={() => setTab(t.id)}
           >
-            <span>{t.icon}</span>
+            <span>{t.icon(tab === t.id)}</span>
             <span>{t.label}</span>
           </button>
         ))}

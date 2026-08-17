@@ -8,6 +8,7 @@ import type { Client, Job, PlatformHealth } from "../api/types";
 import { PlatformIcon } from "../components/PlatformIcon";
 import { GlobalSearchModal } from "../components/GlobalSearchModal";
 import { confirmAction } from "../utils/confirmAction";
+import { DiscoverIcon, AnalyseIcon, CyberGlobeIcon } from "../components/AppIcons";
 
 type KeywordTab = "names" | "domain" | "assetNames";
 type Mode = "select" | "create";
@@ -1333,7 +1334,7 @@ export function HomeView({
                       onClick={() => setTargetPlatform("")}
                       disabled={busy || analysisBusy}
                     >
-                      <span>🌐</span>
+                      <CyberGlobeIcon size={15} color={targetPlatform === "" ? "#7C5CFF" : "#94A3B8"} />
                       <span>All Platforms</span>
                     </button>
                     {platforms.map((p) => {
@@ -1367,7 +1368,7 @@ export function HomeView({
                       disabled={busy || !activeKeywordCount}
                       onClick={handleSearch}
                     >
-                      <span>{busy ? "⚡" : "🔍"}</span>
+                      <DiscoverIcon size={17} color="#fff" />
                       <span>
                         {busy
                           ? "Discovering…"
@@ -1383,7 +1384,7 @@ export function HomeView({
                       disabled={analysisBusy}
                       onClick={handleRunAnalysis}
                     >
-                      <span>{analysisBusy ? "⚙️" : "🔁"}</span>
+                      <AnalyseIcon size={17} color="#00F0FF" />
                       <span>
                         {analysisBusy
                           ? "Analysing…"

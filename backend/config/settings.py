@@ -94,16 +94,6 @@ class Settings(BaseSettings):
     analysis_concurrency: int = 2
     discovery_concurrency: int = 2
     discovery_max_seconds: float = 300
-    # Resume a sweep where its last run stopped, instead of restarting at
-    # page 1 (see platforms/replay.py). OFF by default and deliberately so:
-    # it replays a captured search request rather than scrolling, which is a
-    # different traffic shape against the platform than the scroll path this
-    # fleet's sessions have been proven safe on. Turn it on per deployment
-    # once a live sweep has confirmed both that the resume actually advances
-    # and that the account stays unchallenged. A sweep always falls back to
-    # the normal scroll path when resume is unavailable or fails, so
-    # enabling this can degrade throughput but never correctness.
-    discovery_resume: bool = False
     headless: bool = True
 
     # webhook callbacks (job completion push-back to the caller)

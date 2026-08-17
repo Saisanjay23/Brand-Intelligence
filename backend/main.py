@@ -56,8 +56,6 @@ async def lifespan(app: FastAPI):
         await sessions_db.ensure_indexes()
         await incidents_db.ensure_indexes()
         await published_incidents_db.ensure_indexes()
-        from backend.database.repositories import cursor_repository as cursors_db
-        await cursors_db.ensure_indexes()
         log.info("startup: mongo reachable, indexes ensured")
         # After the incident collection exists (findings are recorded as
         # incidents) and before any job can run, so a misconfigured host is

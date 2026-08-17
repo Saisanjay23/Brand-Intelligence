@@ -1,6 +1,13 @@
 import { useState } from "react";
 import type { Client } from "../api/types";
 import type { RecentClient } from "../services/recentClients";
+import {
+  BrandLogoIcon,
+  ClientsNavIcon,
+  LiveResultsNavIcon,
+  AdminNavIcon,
+  BellAlertIcon,
+} from "./AppIcons";
 
 export type ViewPage = "home" | "results" | "admin";
 
@@ -42,10 +49,13 @@ export function Header({
   return (
     <header className="top-header">
       <div className="brand-logo-area">
-        <div style={{ cursor: "pointer" }} onClick={() => onPage("home")}>
-          <div className="brand-logo-title">Brand Intelligence</div>
-          <div className="brand-logo-sub">
-            Social Intelligence Suite
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer" }} onClick={() => onPage("home")}>
+          <BrandLogoIcon size={30} />
+          <div>
+            <div className="brand-logo-title">Brand Intelligence</div>
+            <div className="brand-logo-sub">
+              Social Intelligence Suite
+            </div>
           </div>
         </div>
       </div>
@@ -55,7 +65,7 @@ export function Header({
           onClick={() => onPage("home")}
           className={`top-nav-btn ${page === "home" ? "active" : ""}`}
         >
-          <span>🏢</span>
+          <ClientsNavIcon size={16} />
           <span>Clients</span>
         </button>
 
@@ -63,7 +73,7 @@ export function Header({
           onClick={() => onPage("results")}
           className={`top-nav-btn ${page === "results" ? "active" : ""}`}
         >
-          <span>🛰️</span>
+          <LiveResultsNavIcon size={16} />
           <span>Live Results</span>
           {liveResultsCount > 0 && <span className="top-nav-badge">{liveResultsCount}</span>}
         </button>
@@ -72,7 +82,7 @@ export function Header({
           onClick={() => onPage("admin")}
           className={`top-nav-btn ${page === "admin" ? "active" : ""}`}
         >
-          <span>⚙️</span>
+          <AdminNavIcon size={16} />
           <span>Admin</span>
           <span className="top-nav-badge">
             {readySessionsCount}/{platformCount}
@@ -86,7 +96,7 @@ export function Header({
           onClick={() => onPage("admin")}
           title={`${activeJobsCount} active background job(s) -- see Admin > Live Activity`}
         >
-          🔔
+          <BellAlertIcon size={16} />
           {activeJobsCount > 0 && (
             <span className="bell-badge">{activeJobsCount}</span>
           )}
