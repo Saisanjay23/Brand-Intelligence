@@ -1370,10 +1370,10 @@ export function HomeView({
                       <span>{busy ? "⚡" : "🔍"}</span>
                       <span>
                         {busy
-                          ? "Discovery Sweep Running…"
+                          ? "Discovering…"
                           : sweepPlatformName
-                          ? `Search on ${sweepPlatformName}`
-                          : "Launch Discovery Sweep (All)"}
+                          ? `Discover (${sweepPlatformName})`
+                          : "Discover"}
                       </span>
                     </button>
 
@@ -1386,10 +1386,10 @@ export function HomeView({
                       <span>{analysisBusy ? "⚙️" : "🔁"}</span>
                       <span>
                         {analysisBusy
-                          ? "Analysis Running…"
+                          ? "Analysing…"
                           : analysisPlatformName
-                          ? `Re-run Analysis (${analysisPlatformName})`
-                          : "Re-run Analysis (All Validated)"}
+                          ? `Analyse (${analysisPlatformName})`
+                          : "Analyse"}
                       </span>
                     </button>
                   </div>
