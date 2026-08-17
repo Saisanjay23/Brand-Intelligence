@@ -8,7 +8,7 @@ import type { Client, Job, PlatformHealth } from "../api/types";
 import { PlatformIcon } from "../components/PlatformIcon";
 import { GlobalSearchModal } from "../components/GlobalSearchModal";
 import { confirmAction } from "../utils/confirmAction";
-import { DiscoverIcon, AnalyseIcon, CyberGlobeIcon } from "../components/AppIcons";
+import { DiscoverIcon, AnalyseIcon, CyberGlobeIcon, StopIcon } from "../components/AppIcons";
 
 type KeywordTab = "names" | "domain" | "assetNames";
 type Mode = "select" | "create";
@@ -25,6 +25,8 @@ interface Props {
   onForgetClient: (clientId: string) => void;
   busy: boolean;
   analysisBusy: boolean;
+  onStopDiscovery?: () => void;
+  onStopAnalysis?: () => void;
   onJobs: (jobs: Job[]) => void;
   onError: (m: string) => void;
 }
@@ -647,6 +649,8 @@ export function HomeView({
   onForgetClient,
   busy,
   analysisBusy,
+  onStopDiscovery,
+  onStopAnalysis,
   onJobs,
   onError,
 }: Props) {
@@ -1362,37 +1366,56 @@ export function HomeView({
                   </div>
 
                   <div className="runner-actions-grid">
-                    <button
-                      type="button"
-                      className="runner-btn-primary"
-                      disabled={busy || !activeKeywordCount}
-                      onClick={handleSearch}
-                    >
-                      <DiscoverIcon size={17} color="#fff" />
-                      <span>
-                        {busy
-                          ? "Discovering…"
-                          : sweepPlatformName
-                          ? `Discover (${sweepPlatformName})`
-                          : "Discover"}
-                      </span>
-                    </button>
+                    {busy ? (
+                      <button
+                        type="button"
+                        className="runner-btn-stop"
+                        onClick={onStopDiscovery}
+                        title="Stop running discovery sweep"
+                      >
+                        <StopIcon size={17} color="#fff" />
+                        <span>Stop Discovery</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="runner-btn-primary"
+                        disabled={!activeKeywordCount}
+                        onClick={handleSearch}
+                      >
+                        <DiscoverIcon size={17} color="#fff" />
+                        <span>
+                          {sweepPlatformName
+                            ? `Discover (${sweepPlatformName})`
+                            : "Discover"}
+                        </span>
+                      </button>
+                    )}
 
-                    <button
-                      type="button"
-                      className="runner-btn-secondary"
-                      disabled={analysisBusy}
-                      onClick={handleRunAnalysis}
-                    >
-                      <AnalyseIcon size={17} color="#00F0FF" />
-                      <span>
-                        {analysisBusy
-                          ? "Analysing…"
-                          : analysisPlatformName
-                          ? `Analyse (${analysisPlatformName})`
-                          : "Analyse"}
-                      </span>
-                    </button>
+                    {analysisBusy ? (
+                      <button
+                        type="button"
+                        className="runner-btn-stop"
+                        onClick={onStopAnalysis}
+                        title="Stop running analysis"
+                      >
+                        <StopIcon size={17} color="#fff" />
+                        <span>Stop Analysis</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="runner-btn-secondary"
+                        onClick={handleRunAnalysis}
+                      >
+                        <AnalyseIcon size={17} color="#00F0FF" />
+                        <span>
+                          {analysisPlatformName
+                            ? `Analyse (${analysisPlatformName})`
+                            : "Analyse"}
+                        </span>
+                      </button>
+                    )}
                   </div>
                 </div>
 

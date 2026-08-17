@@ -87,29 +87,18 @@ RE_GONE = re.compile(
 # Shared with analysis_engine.py: discovery uses it to decide has_custom_pic
 # on a fresh Hit, analysis uses it again once it re-visits the profile.
 #
-# Deliberately NOT a bare `30497-1` alternative (this regex used to have
-# one): that's a plain 7-digit substring match with no surrounding context,
-# so it could in principle collide with digits that appear incidentally
-# elsewhere in a real uploaded photo's URL (asset ids, cache-busting
-# tokens, size params) and misclassify a genuine custom photo as the
-# default silhouette.
+# TWO ALTERNATIVES THAT LOOK RIGHT AND ARE NOT -- do not re-add either:
 #
-# Also deliberately NOT a `t1\.30497-1` alternative (this regex used to
-# have one too, added on the assumption that path segment was Facebook's
-# own silhouette asset tag). Verified wrong against live data: every
-# confirmed-real custom photo this tool has ever scraped from a SEARCH
-# result (500 sampled, has_logo already True) uses tag `t39.30808-1` or
-# `t1.6435-1`, never `t1.30497-1`, while a profile-PAGE visit's own
-# `profilePicLarge`/`profilePicMedium`/`profilePicSmall` fields (see
-# _extract_entity's PICTURE_KEYS) serve that SAME real, already-uploaded
-# photo (same scontent host, same realistic random-id filename, e.g.
-# `453178253_471506465671661_2781666950760530985_n.png`) tagged
-# `t1.30497-1` instead, just a different CDN rendering-context tag for
-# the identical upload, not a marker of "no photo". Matching on it here
-# was silently discarding a real photo URL entirely (see _extract_entity:
-# a match means the uri is never even stored, not just flagged), which is
-# a large share of why a resolved profile-page visit still came back with
-# no picture even after correctly finding the profile's real name.
+#   * a bare `30497-1`: a 7-digit substring match with no surrounding
+#     context, which can collide with digits appearing incidentally in a
+#     real photo's URL (asset ids, cache-busting tokens, size params).
+#   * `t1\.30497-1`: verified wrong against live data. That tag is just a
+#     different CDN rendering-context for a genuine upload -- a
+#     profile-PAGE visit serves the SAME real photo under it that a search
+#     result serves as `t39.30808-1`/`t1.6435-1`. Matching it discards the
+#     photo URL outright (see _extract_entity: a match means the uri is
+#     never stored), which is much of why a resolved profile-page visit
+#     returned no picture despite finding the right name.
 RE_DEFAULT_PIC = re.compile(
     r"(static.*silhouette|default.*avatar|/rsrc\.php/|static\.xx\.fbcdn\.net)",
     re.I,
@@ -1324,46 +1313,19 @@ class Discovery:
             # layout change would show up here rather than as silent data loss
             missing = rendered_ids - by_id.keys()
 
-            # Ids the search BACKEND processed but Facebook deliberately
-            # never rendered (`processed_unicorn_ids`, see _processed_ids).
-            # Counted as telemetry, NEVER turned into result rows.
-            #
-            # This used to create a candidate row per id, on the reasoning
-            # that "a profile Facebook declined to show is still a
-            # candidate". That reasoning is wrong for this tool, and it was
-            # the single biggest source of junk in the UI. Measured against
-            # live data (1013 Facebook rows for one client):
-            #
-            #     graphql              749 rows,   0 blank
-            #     processed-not-shown  263 rows, 161 blank
-            #     id-backfill            0 rows
-            #
-            # Every blank/numeric-id card came from here, and not one real
-            # rendered result was ever blank. These ids are Facebook's
-            # internal candidate bookkeeping, entities the search matched
-            # then filtered out before display (deactivated, privacy-
-            # restricted, blocked to this viewer, region-limited, deduped,
-            # quality-filtered). A human searching Facebook by hand NEVER
-            # sees them, which is precisely why most have no readable
-            # name/photo to recover: there is often no viewable profile
-            # behind the id at all. Visiting them was chasing data that
-            # does not exist.
-            #
-            # The requirement this tool is held to is fidelity: show
-            # exactly what a real user sees when they search, in that
-            # order, nothing more. `result_ids_shown` IS that contract.
-            # It is Facebook's own statement of what it put on screen.
-            # `processed_unicorn_ids` is explicitly what it chose NOT to.
-            # Including the latter doesn't add recall, it adds unverifiable
-            # rows an analyst then has to hand-reject (113 of these had
-            # been manually rejected in that same live dataset, pure
-            # wasted triage on rows that should never have existed).
-            #
-            # Kept as a COUNT on the Sweep (out.unshown, surfaced in
-            # summary()) so the gap stays observable, if Facebook's
-            # filtering behaviour ever shifts dramatically that number
-            # moves, and it's still visible in the run's own summary,
-            # just no longer masquerading as results.
+            # Ids the search BACKEND matched but Facebook deliberately
+            # never rendered (`processed_unicorn_ids`). Counted as
+            # telemetry, NEVER turned into result rows: these are
+            # Facebook's internal bookkeeping for entities it filtered out
+            # before display (deactivated, privacy-restricted, blocked to
+            # this viewer, region-limited, deduped), so a human searching
+            # by hand never sees them and there is usually no viewable
+            # profile behind the id at all. Discovery's contract is
+            # fidelity to what a real user sees; `result_ids_shown` is
+            # Facebook's own statement of that. Kept as a count
+            # (out.unshown, in summary()) so the gap stays observable if
+            # Facebook's filtering behaviour shifts.
+            # See docs/adr/0009-render-fidelity-in-discovery-results.md.
             unshown = processed_ids - by_id.keys()
 
             # one cheap profile-page visit per reconciled id to recover a
@@ -1422,39 +1384,21 @@ class Discovery:
             # `unshown` is counted, never materialized as rows, see the
             # long comment where it's computed for the measured reasoning.
             out.unshown = len(unshown)
-            # Every id in by_id now came from one of exactly TWO places,
-            # both of which are things Facebook actually put on screen for
-            # this search: a real rendered edge, or a rendered id we failed
-            # to parse as an edge (the id-backfill safety net). Ids the
-            # backend matched but never displayed are no longer included at
-            # all, see the `unshown` comment above. An earlier version
-            # dropped any hit with a blank/numeric name, which silently
-            # discarded genuine People-tab results Facebook simply returned
-            # no name for (privacy-restricted profiles do this often, which
-            # is exactly the "people not appearing" bug), so a blank name on
-            # a genuinely-rendered result is still kept and the UI's own
-            # entity_id/"Unnamed Profile" fallback renders it.
-            # `by_id` is ALREADY in true Facebook top-to-bottom, page-by-page
-            # order: pagination is cursor-driven and strictly sequential (see
-            # this module's own docstring), each page's edges are absorbed
-            # in the order Facebook rendered them, and a duplicate id seen
-            # again on a later page is dropped rather than overwriting its
-            # earlier (correct) position (see absorb()'s `if hit.entity_id
-            # not in by_id`). A plain Python dict preserves insertion order,
-            # so that natural order IS the fix, sort ONLY by whether a hit
-            # is a confirmed real search result vs a best-effort backfill
-            # (Facebook never told us where those would have ranked, so
-            # they belong after everything it actually confirmed), and let
-            # Python's stable sort keep every other tie exactly where it
-            # naturally landed.
+            # A blank name on a genuinely-rendered result is KEPT, not
+            # dropped: privacy-restricted profiles often return no name,
+            # and discarding them is the "people not appearing" bug. The
+            # UI's entity_id/"Unnamed Profile" fallback renders them.
             #
-            # This used to sort by `h.rank` too, as a tiebreaker, but rank
-            # is reset to 0 for every individual response, not global across
-            # the whole sweep, so it silently interleaved a later page's
-            # early-ranked results ahead of an earlier page's later-ranked
-            # ones. That's the exact bug behind "results start from the
-            # last scraped page, not page 1, and don't match what a real
-            # user sees searching Facebook directly."
+            # `by_id` is ALREADY in Facebook's own top-to-bottom order --
+            # pagination is sequential, edges are absorbed in render order,
+            # and a duplicate id on a later page is dropped rather than
+            # overwriting its earlier position -- and dict insertion order
+            # preserves that. So sort ONLY by confirmed-result vs
+            # best-effort backfill (Facebook never said where the latter
+            # would have ranked), and let the stable sort keep every other
+            # tie where it landed. Deliberately NOT by `hit.rank`: rank
+            # resets per response, so using it interleaves pages.
+            # See docs/adr/0009-render-fidelity-in-discovery-results.md.
             # GraphQL payload first, rendered page second. The DOM pass only
             # runs when the payload produced nothing at all, so a healthy
             # sweep never pays for it, and a doc-id rotation degrades to

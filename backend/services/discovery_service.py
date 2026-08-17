@@ -34,13 +34,10 @@ from backend.shared.text import name_score
 
 log = get_logger("services.discovery")
 
-# Each platform's discovery_engine.py only ever understands its own fixed
-# tab vocabulary (see each module's `sweep(keyword, tab)`); a caller-supplied
-# `tabs` list from POST /discovery used to be applied identically to every
-# platform in the sweep, which meant e.g. Twitter/Instagram/YouTube, none
-# of which have a "pages" tab, were swept for "pages" too, wasting a whole
-# extra pass per keyword for nothing. Every platform now always sweeps
-# exactly the tab(s) it actually supports, regardless of what was requested.
+# Each platform's engine understands only its own fixed tab vocabulary, so
+# every platform sweeps exactly the tab(s) it supports regardless of what a
+# caller requested -- a `tabs` list applied uniformly would sweep e.g.
+# Twitter for "pages", costing a whole extra pass per keyword for nothing.
 PLATFORM_TABS: dict[str, list[str]] = {
     "facebook": ["people", "pages", "groups"],
     "twitter": ["people"],
@@ -59,14 +56,11 @@ def _hit_to_fields(hit, platform: str) -> dict:
         from backend.platforms.facebook.discovery_engine import profile_id
         username = profile_id(url)
     else:
-        # Split host from path properly instead of taking the last "/"
-        # segment of the whole string: for a URL with no path at all
-        # ("https://twitter.com/") the naive version returned the HOSTNAME
-        # as the username, so the profile was stored with username
-        # "twitter.com", and any handle comparison would then be scoring
-        # the platform's own domain against the brand's handle.
-        # `//` is prepended when the URL has no scheme so that urlparse
-        # still treats the leading token as a host rather than as path.
+        # Split host from path rather than taking the last "/" segment of
+        # the whole string: a URL with no path ("https://twitter.com/")
+        # would otherwise store the HOSTNAME as the username. `//` is
+        # prepended when there is no scheme so urlparse still reads the
+        # leading token as a host.
         parsed = urlparse(url if "//" in url else f"//{url}")
         parts = [s for s in parsed.path.split("/") if s]
         if parts:
@@ -424,15 +418,10 @@ async def _sweep_platform(
             platform_item_done=f"{sweep.keyword} · {sweep.tab}",
         )
 
-    # Group every (keyword, tab) pair this sweep needs to run by its own
-    # resolved cap, the more restrictive of that keyword's type cap
-    # (individual/domain) and that EXACT (tab, type) cell's own cap (e.g.
-    # Facebook People x Individual, Pages x Domain, Groups x Individual,
-    # each independent, see _tab_type_cap), so a platform with BOTH set
-    # gets neither silently ignored. A distinct discoverer instance/options
-    # is created per distinct cap; a platform with no per-tab limits and one
-    # keyword type still takes exactly one group, same as before this split
-    # existed.
+    # Group every (keyword, tab) pair by its resolved cap -- the more
+    # restrictive of the keyword's type cap (individual/domain) and that
+    # exact (tab, type) cell's cap, so a platform with both set has neither
+    # silently ignored. One discoverer instance per distinct cap.
     groups: dict[int, list[tuple[str, str]]] = {}
     for kw_type, kw_group, type_cap in keyword_groups:
         for kw in kw_group:
@@ -455,15 +444,11 @@ async def _sweep_platform(
         # highlight), harmless no-op there.
         await mgr.emit(job, "progress", platform=plat.id, session_id=session_item["id"])
     if not plat_obj.session_path:
-        # No browser Session object here (that's the `else` branch's job),
-        # so nothing else closes whatever connection this discoverer opens
-        # for itself, confirmed live this mattered for real: Telegram's
-        # Discovery.sweep() opens its own MTProto connection lazily and,
-        # without this, never closed it, leaving the local SQLite
-        # `.session` file locked for the NEXT Telegram operation (an
-        # analysis run for the same client, immediately after, in the
-        # round-robin engine's own per-client turn) to fail against. See
-        # platforms/telegram/discovery_engine.py::Discovery.stop().
+        # No browser Session here, so nothing else closes whatever
+        # connection the discoverer opens for itself. Telegram's sweep()
+        # opens an MTProto connection lazily and holds the local SQLite
+        # `.session` file locked; the next Telegram operation for this
+        # client fails on it unless this closes. See that module's stop().
         try:
             for cap, pairs in groups.items():
                 discoverer = plat_obj.discoverer()(_options_for(cap), None)
@@ -472,13 +457,10 @@ async def _sweep_platform(
                 finally:
                     await discoverer.stop()
         except Exception as e:
-            # A raised (not silently-empty) failure here is the one class of
-            # session problem the post-sweep 'blocked' accounting below can
-            # never see, because it never produced a Sweep to inspect.
-            # YouTube's key rejected outright, Telegram's FloodWait. Without
-            # this, the same dead key/account is handed to this platform's
-            # very next job unchanged, forever. See the identical rationale
-            # on the cookie-session branch below.
+            # A raised failure never produces a Sweep, so the 'blocked'
+            # accounting below cannot see it (YouTube's key rejected
+            # outright, Telegram's FloodWait). Without feeding it back, the
+            # same dead key is handed to the next job forever.
             reason = classify_failure(e)
             if reason and session_item.get("id"):
                 await sessions_engine.mark_session_failed(
@@ -504,13 +486,9 @@ async def _sweep_platform(
                     await _run_incremental(discoverer, pairs, _on_sweep_done, _on_page_hits)
             except Exception as e:
                 # Same gap as above: a sweep that raises past the
-                # extraction-fallback chain (a network crash, a page.goto
-                # that never resolves, a mid-sweep checkpoint) never reaches
-                # the 'blocked' accounting below either. This is the only
-                # other place a session-shaped failure can be fed back to
-                # the pool, so the account actually gets quarantined and
-                # rotated away from on the next job instead of being handed
-                # straight back out to fail identically.
+                # extraction-fallback chain never reaches the 'blocked'
+                # accounting either, and this is the only other place a
+                # session-shaped failure can be fed back to the pool.
                 reason = classify_failure(e)
                 if reason:
                     await sessions_engine.mark_session_failed(
@@ -522,40 +500,24 @@ async def _sweep_platform(
 
     # ── parser-drift canary ────────────────────────────────────────────
     # A platform rotating its payload shape (Facebook's GraphQL doc ids do
-    # this) does not raise: the parser simply stops recognising edges,
-    # `by_id` stays empty, the scroll loop exits as "stalled", and the job
-    # reports 0 profiles as a clean SUCCESS. That is the worst failure mode
-    # available, silent, total, and indistinguishable from "this client
-    # genuinely has no impersonators". Nothing was watching for it.
-    #
-    # A sweep that returned nothing at all for keywords that have
-    # historically returned results is the signal. It is recorded as an
-    # incident and forced into the job's own note, so it surfaces the same
-    # day rather than at the next quarterly review.
+    # this) does not raise: the parser stops recognising edges, the scroll
+    # loop exits as "stalled", and the job reports 0 profiles as a clean
+    # SUCCESS -- silent, total, and indistinguishable from "this client
+    # genuinely has no impersonators". Zero results for keywords that have
+    # historically returned some is the signal.
     empty = [s for s in all_sweeps if not (s.hits or [])]
     note_parts: list[str] = []
     if all_sweeps and len(empty) == len(all_sweeps):
         # Distinguish "the platform changed its payload" from "this
         # session is not logged in". Both produce zero results, and
-        # blaming the wrong one sends an engineer to read parser code
-        # for a day when the actual fix is re-exporting cookies. A
-        # sweep that was refused (403/401) or bounced to a login wall
-        # never got far enough to parse anything, so parser drift is
-        # not a possible explanation for it.
+        # blaming the wrong one sends an engineer to read parser code for
+        # a day when the fix is re-exporting cookies. A sweep that was
+        # refused (403/401) never got far enough to parse anything, so
+        # parser drift cannot explain it.
         #
-        # Checks BOTH `stopped` (a short code, "cap:results",
-        # "stalled", or the generic "error" a no-browser platform's
-        # try/except sets) and `error` (the actual exception text, only
-        # populated alongside stopped="error"). Confirmed live
-        # (2026-08-13): a YouTube sweep whose API call raised a genuine
-        # 403 rate-limit RuntimeError set stopped="error", a string
-        # this check used to search for "403" and never find, since the
-        # real "403" lived in the separate `.error` field this branch
-        # never looked at. Every one of those got misfiled as
-        # ParserDrift and never reached mark_session_failed, so the
-        # session pool stayed blind to it. classify_failure() replaces
-        # the old hardcoded token tuple so this uses the exact same
-        # vocabulary as the session-manager feedback loop below.
+        # Checks BOTH `stopped` (a short code) and `error` (the exception
+        # text, populated only alongside stopped="error") -- a genuine 403
+        # often lives only in the latter.
         blocked = [
             s for s in all_sweeps
             if classify_failure(f"{getattr(s, 'stopped', '') or ''} {getattr(s, 'error', '') or ''}")
@@ -574,16 +536,11 @@ async def _sweep_platform(
                 plat.id, "discovery", job.client_id, job.id, "SessionInvalid", msg,
                 where=_blame_trail(all_sweeps),
             )
-            # This is the detector catching what the two exception
-            # handlers above cannot: a sweep that stops itself cleanly
-            # (a 403/checkpoint the extraction engine treats as "end of
-            # results", not an exception) never raises, so it never hits
-            # the classify_failure() path in either browser-session
-            # branch. Without this, an outright-blocked session reads as
-            # a healthy "ready" pool entry forever; every future job
-            # picks it again, gets refused again, and this same incident
-            # fires every single cycle instead of the account actually
-            # going into cooldown/rotation like a real failure would.
+            # Catches what the two exception handlers above cannot: a
+            # sweep that stops itself cleanly (a 403 the extraction engine
+            # treats as "end of results") never raises, so an
+            # outright-blocked session would otherwise read as healthy
+            # forever and be picked again every cycle.
             reason = classify_failure(", ".join(reasons)) or "checkpointed"
             if session_item.get("id"):
                 await sessions_engine.mark_session_failed(
@@ -689,35 +646,15 @@ async def _run_incremental(discoverer, jobs: list[tuple[str, str]], on_sweep_don
     every pair here shares the discoverer's own cap, since caller-side
     grouping (see _sweep_platform) is what put them in the same call.
 
-    Every platform's own `sweep()` already catches everything it can reach
-    (a failed page load, a parser exception, a network timeout) and returns
-    a Sweep with stopped="error" instead of raising, precisely so one
-    keyword's failure never has to be handled here. But there is one class
-    of failure that happens BEFORE that per-platform try/except even
-    starts: opening the browser tab itself. `Session.new_page()` is called
-    outside the guarded block on every Playwright-based platform (Facebook,
-    Twitter, TikTok), and it can genuinely raise, a crashed browser
-    context, a closed CDP connection, resource exhaustion under load. When
-    it does, that exception used to propagate out of `sweep()` uncaught,
-    into this function's `asyncio.gather()`, whose DEFAULT behavior on any
-    task raising is to cancel every other still-running task in the same
-    call and re-raise. Concretely: keyword 3 of 8 fails to open a page,
-    keywords 1/2/4-8 are still mid-scrape, gather cancels all of them, and
-    `_sweep_platform`'s own except re-raises past the SECOND keyword-type
-    group (individual vs domain) too, so it never even starts. One
-    transient page-open hiccup silently turned "sweep 8 keywords" into
-    "sweep 0-2 keywords, report the platform as failed", with the other
-    6-8 keywords never attempted as collateral damage from an exception
-    that had nothing to do with them.
-
-    Guarding each task individually here removes that failure mode at its
-    root, for every platform, present and future, without needing every
-    platform module to also guard its own pre-try setup: whatever escapes
-    `sweep()` is caught, turned into the exact same stopped="error" shape
-    that platform's own except block would have produced, and handed to
-    `on_sweep_done` exactly like a real sweep, so `_sweep_platform`'s
-    accounting (the parser-drift canary, the incomplete-sweep note) can't
-    tell the difference. The other keywords in the batch are never touched.
+    Each task is guarded individually. A platform's own `sweep()` catches
+    everything it can reach and returns stopped="error" rather than
+    raising, but the browser tab is opened BEFORE that try block on every
+    Playwright platform, and `new_page()` can raise. Unguarded, that
+    exception reaches `asyncio.gather()`, which cancels every sibling task
+    still mid-scrape and re-raises -- one transient page-open hiccup takes
+    the whole keyword batch with it. Whatever escapes `sweep()` is turned
+    into the same stopped="error" shape that platform would have produced,
+    so the caller's accounting cannot tell the difference.
     """
     concurrency = getattr(discoverer, "a", None)
     max_conc = getattr(concurrency, "concurrency", 2) if concurrency else 2

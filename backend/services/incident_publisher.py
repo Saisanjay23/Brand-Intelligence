@@ -32,12 +32,8 @@ from typing import Any, Optional
 
 from backend.database.repositories import published_incident_repository as incidents_db
 from backend.platforms.registry import PLATFORMS
-from backend.shared.models.incident_scoring import compute_incident_risk_score
-from backend.shared.models.scoring import resolve_match
-
-# "less than 6 months" per the explicit spec for this field, distinct from
-# the tool's own internal is_active (90-day window, shared/models/scoring.py)
-ACTIVE_WINDOW_DAYS = 183
+from backend.shared.models.scoring import compute_incident_risk_score
+from backend.shared.models.scoring import ACTIVE_WINDOW_DAYS, resolve_match
 
 # category/subCategory branch on whether the profile was found under one
 # of the client's individual-name keywords (impersonating a person) or a

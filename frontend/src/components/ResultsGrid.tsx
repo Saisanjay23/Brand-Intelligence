@@ -34,6 +34,8 @@ interface Props {
   analysisRunning: boolean;
   analysisLog: JobEvent[];
   analysisProgress: Record<string, PlatformProgress>;
+  onStopDiscovery?: () => void;
+  onStopAnalysis?: () => void;
   onError?: (msg: string) => void;
 }
 
@@ -1063,6 +1065,8 @@ export function ResultsGrid({
   analysisRunning,
   analysisLog,
   analysisProgress,
+  onStopDiscovery,
+  onStopAnalysis,
   onError,
 }: Props) {
   const [platform, setPlatform] = useState(platforms[0]?.platform ?? "");
@@ -2631,6 +2635,29 @@ export function ResultsGrid({
                       COMPLETED
                     </span>
                   )}
+                  {discoveryRunning && onStopDiscovery && (
+                    <button
+                      type="button"
+                      onClick={onStopDiscovery}
+                      style={{
+                        background: "linear-gradient(135deg, rgba(239,68,68,0.25), rgba(220,38,38,0.35))",
+                        color: "#ff6b6b",
+                        border: "1px solid rgba(239,68,68,0.5)",
+                        padding: "3px 10px",
+                        borderRadius: "12px",
+                        fontSize: "11px",
+                        fontWeight: 700,
+                        cursor: "pointer",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "5px",
+                        transition: "all 0.2s ease",
+                      }}
+                      title="Abort active discovery sweep"
+                    >
+                      <span>⏹</span> Stop Sweep
+                    </button>
+                  )}
                 </div>
                 <div style={{ fontFamily: "var(--font-mono)", fontSize: "13px", fontWeight: 700, color: "var(--cyan)" }}>
                   {Object.values(discoveryProgress).reduce((acc, p) => acc + (p.processed || 0), 0)} / {Object.values(discoveryProgress).reduce((acc, p) => acc + (p.total || 0), 0) || "?"} Sweeps Completed
@@ -2708,6 +2735,29 @@ export function ResultsGrid({
                     <span className="rail-pill" style={{ background: "rgba(54,181,160,0.2)", color: "var(--success)", fontWeight: 700 }}>
                       COMPLETED
                     </span>
+                  )}
+                  {analysisRunning && onStopAnalysis && (
+                    <button
+                      type="button"
+                      onClick={onStopAnalysis}
+                      style={{
+                        background: "linear-gradient(135deg, rgba(239,68,68,0.25), rgba(220,38,38,0.35))",
+                        color: "#ff6b6b",
+                        border: "1px solid rgba(239,68,68,0.5)",
+                        padding: "3px 10px",
+                        borderRadius: "12px",
+                        fontSize: "11px",
+                        fontWeight: 700,
+                        cursor: "pointer",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "5px",
+                        transition: "all 0.2s ease",
+                      }}
+                      title="Abort active analysis run"
+                    >
+                      <span>⏹</span> Stop Analysis
+                    </button>
                   )}
                 </div>
                 <div style={{ fontFamily: "var(--font-mono)", fontSize: "13px", fontWeight: 700, color: "var(--purple)" }}>

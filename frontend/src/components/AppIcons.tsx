@@ -373,3 +373,21 @@ export function ActivityWaveIcon({ size = 16, color = "currentColor", className,
     </svg>
   );
 }
+
+/**
+ * Custom Abort / Stop Action Icon
+ */
+export function StopIcon({ size = 16, color = "currentColor", className, style }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      className={className}
+      style={{ display: "inline-block", verticalAlign: "middle", flexShrink: 0, ...style }}
+    >
+      <rect x="5" y="5" width="14" height="14" rx="3" fill={color} />
+    </svg>
+  );
+}

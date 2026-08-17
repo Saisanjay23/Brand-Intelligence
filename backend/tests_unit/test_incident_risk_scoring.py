@@ -1,13 +1,13 @@
-"""compute_incident_risk_score (backend/shared/models/incident_scoring.py) --
+"""compute_incident_risk_score (backend/shared/models/scoring.py) --
 drives a published incident's client-facing riskRating. Pins the exact same
 tiered rubric as test_risk_score_rubric_spec.py's compute_score (see that
-file and incident_scoring.py's module docstring for the full spec) --
+file and scoring.py's module docstring for the full spec) --
 these two must never drift apart again.
 """
 
 from __future__ import annotations
 
-from backend.shared.models.incident_scoring import compute_incident_risk_score
+from backend.shared.models.scoring import compute_incident_risk_score
 
 
 def _score(**overrides) -> int:

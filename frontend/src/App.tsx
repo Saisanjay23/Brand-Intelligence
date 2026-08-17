@@ -186,6 +186,8 @@ export default function App() {
           onForgetClient={onForgetClient}
           busy={discoveryJobs.running}
           analysisBusy={analysisJobs.running}
+          onStopDiscovery={discoveryJobs.cancelAll}
+          onStopAnalysis={analysisJobs.cancelAll}
           onJobs={(jobs) => {
             setError("");
             const disc = jobs.filter((j) => j.kind === "discovery");
@@ -208,6 +210,8 @@ export default function App() {
           analysisRunning={analysisJobs.running}
           analysisLog={analysisJobs.log}
           analysisProgress={analysisJobs.platformProgress}
+          onStopDiscovery={discoveryJobs.cancelAll}
+          onStopAnalysis={analysisJobs.cancelAll}
           onError={setError}
         />
       )}

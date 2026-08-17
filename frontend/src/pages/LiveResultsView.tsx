@@ -13,6 +13,8 @@ interface Props {
   analysisRunning: boolean;
   analysisLog: JobEvent[];
   analysisProgress: Record<string, PlatformProgress>;
+  onStopDiscovery?: () => void;
+  onStopAnalysis?: () => void;
   onError: (msg: string) => void;
 }
 
@@ -25,6 +27,8 @@ export function LiveResultsView({
   analysisRunning,
   analysisLog,
   analysisProgress,
+  onStopDiscovery,
+  onStopAnalysis,
   onError,
 }: Props) {
   return (
@@ -45,6 +49,8 @@ export function LiveResultsView({
           analysisRunning={analysisRunning}
           analysisLog={analysisLog}
           analysisProgress={analysisProgress}
+          onStopDiscovery={onStopDiscovery}
+          onStopAnalysis={onStopAnalysis}
           onError={onError}
         />
       )}
