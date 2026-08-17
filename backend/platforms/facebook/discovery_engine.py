@@ -50,9 +50,16 @@ from dataclasses import dataclass, field
 from typing import Any, Iterator, Optional
 from urllib.parse import parse_qs, quote, urlparse
 
+from backend.platforms import replay
 from backend.shared.extraction import ExtractionResult, run_strategies
+from backend.shared.logging import get_logger
 from backend.shared.text import iter_dicts, normalized_host, parse_normalized_url
 from backend.stealth.browser import Session
+
+# This module's own progress lines still go to stderr (the CLI in engine/
+# reads them); `log` is for the things an operator needs in the SERVICE
+# log, where a stderr print from a job subprocess would not be seen.
+log = get_logger("platforms.facebook.discovery")
 
 # Session / login state
 
@@ -278,6 +285,14 @@ class PageState:
     ids_processed: list[str] = field(default_factory=list)
     total_results: Optional[int] = None
     end_of_serp: bool = False
+    # The raw, still-encoded `end_cursor` this state was decoded FROM. The
+    # decoded fields above are what the sweep reasons about; this is what a
+    # resumed sweep has to hand back to Facebook verbatim to ask for the
+    # page after this one (see platforms/replay.py). Kept as the original
+    # string rather than re-serialised from the decoded dict: re-encoding a
+    # cursor is not guaranteed to round-trip byte-for-byte, and a cursor
+    # Facebook does not recognise silently returns page 1 again.
+    end_cursor: str = ""
 
 
 # the tab is authoritative about what was searched; __typename is not.
@@ -378,6 +393,7 @@ def page_state(blob: Any) -> Optional[PageState]:
             ids_processed=_processed_ids(c),
             total_results=totals.get("num_total_results"),
             end_of_serp=bool(c.get("is_end_of_serp")),
+            end_cursor=cursor,
         )
     return None
 
@@ -611,9 +627,26 @@ class Sweep:
     # the rendered results page had to stand in
     source: str = "graphql"
     extraction: Optional["ExtractionResult"] = None
+    # Where this sweep stopped, for the next run to resume from, and where
+    # it started, when it resumed from a stored position. Both are plain
+    # bookkeeping for the CALLER (services/discovery_service.py owns the
+    # persistence; this module never touches Mongo, same as every other
+    # engine here). Empty end_cursor means there is nothing worth resuming:
+    # either the results genuinely ran out, or the sweep never got far
+    # enough to learn a position.
+    end_cursor: str = ""
+    resumed_from: str = ""
+    # Pages fetched by replaying a captured request rather than by
+    # scrolling. Surfaced in summary() so a live run makes it obvious which
+    # path actually did the work.
+    replayed_pages: int = 0
 
     def summary(self) -> str:
         note = f"{len(self.hits)} hits, {self.pages} pages, {self.stopped}"
+        if self.resumed_from:
+            note += ", resumed"
+        if self.replayed_pages:
+            note += f", {self.replayed_pages} replayed"
         if self.backfilled:
             note += f", {self.backfilled} backfilled"
         if self.unshown:
@@ -1173,7 +1206,19 @@ class Discovery:
             pass
         return out
 
-    async def sweep(self, keyword: str, tab: str, on_progress=None) -> Sweep:
+    async def sweep(self, keyword: str, tab: str, on_progress=None, resume_cursor: str = "") -> Sweep:
+        """`resume_cursor` is where a PREVIOUS run of this same (keyword,
+        tab) stopped, handed back by services/discovery_service.py from
+        `sweep_cursors` (see database/repositories/cursor_repository.py).
+        When given, and when resume is enabled, the sweep jumps straight to
+        that position by replaying a captured search request instead of
+        scrolling back down through pages it already has -- which is the
+        only way the results past one time budget are ever reachable.
+
+        Empty (the default) is the original behaviour exactly: start at the
+        top and scroll. Every failure in the resume path also lands back
+        here, so this is a fast path, never a required one.
+        """
         out = Sweep(keyword=keyword, tab=tab)
         started = time.time()
         page = await self.ctx.new_page()
@@ -1209,12 +1254,23 @@ class Discovery:
                 rendered_ids.update(st.ids_shown)
                 processed_ids.update(st.ids_processed)
 
+        # The most recent real search request the PAGE made, kept so a
+        # resumed sweep can re-issue it with a different cursor rather than
+        # having to sign one itself (see platforms/replay.py). Overwritten
+        # on every search response on purpose: a later request is a
+        # paginated one and therefore carries a cursor variable to swap,
+        # whereas the very first is page 1 and may not.
+        template: Optional[replay.RequestTemplate] = None
+
         async def on_response(resp):
+            nonlocal template
             try:
                 if "/api/graphql" not in resp.url:
                     return
                 if not is_search_response(resp.request.post_data or ""):
                     return
+                if captured := replay.RequestTemplate.from_request(resp.request):
+                    template = captured
                 text = await resp.text()
             except Exception:
                 return
@@ -1267,8 +1323,87 @@ class Discovery:
                 except Exception:
                     pass
 
+            async def _notify_new() -> None:
+                """Push whatever has arrived since the last notification, the
+                same incremental-save contract the scroll loop below honours,
+                so a resumed sweep persists results as it goes rather than
+                only if it survives to the end."""
+                nonlocal notified
+                if not on_progress or len(by_id) <= notified:
+                    return
+                new_hits = list(by_id.values())[notified:]
+                notified = len(by_id)
+                try:
+                    await _notify(on_progress, len(by_id), out.pages, new_hits)
+                except Exception:
+                    pass
+
+            # ── resume ──────────────────────────────────────────────────
+            # Jump to where the last run stopped instead of re-scrolling to
+            # it. Only ever an accelerator: every exit from here falls into
+            # the scroll loop below, which behaves exactly as it always has.
+            if resume_cursor and template is not None:
+                out.resumed_from = resume_cursor
+                cursor = resume_cursor
+                while True:
+                    if cap and len(by_id) >= cap:
+                        out.stopped = "cap:results"
+                        break
+                    if self.a.max_seconds and time.time() - started >= self.a.max_seconds:
+                        out.stopped = "cap:seconds"
+                        break
+
+                    jumped = replay.with_cursor(
+                        template, cursor, marker="result_ids_shown",
+                    )
+                    if jumped is None:
+                        # The captured request has no cursor variable to
+                        # swap, so it was a first-page request. Nothing is
+                        # lost: fall through and scroll, which also
+                        # re-captures a paginated template for next time.
+                        log.debug(f"[{tab}] {keyword!r}: no cursor variable in captured request; scrolling instead")
+                        break
+
+                    before = len(by_id)
+                    result = await replay.replay(page, jumped)
+                    if result.refused:
+                        # A replayed request refused is a SESSION signal, the
+                        # same as any other 403/429 here, and must reach the
+                        # pool rather than being mistaken for "no more
+                        # results". `stopped`/`error` are what
+                        # discovery_service.py runs classify_failure over.
+                        out.stopped = "error"
+                        out.error = f"replay refused: http-{result.status}"
+                        break
+                    if not result.ok or not result.text:
+                        break  # transient; the scroll loop can still work
+
+                    for blob in parse_lines(result.text):
+                        absorb(blob)
+                    out.pages += 1
+                    out.replayed_pages += 1
+                    await _notify_new()
+
+                    if len(by_id) <= before:
+                        # A replayed page that adds nothing means the cursor
+                        # is no longer valid (Facebook reranked, or it aged
+                        # out) and we are almost certainly being handed page
+                        # 1 again. Give up on resume rather than loop on it:
+                        # scrolling from the top is slower but truthful.
+                        log.info(f"[{tab}] {keyword!r}: resume cursor yielded nothing new -- restarting from the top")
+                        out.resumed_from = ""
+                        break
+                    if state and not state.has_next:
+                        out.stopped = "end-of-serp" if state.end_of_serp else "exhausted"
+                        out.complete = True
+                        break
+                    if not (state and state.end_cursor) or state.end_cursor == cursor:
+                        break  # no way to advance; hand over to the scroll loop
+                    cursor = state.end_cursor
+                    await page.wait_for_timeout(600)
+
             stalls = 0
-            while True:
+            while out.stopped == "" and not out.complete:
                 if cap and len(by_id) >= cap:
                     out.stopped = "cap:results"
                     break
@@ -1486,6 +1621,15 @@ class Discovery:
         except Exception as e:
             out.stopped, out.error = "error", f"{type(e).__name__}: {e}"
         finally:
+            # Where to pick this keyword up next time. Only meaningful while
+            # there IS a next page: a sweep that reached the end of the
+            # results reports an empty cursor so the caller stores
+            # "exhausted" and the next run starts fresh instead of resuming
+            # into nothing. Set in `finally` so a sweep that died partway
+            # still contributes the position it had reached -- that is
+            # precisely the case resume exists for.
+            if state and state.has_next and state.end_cursor:
+                out.end_cursor = state.end_cursor
             try:
                 await page.close()
             except Exception:

@@ -22,6 +22,7 @@ import inspect
 from typing import Optional
 from urllib.parse import urlparse
 
+from backend.database.repositories import cursor_repository as cursors_db
 from backend.database.repositories import profile_repository as profiles_db
 from backend.services import incident_service as incidents_engine
 from backend.sessions import manager as sessions_engine
@@ -412,12 +413,42 @@ async def _sweep_platform(
     async def _on_page_hits(keyword: str, tab: str, found_count: int, page_num: int, new_hits: list) -> None:
         await _save_hits(new_hits, f"{tab} {keyword!r} (page {page_num})")
 
+    async def _resume_for(keyword: str, tab: str) -> str:
+        """Where the last run of this (keyword, tab) stopped, or "" to start
+        from the top. "" is also what a keyword whose results were fully
+        exhausted last time gets: there is nothing past the end to resume
+        into, and re-running is meant to pick up profiles that appeared
+        since, which only a fresh sweep sees."""
+        if not settings.discovery_resume:
+            return ""
+        doc = await cursors_db.get(job.client_id, plat.id, keyword, tab)
+        if not doc or doc.get("exhausted"):
+            return ""
+        return str(doc.get("cursor") or "")
+
+    async def _remember_position(sweep) -> None:
+        # `end_cursor` only exists on engines that support resuming (see
+        # platforms/replay.py); everything else is left alone entirely
+        # rather than having an empty position written for it.
+        if not settings.discovery_resume or not hasattr(sweep, "end_cursor"):
+            return
+        cursor = str(getattr(sweep, "end_cursor", "") or "")
+        await cursors_db.save(
+            job.client_id, plat.id, sweep.keyword, sweep.tab,
+            cursor=cursor,
+            # No cursor means either the results ran out or the sweep never
+            # learned a position; both must start fresh next time rather
+            # than resume into an empty string.
+            exhausted=bool(sweep.complete) or not cursor,
+        )
+
     async def _on_sweep_done(sweep) -> None:
         nonlocal completed_units
         all_sweeps.append(sweep)
         # catches whatever the page callbacks never saw: the reconciliation
         # backfill, and every hit at all when the engine has no on_progress
         await _save_hits(sweep.hits or [], f"{sweep.keyword!r} done")
+        await _remember_position(sweep)
         completed_units += 1
         await mgr.emit(
             job, "progress", platform=plat.id, platform_status="running", platform_processed=completed_units,
@@ -468,7 +499,7 @@ async def _sweep_platform(
             for cap, pairs in groups.items():
                 discoverer = plat_obj.discoverer()(_options_for(cap), None)
                 try:
-                    await _run_incremental(discoverer, pairs, _on_sweep_done, _on_page_hits)
+                    await _run_incremental(discoverer, pairs, _on_sweep_done, _on_page_hits, _resume_for)
                 finally:
                     await discoverer.stop()
         except Exception as e:
@@ -501,7 +532,7 @@ async def _sweep_platform(
             try:
                 for cap, pairs in groups.items():
                     discoverer = plat_obj.discoverer()(_options_for(cap), session.ctx)
-                    await _run_incremental(discoverer, pairs, _on_sweep_done, _on_page_hits)
+                    await _run_incremental(discoverer, pairs, _on_sweep_done, _on_page_hits, _resume_for)
             except Exception as e:
                 # Same gap as above: a sweep that raises past the
                 # extraction-fallback chain (a network crash, a page.goto
@@ -681,7 +712,9 @@ async def _historic_yield(client_id: str, platform_id: str) -> int:
         return 0
 
 
-async def _run_incremental(discoverer, jobs: list[tuple[str, str]], on_sweep_done, on_page_hits=None) -> list:
+async def _run_incremental(
+    discoverer, jobs: list[tuple[str, str]], on_sweep_done, on_page_hits=None, resume_for=None,
+) -> list:
     """Run sweeps at the discoverer's own concurrency, calling
     on_sweep_done for each completed sweep immediately instead of waiting
     for gather, and on_page_hits for every batch of new results found
@@ -738,10 +771,23 @@ async def _run_incremental(discoverer, jobs: list[tuple[str, str]], on_sweep_don
 
             try:
                 sig = inspect.signature(discoverer.sweep)
+                kwargs = {}
                 if "on_progress" in sig.parameters:
-                    sweep = await discoverer.sweep(keyword, tab, on_progress=_progress)
-                else:
-                    sweep = await discoverer.sweep(keyword, tab)
+                    kwargs["on_progress"] = _progress
+                # Only the engines that actually implement resuming declare
+                # this parameter; the rest are called exactly as before.
+                # Resolved per (keyword, tab) here rather than up front so a
+                # long sweep's siblings each read their own position at the
+                # moment they start, not one stale batch read at dispatch.
+                if "resume_cursor" in sig.parameters and resume_for is not None:
+                    try:
+                        if cursor := await resume_for(keyword, tab):
+                            kwargs["resume_cursor"] = cursor
+                    except Exception as e:
+                        # resume is an optimisation; never let looking one up
+                        # be the reason a sweep does not run
+                        log.warning(f"could not read resume position for {keyword!r}/{tab}: {e}")
+                sweep = await discoverer.sweep(keyword, tab, **kwargs)
             except Exception as e:
                 log.error(
                     f"{type(discoverer).__module__}: {keyword!r}/{tab} raised past its own "
