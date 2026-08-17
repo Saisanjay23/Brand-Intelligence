@@ -744,10 +744,6 @@ interface ModalProps {
 const SessionEditModal: FC<ModalProps> = ({ platform, mode, targetSession, onClose, onComplete, onError }) => {
   const isUpdate = mode === "update";
   const [identifier, setIdentifier] = useState<string>(targetSession?.identifier || "");
-  const [authMode, setAuthMode] = useState<"credentials" | "cookies">("credentials");
-  const [username, setUsername] = useState<string>("");
-  const [password, setPassword] = useState<string>("");
-  const [twoFactorSecret, setTwoFactorSecret] = useState<string>("");
   const [cookieBlob, setCookieBlob] = useState<string>("");
   const [apiKey, setApiKey] = useState<string>("");
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
@@ -765,13 +761,6 @@ const SessionEditModal: FC<ModalProps> = ({ platform, mode, targetSession, onClo
       } else {
         if (platform.platform === "youtube" || platform.kind === "api-key") {
           await sessionsApi.saveApiKey(platform.platform, apiKey.trim(), identifier.trim() || "YouTube API Key");
-        } else if (authMode === "credentials") {
-          await sessionsApi.saveCredentials(platform.platform, {
-            identifier: identifier.trim() || "Unnamed Account",
-            username: username.trim(),
-            password,
-            two_factor_secret: twoFactorSecret.trim()
-          });
         } else {
           await sessionsApi.saveCookies(platform.platform, cookieBlob.trim(), identifier.trim() || "Unnamed Account");
         }
@@ -827,7 +816,7 @@ const SessionEditModal: FC<ModalProps> = ({ platform, mode, targetSession, onClo
             </span>
             <div>
               <h3 style={{ margin: 0, fontSize: "17px", fontWeight: 700, color: "var(--text-primary, #fff)" }}>
-                {isUpdate ? `Update ${targetSession?.identifier}` : `Add Account — ${platform.name}`}
+                {isUpdate ? `Update ${targetSession?.identifier}` : `Add Session — ${platform.name}`}
               </h3>
             </div>
           </div>
@@ -855,29 +844,10 @@ const SessionEditModal: FC<ModalProps> = ({ platform, mode, targetSession, onClo
             />
           </div>
 
-          {/* Field 2: Credentials */}
+          {/* Field 2: Cookies / API Key */}
           <div>
-            {!isApiKeyType && !isUpdate && (
-              <div style={{ display: "flex", gap: "8px", marginBottom: "16px", background: "var(--bg-surface-alt, #1d2939)", padding: "4px", borderRadius: "8px" }}>
-                <button
-                  type="button"
-                  onClick={() => setAuthMode("credentials")}
-                  style={{ flex: 1, padding: "8px", border: "none", borderRadius: "6px", fontSize: "13px", fontWeight: 600, cursor: "pointer", background: authMode === "credentials" ? "var(--bg-surface, #1e2837)" : "transparent", color: authMode === "credentials" ? "var(--text-primary, #fff)" : "var(--text-muted, #98a2b3)", transition: "all 0.2s" }}
-                >
-                  👤 Username / Password (Auto-Login)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setAuthMode("cookies")}
-                  style={{ flex: 1, padding: "8px", border: "none", borderRadius: "6px", fontSize: "13px", fontWeight: 600, cursor: "pointer", background: authMode === "cookies" ? "var(--bg-surface, #1e2837)" : "transparent", color: authMode === "cookies" ? "var(--text-primary, #fff)" : "var(--text-muted, #98a2b3)", transition: "all 0.2s" }}
-                >
-                  🍪 Paste JSON Cookies
-                </button>
-              </div>
-            )}
-            
             <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "var(--text-body, #f2f4f7)", marginBottom: "6px" }}>
-              {isApiKeyType ? "API Key" : (authMode === "cookies" || isUpdate) ? "Cookies (JSON Array)" : ""}
+              {isApiKeyType ? "API Key" : "Paste JSON Cookies"}
             </label>
             {isApiKeyType ? (
               <input
@@ -887,48 +857,12 @@ const SessionEditModal: FC<ModalProps> = ({ platform, mode, targetSession, onClo
                 style={modalInputStyle}
                 required={!isUpdate}
               />
-            ) : (!isApiKeyType && authMode === "credentials" && !isUpdate) ? (
-              <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-                <div>
-                  <label style={{ display: "block", fontSize: "12px", color: "var(--text-muted, #98a2b3)", marginBottom: "4px" }}>Username / Email / Phone</label>
-                  <input
-                    value={username}
-                    onChange={(e) => setUsername(e.target.value)}
-                    placeholder="e.g. brand_monitor_01@gmail.com"
-                    style={modalInputStyle}
-                    required
-                  />
-                </div>
-                <div>
-                  <label style={{ display: "block", fontSize: "12px", color: "var(--text-muted, #98a2b3)", marginBottom: "4px" }}>Password</label>
-                  <input
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="••••••••••••"
-                    style={modalInputStyle}
-                    required
-                  />
-                </div>
-                <div>
-                  <label style={{ display: "block", fontSize: "12px", color: "var(--text-muted, #98a2b3)", marginBottom: "4px" }}>2FA Secret Key (Optional - for TOTP Auto-fill)</label>
-                  <input
-                    value={twoFactorSecret}
-                    onChange={(e) => setTwoFactorSecret(e.target.value)}
-                    placeholder="e.g. JBSWY3DPEHPK3PXP"
-                    style={modalInputStyle}
-                  />
-                  <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-dim, #667085)" }}>
-                    If 2FA is enabled, enter the 16-character setup key here so the tool can generate the 6-digit code automatically.
-                  </p>
-                </div>
-              </div>
             ) : (
               <textarea
                 value={cookieBlob}
                 onChange={(e) => setCookieBlob(e.target.value)}
                 placeholder='[{"name": "c_user", "value": "..."}]'
-                style={{ ...modalInputStyle, height: "120px", resize: "vertical", fontFamily: "var(--font-mono, monospace)", fontSize: "12px" }}
+                style={{ ...modalInputStyle, height: "140px", resize: "vertical", fontFamily: "var(--font-mono, monospace)", fontSize: "12px" }}
                 required={!isUpdate}
               />
             )}
