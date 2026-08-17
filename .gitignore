@@ -26,3 +26,8 @@ backendengine/
 frontend/*.html
 !frontend/index.html
 frontend/test_clip.ts
+
+# IDE / tool caches
+.claude/
+.clude/
+.ruff_cache/
