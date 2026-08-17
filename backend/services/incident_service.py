@@ -72,6 +72,18 @@ _RULES: list[tuple[re.Pattern, Diagnosis]] = [
             "Retry the same profile on its own; if it keeps happening for many profiles, the session may be rate-limited -- pace runs further apart.",
         ),
     ),
+    (
+        re.compile(r"fieldextractiondrift", re.I),
+        Diagnosis(
+            "A specific field (see 'Exactly where it broke' below) came back empty across most of an "
+            "otherwise-successful batch, while other fields on the same profiles populated fine. The "
+            "platform has changed the part of its page or data feed that carries this one field.",
+            "Open the file/function named below, confirm the field's new location by comparing a live "
+            "profile visit against the current parsing code, and add/update the read for the new "
+            "location (following the same pattern used for fields that already survived a prior "
+            "platform change, e.g. Twitter's legacy-field fallback).",
+        ),
+    ),
 ]
 
 _GENERIC = Diagnosis(
@@ -118,6 +130,8 @@ async def record(
     and source text of each method that failed. `source_file` alone names
     the module; this names the line inside it to change, which is the
     difference between "Facebook discovery broke" and an actionable ticket."""
+    from backend.services import alert_policy
+
     diagnosis = diagnose(error_type, message)
     doc = {
         "platform": platform, "kind": kind, "scope": scope, "job_id": job_id,
@@ -127,6 +141,11 @@ async def record(
         "where": where,
         "ts": datetime.now(timezone.utc),
     }
+    # Stamped before the insert, not after, so the stored document and the
+    # daily digest agree with what the live alert decided; recomputing
+    # severity at digest time would drift the moment the policy changes.
+    doc["severity"] = alert_policy.severity_of(doc)
+    doc["fingerprint"] = alert_policy.fingerprint(doc)
     await incidents_db.record(doc)
     try:
         import asyncio

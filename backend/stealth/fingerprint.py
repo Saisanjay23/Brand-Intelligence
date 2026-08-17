@@ -20,8 +20,28 @@ CHROME_PATHS = [
     r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
     os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    # Linux/container locations. The original list had only
+    # /usr/bin/google-chrome, which is NOT what a Debian/Alpine image or a
+    # playwright base image typically ships -- on those the lookup missed,
+    # the hardcoded default below was used, and every session then
+    # advertised a Chrome version that no binary on the host actually had.
+    # That is precisely the "worse tell" this module's docstring warns
+    # about, so the deployment targets are enumerated rather than assumed.
+    "/usr/bin/google-chrome-stable",
     "/usr/bin/google-chrome",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/snap/bin/chromium",
+    "/opt/google/chrome/chrome",
 ]
+
+# The version claimed when no real browser can be found. It ages the
+# moment it is written, which is exactly why `CHROME_VERSION_DETECTED`
+# exists: services/preflight_service.py alerts on a deployment that is
+# running on this fallback, instead of letting a stale UA quietly become
+# the fleet's most distinctive fingerprint.
+FALLBACK_CHROME_MAJOR = "132"
+FALLBACK_CHROME_FULL = "132.0.6834.83"
 
 
 def chrome_binary() -> str | None:
@@ -33,8 +53,8 @@ def chrome_binary() -> str | None:
 
 def _detect_chrome_version(binary_path: str | None) -> tuple[str, str]:
     """Dynamically extract major and full version strings from installed Chrome."""
-    default_major = "132"
-    default_full = "132.0.6834.83"
+    default_major = FALLBACK_CHROME_MAJOR
+    default_full = FALLBACK_CHROME_FULL
     if not binary_path or not Path(binary_path).exists():
         return default_major, default_full
     try:
@@ -64,6 +84,10 @@ def _detect_chrome_version(binary_path: str | None) -> tuple[str, str]:
 
 
 CHROME_MAJOR_VERSION, CHROME_FULL_VERSION = _detect_chrome_version(chrome_binary())
+
+# False means no real browser was found and the stale fallback above is
+# what every session is advertising. Read by services/preflight_service.py.
+CHROME_VERSION_DETECTED = CHROME_FULL_VERSION != FALLBACK_CHROME_FULL
 
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

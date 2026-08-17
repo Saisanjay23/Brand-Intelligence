@@ -57,6 +57,12 @@ async def lifespan(app: FastAPI):
         await incidents_db.ensure_indexes()
         await published_incidents_db.ensure_indexes()
         log.info("startup: mongo reachable, indexes ensured")
+        # After the incident collection exists (findings are recorded as
+        # incidents) and before any job can run, so a misconfigured host is
+        # reported on the deploy that caused it rather than discovered later
+        # in the output. Never raises; see preflight_service.run().
+        from backend.services import preflight_service
+        await preflight_service.run()
         from backend.platforms import registry
         for p in registry.PLATFORMS.values():
             await registry.session_state(p)

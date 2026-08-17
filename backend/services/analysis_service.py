@@ -25,6 +25,7 @@ from backend.services import health_service as health_engine
 from backend.services import incident_service as incidents_engine
 from backend.sessions import manager as sessions_engine
 from backend.services.job_service import Job
+from backend.shared.extraction import locate
 from backend.shared.models.row import Row
 from backend.shared.resilience import classify_failure, is_transient, retry_async
 from backend.platforms.scan_options import ScanOptions
@@ -410,7 +411,136 @@ async def _analyse_platform(
     if remaining and not stop_reason:
         stop_reason = "session rotation exhausted"
     _check_last_post_extraction_health(platform_id, job, rows)
+    await _check_field_extraction_health(platform_id, job, rows, mgr)
     return saved, new, attempted, stop_reason
+
+
+# --- Field-level extraction canaries ------------------------------------
+# Generalizes _check_last_post_extraction_health (below) to any field that
+# should reliably populate on a row that loaded far enough to reach status
+# "OK". A platform reshaping its profile payload/DOM doesn't raise; it just
+# makes one specific field come up blank while everything else keeps
+# working -- the same silent-drift shape last_post already guards against,
+# now for the display name and follower count too.
+#
+# The targets are "module:qualname", resolved to a real file:line at alert
+# time by shared/extraction.py::locate(). They are NOT written as literal
+# line numbers on purpose: any edit above one of these functions shifts it,
+# and an alert pointing at the wrong line costs the reader more time than
+# one pointing at no line at all. Each name below was taken from that
+# engine's actual `row.profile_name = ` / `row.followers = ` assignment
+# site, and tests_unit/test_field_canary.py asserts every one still
+# resolves, so a rename fails a test instead of shipping a dead pointer.
+_FIELD_CANARIES: dict[str, tuple[tuple[str, str, tuple[str, ...]], ...]] = {
+    "twitter": (
+        ("profile_name", "display name",
+         ("backend.platforms.twitter.analysis_engine:Scraper.fill",)),
+        ("followers", "follower count",
+         ("backend.platforms.twitter.analysis_engine:Scraper.fill",)),
+    ),
+    "instagram": (
+        ("profile_name", "display name",
+         ("backend.platforms.instagram.analysis_engine:Scraper.fill",
+          "backend.platforms.instagram.analysis_engine:Scraper.fill_from_dom")),
+        ("followers", "follower count",
+         ("backend.platforms.instagram.analysis_engine:Scraper.fill",
+          "backend.platforms.instagram.analysis_engine:Scraper.fill_from_dom")),
+    ),
+    "facebook": (
+        ("profile_name", "display name",
+         ("backend.platforms.facebook.analysis_engine:read_name",)),
+        ("followers", "follower count",
+         ("backend.platforms.facebook.analysis_engine:read_counts",)),
+    ),
+    "youtube": (
+        ("profile_name", "channel name",
+         ("backend.platforms.youtube.analysis_engine:Scraper.fill",)),
+        ("followers", "subscriber count",
+         ("backend.platforms.youtube.analysis_engine:Scraper.fill",)),
+    ),
+    "tiktok": (
+        ("profile_name", "display name",
+         ("backend.platforms.tiktok.analysis_engine:Scraper.fill",
+          "backend.platforms.tiktok.analysis_engine:Scraper.fill_from_dom")),
+        ("followers", "follower count",
+         ("backend.platforms.tiktok.analysis_engine:Scraper.fill",
+          "backend.platforms.tiktok.analysis_engine:Scraper.fill_from_dom")),
+    ),
+    "telegram": (
+        ("profile_name", "channel/group title",
+         ("backend.platforms.telegram.analysis_engine:Scraper.fill",)),
+        ("followers", "member count",
+         ("backend.platforms.telegram.analysis_engine:Scraper.fill",)),
+    ),
+}
+
+# Enough of a batch that a blank field means the parser, not the profile.
+# A lone-profile catch-up run for one client would otherwise trip on one
+# genuinely-odd account; these mirror the last-post canary's thresholds so
+# both detectors have the same, already-live-validated sensitivity.
+_CANARY_MIN_ROWS = 5
+_CANARY_MIN_BLANK = 3
+_CANARY_BLANK_RATIO = 0.5
+
+
+def _field_blank(row: Row, field: str) -> bool:
+    """Blank means "nothing was extracted", never "the real value is 0".
+
+    `followers` is an Optional[int] where 0 is a legitimate reading for a
+    brand-new account, so only None counts; treating 0 as missing would
+    fire this canary on every genuinely-empty profile. Mirrors the same
+    distinction shared/extraction.py::_default_is_empty draws.
+    """
+    val = getattr(row, field)
+    return val is None if field == "followers" else not str(val or "").strip()
+
+
+async def _check_field_extraction_health(platform_id: str, job: Job, rows: list[Row], mgr) -> None:
+    """Per-field version of the last-post canary below.
+
+    Routes through the same incident path, so severity, de-duplication and
+    email throttling are decided in one place (services/alert_policy.py)
+    rather than here. Also pushes a line into this job's own live event
+    feed, so the Live Activity panel shows the break as it happens instead
+    of only once the email arrives.
+    """
+    ok_rows = [r for r in rows if r.status == "OK"]
+    if len(ok_rows) < _CANARY_MIN_ROWS:
+        return
+    for field, label, targets in _FIELD_CANARIES.get(platform_id, ()):
+        blank = [r for r in ok_rows if _field_blank(r, field)]
+        if len(blank) < _CANARY_MIN_BLANK or len(blank) / len(ok_rows) < _CANARY_BLANK_RATIO:
+            continue
+        where = "\n".join(f"  {locate(t)}" for t in targets)
+        examples = ", ".join(r.url for r in blank[:3])
+        msg = (
+            f"{platform_id}: the '{label}' field came back empty for {len(blank)} of "
+            f"{len(ok_rows)} profiles that loaded successfully in this batch. Those profiles "
+            f"opened fine and their other fields populated, so this is not a session, network "
+            f"or access problem -- it is {platform_id} having changed the part of its page or "
+            f"data feed that carries '{label}'. Every profile analysed from now on will be "
+            f"missing this field until the extraction code is updated. "
+            f"Example profiles: {examples}"
+        )
+        log.error(msg)
+        try:
+            await mgr.emit(
+                job, "progress", platform=platform_id,
+                message=f"[{platform_id}] BROKEN: '{label}' no longer extracting "
+                        f"({len(blank)}/{len(ok_rows)} profiles) -- see {targets[0].split(':')[-1]}()",
+            )
+        except Exception:
+            # a live-feed line is presentation; never let it stop the
+            # incident below from being recorded
+            pass
+        # Awaited, not fire-and-forget: this runs at the very end of a
+        # platform's batch, and a bare create_task here can be collected or
+        # cancelled when the job finishes -- losing exactly the alert this
+        # whole detector exists to send.
+        await incidents_engine.record(
+            platform_id, "analysis", job.client_id, job.id, "FieldExtractionDrift", msg,
+            where=where,
+        )
 
 
 def _check_last_post_extraction_health(platform_id: str, job: Job, rows: list[Row]) -> None:
@@ -448,20 +578,52 @@ def _check_last_post_extraction_health(platform_id: str, job: Job, rows: list[Ro
         f"Examples: {examples}"
     )
     log.error(msg)
-    import asyncio
-    asyncio.create_task(incidents_engine.record(
+    task = asyncio.create_task(incidents_engine.record(
         platform_id, "analysis", job.client_id, job.id, "LastPostExtractionDrift", msg,
-        where=_LAST_POST_FUNCTION.get(platform_id, ""),
+        where=_last_post_where(platform_id),
     ))
+    # asyncio holds only a WEAK reference to a running task: a bare
+    # create_task whose result nobody keeps can be garbage-collected
+    # mid-flight, which would silently drop the very incident this
+    # detector exists to raise. Keeping the reference until it completes
+    # is the documented way to avoid that.
+    _PENDING_INCIDENTS.add(task)
+    task.add_done_callback(_PENDING_INCIDENTS.discard)
+
+
+_PENDING_INCIDENTS: set = set()
 
 
 # The exact function an operator should open first for each platform's
-# last-post extraction, not a dynamic blame trail like discovery's
+# last-post extraction. Not a dynamic blame trail like discovery's
 # run_strategies chain (these engines' last-post tiers are plain functions,
-# not registered strategies), but naming the right function directly is
-# still far better than the alert saying only "Facebook broke".
-_LAST_POST_FUNCTION = {
-    "facebook": "backend/platforms/facebook/analysis_engine.py: read_last_post() / dom_last_post()",
-    "twitter": "backend/platforms/twitter/discovery_engine.py: latest_post() -- backend/platforms/twitter/analysis_engine.py: dom_last_post()",
-    "instagram": "backend/platforms/instagram/analysis_engine.py: Scraper.read_last_post_date()",
+# not registered strategies) -- but resolved to a real file:line at alert
+# time by shared/extraction.py::locate(), so the pointer stays correct as
+# these files change instead of rotting into a wrong line number.
+_LAST_POST_TARGETS: dict[str, tuple[str, ...]] = {
+    "facebook": (
+        "backend.platforms.facebook.analysis_engine:read_last_post",
+        "backend.platforms.facebook.analysis_engine:dom_last_post",
+    ),
+    "twitter": (
+        "backend.platforms.twitter.discovery_engine:latest_post",
+        "backend.platforms.twitter.analysis_engine:dom_last_post",
+    ),
+    "instagram": (
+        "backend.platforms.instagram.analysis_engine:Scraper.read_last_post_date",
+    ),
+    # TikTok reads the last-post date inline rather than in a dedicated
+    # function (it works around a CAPTCHA on the profile's own video grid
+    # by searching the username on the Videos tab instead), so the whole
+    # visit method is the honest pointer here.
+    "tiktok": (
+        "backend.platforms.tiktok.analysis_engine:Scraper.process",
+    ),
+    "youtube": (
+        "backend.platforms.youtube.analysis_engine:Scraper.fill",
+    ),
 }
+
+
+def _last_post_where(platform_id: str) -> str:
+    return "\n".join(f"  {locate(t)}" for t in _LAST_POST_TARGETS.get(platform_id, ()))

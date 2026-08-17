@@ -26,7 +26,7 @@ from pymongo.errors import DuplicateKeyError
 from backend.config.settings import settings
 from backend.shared.errors import ConflictError, NotFoundError, ValidationError
 from backend.shared.logging import get_logger
-from backend.shared.models.scoring import NAME_THRESHOLD
+from backend.shared.models.scoring import MEDIUM_MATCH_THRESHOLD, NAME_THRESHOLD
 from backend.database.connection import db
 
 log = get_logger("repositories.profile_repository")
@@ -408,12 +408,14 @@ async def find(
         # "does the name match", were being silently bucketed into
         # "Medium" instead, which is what made "High Match" look broken for
         # any keyword whose best hits happened to land in that range.
+        # Both bounds come from scoring.py so this file can never drift
+        # away from the bar the rest of the backend scores against again.
         if match_level == "high":
             q["name_score"] = {"$gte": NAME_THRESHOLD}
         elif match_level == "medium":
-            q["name_score"] = {"$gte": 50, "$lt": NAME_THRESHOLD}
+            q["name_score"] = {"$gte": MEDIUM_MATCH_THRESHOLD, "$lt": NAME_THRESHOLD}
         else:
-            q["name_score"] = {"$lt": 50, "$exists": True, "$ne": None}
+            q["name_score"] = {"$lt": MEDIUM_MATCH_THRESHOLD, "$exists": True, "$ne": None}
     if keyword_match_type and client_keywords is not None:
         # "was this found under one of the client's INDIVIDUAL-name keywords
         # or one of its DOMAIN/brand keywords", the same classification

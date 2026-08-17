@@ -259,6 +259,15 @@ MOBILE_SEARCH_API = "https://i.instagram.com/api/v1/users/search/?q={q}&count={c
 PROFILE_INFO_API = "https://i.instagram.com/api/v1/users/web_profile_info/?username={u}"
 MOBILE_UA = "Instagram 219.0.0.12.117 Android (29/10; 480dpi; 1080x2151; OnePlus; GM1913; OnePlus7Pro; qcom; en_US; 314660328)"
 
+# Fallback page budget, used only when the caller configured no `max_pages`
+# of its own. A bound is needed either way: the loop below advances on a
+# `page_token` the API hands back, and a token that never stops coming
+# would otherwise sweep one keyword forever. Every other platform's engine
+# reads this cap from DiscoveryOptions rather than hardcoding it, and this
+# one now does too, so a client asking for more depth actually gets it
+# instead of being silently held at ten pages.
+DEFAULT_MAX_PAGES = 10
+
 
 # Secondary endpoint fallback
 # The sweep above talks to Instagram's private MOBILE search API. That is
@@ -359,8 +368,8 @@ class Discovery:
         rank_token = None
 
         try:
-            # We paginate up to 10 times to prevent infinite loops and respect limits
-            for _ in range(10):
+            max_pages = int(getattr(self.a, "max_pages", 0) or 0) or DEFAULT_MAX_PAGES
+            for _ in range(max_pages):
                 url = MOBILE_SEARCH_API.format(q=quote(keyword), count=100)
                 if page_token:
                     url += f"&page_token={page_token}"
@@ -407,8 +416,21 @@ class Discovery:
                 await asyncio.sleep(2.5)
 
             if not out.stopped:
-                out.stopped = "limit-reached"
-                out.complete = True
+                # Ran the whole page budget without the API ever saying it
+                # had run out (`has_more` false / no next token): there are
+                # more results we did not fetch. This is INCOMPLETE, and
+                # saying so is the entire point -- `_sweep_platform`'s
+                # incomplete accounting (services/discovery_service.py)
+                # reads exactly this flag to decide whether to warn the
+                # analyst, so marking a truncated sweep complete was the one
+                # place this engine reported "we reached the end" about
+                # results it had never asked for. Uses the same "cap:pages"
+                # vocabulary every other platform's engine already emits for
+                # the identical outcome; no token in it is session-shaped, so
+                # shared/resilience.py::classify_failure correctly leaves the
+                # session pool alone.
+                out.stopped = "cap:pages"
+                out.complete = False
 
             # Private mobile API first (richer), rendered search page second.
             # The DOM pass only runs when the API produced nothing at all,

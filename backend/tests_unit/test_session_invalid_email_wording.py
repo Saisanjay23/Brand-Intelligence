@@ -36,7 +36,11 @@ class TestSessionInvalidEmail:
 
     def test_body_tells_the_analyst_what_to_do(self):
         msg = _build_email(_incident(platform="youtube"))
-        body = msg.get_content()
+        # The alert is multipart/alternative (plain text + an HTML part),
+        # so the plain-text body has to be selected explicitly --
+        # get_content() raises on the multipart container itself. The
+        # wording asserted below is unchanged; only the retrieval is.
+        body = msg.get_body(preferencelist=("plain",)).get_content()
         assert "update the session for Youtube" in body or "Youtube" in body
         assert "logged out or challenged" in body
 

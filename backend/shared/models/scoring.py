@@ -68,6 +68,15 @@ W_NAME = 1  # a clear username/display-name match lifts the floor to 3
 ACTIVE_WINDOW_DAYS = 180
 NAME_THRESHOLD = 80  # token-set ratio, 0..100
 
+# The High/Medium/Low boundary used by the Match Level filter. Lives here,
+# beside NAME_THRESHOLD, rather than as a literal in the query builder --
+# the "High" band was once written as a separate literal in
+# database/repositories/profile_repository.py and drifted to an
+# unreachable byte-perfect 100, silently demoting 97 genuinely strong
+# matches to Medium where nobody reviewed them. Two files agreeing by
+# convention is what caused that; one definition is what prevents it.
+MEDIUM_MATCH_THRESHOLD = 50
+
 MIN_SCORE = BASE
 MAX_SCORE = 9
 
