@@ -21,5 +21,8 @@ export const analysisApi = {
     // one platform id to scope the run to just that platform (the Re-run
     // Analysis button's "All Platforms" vs. one-platform selector)
     platform?: string;
+    // Two or more platform ids to run together (the Run hub's
+    // multi-select). Takes precedence over `platform` when both are sent.
+    platforms?: string[];
   }) => post("/analysis", body).then(json<{ job_id: string; status: JobStatus }>),
 };

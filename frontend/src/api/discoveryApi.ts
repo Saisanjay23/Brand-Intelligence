@@ -18,6 +18,9 @@ export const discoveryApi = {
     // one platform id to scope the sweep to just that platform (the Sweep
     // button's "All Platforms" vs. one-platform selector)
     platform?: string;
+    // Two or more platform ids to sweep together (the Run hub's
+    // multi-select). Takes precedence over `platform` when both are sent.
+    platforms?: string[];
   }) => post("/discovery", body).then(json<{ job_id: string; status: JobStatus }>),
   // Re-resolves name/photo for a hand-picked set of already-discovered
   // profile ids, no keyword search, just a targeted refresh (Facebook

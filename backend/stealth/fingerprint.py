@@ -12,8 +12,13 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
+
+from backend.shared.logging import get_logger
+
+log = get_logger("stealth.fingerprint")
 
 CHROME_PATHS = [
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -44,11 +49,145 @@ FALLBACK_CHROME_MAJOR = "132"
 FALLBACK_CHROME_FULL = "132.0.6834.83"
 
 
-def chrome_binary() -> str | None:
+# Executable names to look for on PATH. Covers the usual Chrome/Chromium
+# packaging across distros as well as a Windows install that put itself
+# somewhere CHROME_PATHS does not enumerate.
+CHROME_EXE_NAMES = (
+    "chrome", "google-chrome", "google-chrome-stable", "chrome.exe",
+    "chromium", "chromium-browser", "chromium.exe",
+)
+
+# Explicit override, checked first. The escape hatch for anyone whose
+# install is somewhere none of the automatic strategies look -- a portable
+# build, a non-standard prefix, a pinned version.
+CHROME_BINARY_ENV = "CHROME_BINARY"
+
+
+def _from_env() -> str | None:
+    raw = (os.environ.get(CHROME_BINARY_ENV) or "").strip().strip('"')
+    if not raw:
+        return None
+    if Path(raw).exists():
+        return raw
+    log.warning(
+        f"{CHROME_BINARY_ENV}={raw!r} is set but no file exists there -- ignoring it "
+        "and falling back to automatic detection"
+    )
+    return None
+
+
+def _from_path() -> str | None:
+    """Whatever the OS itself would run. The most portable single check
+    there is, and it costs nothing."""
+    for name in CHROME_EXE_NAMES:
+        if found := shutil.which(name):
+            return found
+    return None
+
+
+def _from_windows_registry() -> str | None:
+    """Windows records the real install location, wherever it is. This is
+    the authoritative answer on Windows -- a user who installed Chrome to
+    another drive is invisible to a hardcoded Program Files path but not
+    to this."""
+    if os.name != "nt":
+        return None
+    try:
+        import winreg
+    except ImportError:
+        return None
+    key = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe"
+    for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        try:
+            with winreg.OpenKey(root, key) as handle:
+                value, _ = winreg.QueryValueEx(handle, None)
+                if value and Path(value).exists():
+                    return str(value)
+        except OSError:
+            continue
+    return None
+
+
+def _from_playwright() -> str | None:
+    """Playwright downloads its own Chromium; if this project installed
+    browsers at all, one is on disk. Better than advertising a version no
+    binary here actually has."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:
+        return None
+    try:
+        with sync_playwright() as pw:
+            path = pw.chromium.executable_path
+        return path if path and Path(path).exists() else None
+    except Exception:
+        return None
+
+
+def _from_known_paths() -> str | None:
     for p in CHROME_PATHS:
         if p and Path(p).exists():
             return p
     return None
+
+
+def chrome_binary() -> str | None:
+    """The real Chrome/Chromium on THIS machine, however it got installed.
+
+    A hardcoded path list is fine on the machine it was written for and
+    silently wrong everywhere else: the lookup misses, the stale
+    FALLBACK_CHROME_FULL below is what every session then advertises, and
+    a UA claiming a version no binary on the host has is a worse tell than
+    no spoofing at all. So this asks the system rather than assuming, in
+    descending order of authority:
+
+        1. $CHROME_BINARY          -- explicit operator override
+        2. PATH                    -- what the OS itself would run
+        3. Windows registry        -- the real install location on Windows
+        4. well-known paths        -- the previous behaviour, kept
+        5. Playwright's Chromium   -- whatever this project downloaded
+
+    Result is cached: it is called per session start and none of these
+    change while the process lives.
+    """
+    global _CHROME_BINARY_CACHED, _CHROME_BINARY_RESOLVED
+    if _CHROME_BINARY_RESOLVED:
+        return _CHROME_BINARY_CACHED
+
+    # (label, callable) rather than reading __name__ off the function: the
+    # label is for humans reading the log, and looking it up dynamically
+    # would also couple this to how the functions are referenced.
+    strategies = (
+        ("CHROME_BINARY env", _from_env),
+        ("PATH", _from_path),
+        ("windows registry", _from_windows_registry),
+        ("known install paths", _from_known_paths),
+        ("playwright chromium", _from_playwright),
+    )
+    for label, strategy in strategies:
+        try:
+            found = strategy()
+        except Exception as e:  # a detection strategy must never be fatal
+            log.debug(f"chrome detection via {label} failed: {e}")
+            found = None
+        if found:
+            _CHROME_BINARY_CACHED = found
+            _CHROME_BINARY_RESOLVED = True
+            log.info(f"chrome detected via {label}: {found}")
+            return found
+
+    log.warning(
+        "no Chrome/Chromium binary found by any strategy -- sessions will advertise the "
+        f"fallback version {FALLBACK_CHROME_FULL}, which ages badly. Set "
+        f"{CHROME_BINARY_ENV}=/path/to/chrome to point this at your install."
+    )
+    _CHROME_BINARY_RESOLVED = True
+    _CHROME_BINARY_CACHED = None
+    return None
+
+
+_CHROME_BINARY_CACHED: str | None = None
+_CHROME_BINARY_RESOLVED = False
 
 
 def _detect_chrome_version(binary_path: str | None) -> tuple[str, str]:

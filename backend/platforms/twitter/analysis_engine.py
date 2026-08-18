@@ -32,7 +32,7 @@ from backend.shared.models.row import Row
 from backend.shared.text import name_score, normalized_host, parse_normalized_url
 from backend.platforms.twitter.discovery_engine import (RE_CHECKPOINT,
                                                          RE_GONE, RE_LOGIN,
-                                                         TWEETS_QUERY,
+                                                         TWEETS_QUERIES,
                                                          USER_QUERIES,
                                                          TwitterSession,
                                                          TwitterUser,
@@ -100,6 +100,13 @@ JS_TWEET_TIMES = """
   return out;
 }
 """
+
+
+# How long to let a profile timeline paint before giving up on reading a
+# date off it. Generous on purpose: the cost of waiting is a few seconds
+# per profile, the cost of reading too early is a false "this account has
+# no posts", which feeds the activity classification and the risk score.
+_DOM_TIMELINE_WAIT_MS = 8000
 
 
 async def dom_last_post(page) -> str:
@@ -170,7 +177,7 @@ class Scraper:
         async def on_response(resp):
             try:
                 is_user = any(q in resp.url for q in USER_QUERIES)
-                is_tweets = TWEETS_QUERY in resp.url
+                is_tweets = any(q in resp.url for q in TWEETS_QUERIES)
                 if not (is_user or is_tweets):
                     return
                 text = await resp.text()
@@ -238,9 +245,21 @@ class Scraper:
 
             # the timeline query lands just after the profile one
             if not posts:
+                # Wait for the timeline to actually paint, rather than a
+                # flat 1.2s. Measured live: the profile query answers at
+                # ~4.1s but the first tweet cells only exist at ~5.7s, so
+                # a fixed sleep read an empty timeline for some profiles
+                # and a full one for others -- exactly the "17 of 33 have
+                # no date" pattern that looked like a parser break.
                 try:
-                    await page.wait_for_timeout(1200)
+                    await page.wait_for_selector(
+                        '[data-testid="tweet"]', timeout=_DOM_TIMELINE_WAIT_MS,
+                    )
                 except Exception:
+                    # genuinely no tweets on screen (a zero-post account,
+                    # or a protected/empty timeline) -- fall through, the
+                    # DOM read below will return "" and the caller keeps
+                    # posts_seen as it found it
                     pass
             self.fill(row, found[0])
             if posts:

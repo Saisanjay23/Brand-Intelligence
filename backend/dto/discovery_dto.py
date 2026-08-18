@@ -23,6 +23,14 @@ class DiscoveryIn(BaseModel):
     # the registry in discovery_controller.py, an unknown id is a 400,
     # not a silent no-op.
     platform: Optional[str] = None
+    # Two or more platform ids to sweep together, the Run hub's
+    # multi-select. `platform` stays for the single-platform case and for
+    # every existing caller; when both are given, `platforms` wins.
+    #
+    # Deliberately NOT folded into `platform` as a comma string: a list is
+    # the honest shape, and a caller passing "facebook,twitter" to the old
+    # field would otherwise silently become an unknown-platform error.
+    platforms: Optional[list[str]] = None
     # Re-resolve name/photo for a hand-picked set of already-discovered
     # profile doc ids instead of running a fresh keyword sweep, see
     # discovery_service.py's _resweep_selected. Mutually exclusive with

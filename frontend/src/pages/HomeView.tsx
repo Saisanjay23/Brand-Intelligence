@@ -8,7 +8,28 @@ import type { Client, Job, PlatformHealth } from "../api/types";
 import { PlatformIcon } from "../components/PlatformIcon";
 import { GlobalSearchModal } from "../components/GlobalSearchModal";
 import { confirmAction } from "../utils/confirmAction";
-import { DiscoverIcon, AnalyseIcon, CyberGlobeIcon, StopIcon } from "../components/AppIcons";
+import {
+  DiscoverIcon,
+  AnalyseIcon,
+  CyberGlobeIcon,
+  GlobeIcon,
+  StopIcon,
+  TargetIcon,
+  UserIcon,
+  TagIcon,
+  SaveIcon,
+  SparklesIcon,
+  BuildingIcon,
+  SearchIcon,
+  PlusIcon,
+  TrashIcon,
+  EditIcon,
+  CloneIcon,
+  ZapIcon,
+  SettingsGearIcon,
+  AlertTriangleIcon,
+  LayersIcon,
+} from "../components/AppIcons";
 
 type KeywordTab = "names" | "domain" | "assetNames";
 type Mode = "select" | "create";
@@ -27,6 +48,8 @@ interface Props {
   analysisBusy: boolean;
   onStopDiscovery?: () => void;
   onStopAnalysis?: () => void;
+  stoppingDiscovery?: boolean;
+  stoppingAnalysis?: boolean;
   onJobs: (jobs: Job[]) => void;
   onError: (m: string) => void;
 }
@@ -154,7 +177,11 @@ function ChipInput({
           onClick={() => setBulkOpen((v) => !v)}
           disabled={disabled}
         >
-          {bulkOpen ? "▾ Close bulk paste" : "▸ 📋 Bulk import"}
+          {bulkOpen ? "▾ Close bulk paste" : (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+              <CloneIcon size={12} /> Bulk import
+            </span>
+          )}
         </button>
       </div>
       {bulkOpen && (
@@ -273,7 +300,8 @@ function KeywordGeneratorModal({
       >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", borderBottom: "1px solid var(--border-subtle)", paddingBottom: "10px" }}>
           <div style={{ fontSize: "15px", fontWeight: 700, display: "flex", alignItems: "center", gap: "8px" }}>
-            <span>✨ Threat Actor Keyword Generator</span>
+            <SparklesIcon size={16} color="var(--cyan)" />
+            <span>Threat Actor Keyword Generator</span>
           </div>
           <button onClick={onClose} style={{ background: "transparent", border: "none", color: "var(--text-muted)", fontSize: "16px", cursor: "pointer" }}>✕</button>
         </div>
@@ -322,8 +350,9 @@ function KeywordGeneratorModal({
                     />
                     <span style={{ fontSize: "12px", fontFamily: "var(--font-mono)", color: "var(--text-main)" }}>{s.kw}</span>
                   </div>
-                  <span style={{ fontSize: "10px", color: "var(--text-dim)", background: "var(--bg-inner)", padding: "2px 6px", borderRadius: "4px" }}>
-                    {s.type === "names" ? "👤 " : "🏷️ "}{s.pattern}
+                  <span style={{ fontSize: "10px", color: "var(--text-dim)", background: "var(--bg-inner)", padding: "2px 6px", borderRadius: "4px", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                    {s.type === "names" ? <UserIcon size={12} color="var(--cyan)" /> : <TagIcon size={12} color="var(--purple)" />}
+                    {s.pattern}
                   </span>
                 </label>
               ))}
@@ -340,9 +369,9 @@ function KeywordGeneratorModal({
             onClick={handleApply}
             disabled={!selectedSuggestions.size}
             className="btn-cyber-primary"
-            style={{ width: "auto", padding: "7px 18px", fontSize: "12px", marginTop: 0 }}
+            style={{ width: "auto", padding: "7px 18px", fontSize: "12px", marginTop: 0, display: "inline-flex", alignItems: "center", gap: "6px" }}
           >
-            ➕ Add {selectedSuggestions.size} Selected Keywords
+            <PlusIcon size={14} /> Add {selectedSuggestions.size} Selected Keywords
           </button>
         </div>
       </div>
@@ -371,15 +400,15 @@ function KeywordTabs({
   onTab: (t: KeywordTab) => void;
   nameKeywords: string[];
   domainKeywords: string[];
-  onAddName: (v: string) => void;
+  onAddName: (kw: string) => void;
   onRemoveName: (i: number) => void;
-  onAddDomain: (v: string) => void;
+  onAddDomain: (kw: string) => void;
   onRemoveDomain: (i: number) => void;
   assetNameIndividualKw: string[];
   assetNameDomainKw: string[];
-  onAddAssetIndividual: (v: string) => void;
+  onAddAssetIndividual: (kw: string) => void;
   onRemoveAssetIndividual: (i: number) => void;
-  onAddAssetDomain: (v: string) => void;
+  onAddAssetDomain: (kw: string) => void;
   onRemoveAssetDomain: (i: number) => void;
   disabled?: boolean;
 }) {
@@ -390,15 +419,18 @@ function KeywordTabs({
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
         <div className="kw-tab-row" style={{ margin: 0 }}>
           <button className={`kw-tab-btn ${activeTab === "names" ? "active" : ""}`} onClick={() => onTab("names")}>
-            👤 Individual Names
+            <UserIcon size={14} style={{ marginRight: "6px" }} />
+            Individual Names
             {nameKeywords.length > 0 && <span className="kw-tab-count">{nameKeywords.length}</span>}
           </button>
           <button className={`kw-tab-btn ${activeTab === "domain" ? "active" : ""}`} onClick={() => onTab("domain")}>
-            🏷️ Domain Keywords
+            <TagIcon size={14} style={{ marginRight: "6px" }} />
+            Domain Keywords
             {domainKeywords.length > 0 && <span className="kw-tab-count">{domainKeywords.length}</span>}
           </button>
           <button className={`kw-tab-btn ${activeTab === "assetNames" ? "active" : ""}`} onClick={() => onTab("assetNames")}>
-            🏷️ Asset Names
+            <LayersIcon size={14} style={{ marginRight: "6px" }} />
+            Asset Names
             {(assetNameIndividualKw.length + assetNameDomainKw.length) > 0 && (
               <span className="kw-tab-count">{assetNameIndividualKw.length + assetNameDomainKw.length}</span>
             )}
@@ -420,11 +452,11 @@ function KeywordTabs({
             cursor: "pointer",
             display: "inline-flex",
             alignItems: "center",
-            gap: "5px",
+            gap: "6px",
           }}
           title="Auto-generate threat actor and fake support keyword permutations"
         >
-          <span>✨</span> Suggest Threat Keywords
+          <SparklesIcon size={14} /> Suggest Threat Keywords
         </button>
       </div>
 
@@ -454,7 +486,9 @@ function KeywordTabs({
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
           <div>
-            <label className="field-label" style={{ marginBottom: "6px" }}>👤 Individual Asset Names</label>
+            <label className="field-label" style={{ marginBottom: "6px", display: "flex", alignItems: "center", gap: "6px" }}>
+              <UserIcon size={13} color="var(--cyan)" /> Individual Asset Names
+            </label>
             <ChipInput
               chips={assetNameIndividualKw}
               onAdd={onAddAssetIndividual}
@@ -464,7 +498,9 @@ function KeywordTabs({
             />
           </div>
           <div>
-            <label className="field-label" style={{ marginBottom: "6px" }}>🌐 Domain Asset Names</label>
+            <label className="field-label" style={{ marginBottom: "6px", display: "flex", alignItems: "center", gap: "6px" }}>
+              <GlobeIcon size={13} color="var(--purple)" /> Domain Asset Names
+            </label>
             <ChipInput
               chips={assetNameDomainKw}
               onAdd={onAddAssetDomain}
@@ -519,7 +555,8 @@ function PlatformLimitsEditor({
     <div className="platform-limits-table-card">
       <div>
         <div style={{ fontSize: "14px", fontWeight: 700, color: "var(--text-main)", display: "flex", alignItems: "center", gap: "8px" }}>
-          <span>🎯 Per-Platform Scrape Limits</span>
+          <TargetIcon size={18} color="var(--cyan)" />
+          <span>Per-Platform Scrape Limits</span>
         </div>
         <div style={{ fontSize: "12px", color: "var(--text-dim)", marginTop: "4px" }}>
           Individual and Domain sweeps are capped independently. Leave empty or 0 for <strong>Unlimited</strong> scraping.
@@ -530,8 +567,16 @@ function PlatformLimitsEditor({
         <thead>
           <tr>
             <th style={{ width: "35%" }}>Platform</th>
-            <th style={{ width: "30%" }}>👤 Individual Cap</th>
-            <th style={{ width: "35%" }}>🏷️ Domain Cap</th>
+            <th style={{ width: "30%" }}>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                <UserIcon size={13} color="var(--cyan)" /> Individual Cap
+              </span>
+            </th>
+            <th style={{ width: "35%" }}>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                <TagIcon size={13} color="var(--purple)" /> Domain Cap
+              </span>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -640,6 +685,17 @@ function PlatformLimitsEditor({
   );
 }
 
+// A selection -> the request's platform scope. Empty means "every ready
+// platform" (send nothing). One collapses to `platform`, which keeps the
+// backend's tighter per-platform job locking and its coalescing; two or
+// more go as `platforms`.
+function platformScope(sel: Set<string>): { platform?: string; platforms?: string[] } {
+  const ids = [...sel];
+  if (ids.length === 0) return {};
+  if (ids.length === 1) return { platform: ids[0] };
+  return { platforms: ids };
+}
+
 const EMPTY_FORM = { id: "", name: "", domain: "", nameKw: [] as string[], domainKw: [] as string[], cron: "" };
 
 export function HomeView({
@@ -651,6 +707,8 @@ export function HomeView({
   analysisBusy,
   onStopDiscovery,
   onStopAnalysis,
+  stoppingDiscovery = false,
+  stoppingAnalysis = false,
   onJobs,
   onError,
 }: Props) {
@@ -698,8 +756,12 @@ export function HomeView({
   const [saved, setSaved] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
-  const [sweepPlatform, setSweepPlatform] = useState("");
-  const [analysisPlatform, setAnalysisPlatform] = useState("");
+  // A SET, not a single id: the Run hub lets an analyst pick any
+  // combination of platforms. Empty means "every ready platform", which
+  // is what the All Platforms chip selects and what the backend does when
+  // no scope is sent -- so the previous behaviour is the empty case.
+  const [sweepPlatforms, setSweepPlatforms] = useState<Set<string>>(new Set());
+  const [analysisPlatforms, setAnalysisPlatforms] = useState<Set<string>>(new Set());
 
   const refreshClients = useCallback(() => {
     setLoadingClients(true);
@@ -782,14 +844,14 @@ export function HomeView({
     setActiveClient(null);
     setEditing(false);
     clearForm();
-    setSweepPlatform("");
-    setAnalysisPlatform("");
+    setSweepPlatforms(new Set());
+    setAnalysisPlatforms(new Set());
     setActiveWorkspaceTab("overview");
   };
 
   const selectSavedClient = (id: string) => {
-    setSweepPlatform("");
-    setAnalysisPlatform("");
+    setSweepPlatforms(new Set());
+    setAnalysisPlatforms(new Set());
     if (!id) {
       setActiveClient(null);
       setEditing(false);
@@ -910,7 +972,7 @@ export function HomeView({
           ...(activeClient.name_keywords || []),
           ...(activeClient.domain_keywords || []),
         ]),
-        platform: sweepPlatform || undefined,
+        ...platformScope(sweepPlatforms),
       });
       const job = await jobsApi.job(job_id);
       onJobs([job]);
@@ -919,12 +981,18 @@ export function HomeView({
     }
   };
 
-  const sweepPlatformName = sweepPlatform
-    ? platforms.find((p) => p.platform === sweepPlatform)?.name || sweepPlatform
-    : "";
-  const analysisPlatformName = analysisPlatform
-    ? platforms.find((p) => p.platform === analysisPlatform)?.name || analysisPlatform
-    : "";
+  const nameOf = (id: string) =>
+    platforms.find((p) => p.platform === id)?.name || id;
+  // "Facebook", "Facebook +2", or "" for all-platforms -- a button label
+  // has to stay short, so past two the rest becomes a count.
+  const scopeLabel = (sel: Set<string>) => {
+    const ids = [...sel];
+    if (ids.length === 0) return "";
+    if (ids.length === 1) return nameOf(ids[0]);
+    return `${nameOf(ids[0])} +${ids.length - 1}`;
+  };
+  const sweepPlatformName = scopeLabel(sweepPlatforms);
+  const analysisPlatformName = scopeLabel(analysisPlatforms);
 
   const handleRunAnalysis = async () => {
     if (!activeClient) return;
@@ -940,7 +1008,7 @@ export function HomeView({
       const { job_id } = await analysisApi.analyse({
         client_id: activeClient.client_id,
         force: true,
-        platform: analysisPlatform || undefined,
+        ...platformScope(analysisPlatforms),
       });
       const job = await jobsApi.job(job_id);
       onJobs([job]);
@@ -990,12 +1058,20 @@ export function HomeView({
     });
   }, [clients, sidebarSearch, sidebarFilter]);
 
-  const targetPlatform = sweepPlatform;
-  const setTargetPlatform = (p: string) => {
-    setSweepPlatform(p);
-    setAnalysisPlatform(p);
+  // The chips drive BOTH buttons: an analyst picks a scope once and then
+  // chooses what to run on it, rather than setting it twice.
+  const targetPlatforms = sweepPlatforms;
+  const togglePlatform = (id: string) => {
+    const next = new Set(targetPlatforms);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setSweepPlatforms(next);
+    setAnalysisPlatforms(next);
   };
-
+  const selectAllPlatforms = () => {
+    setSweepPlatforms(new Set());
+    setAnalysisPlatforms(new Set());
+  };
   return (
     <div className="clients-workspace-layout">
       {globalSearchOpen && (
@@ -1010,7 +1086,7 @@ export function HomeView({
       <div className="clients-sidebar-card">
         <div className="clients-sidebar-header">
           <div className="clients-sidebar-title">
-            <span>🏢</span>
+            <BuildingIcon size={16} color="var(--cyan)" />
             <span>Clients Directory</span>
             <span style={{ fontSize: "11px", color: "var(--text-dim)", fontWeight: 500 }}>
               ({clients.length})
@@ -1022,12 +1098,14 @@ export function HomeView({
             onClick={switchToCreate}
             title="Create a new client"
           >
-            <span>➕</span> New
+            <PlusIcon size={13} style={{ marginRight: "3px" }} /> New
           </button>
         </div>
 
         <div className="client-search-box">
-          <span className="client-search-icon">🔍</span>
+          <span className="client-search-icon">
+            <SearchIcon size={14} color="var(--text-dim)" />
+          </span>
           <input
             value={sidebarSearch}
             onChange={(e) => setSidebarSearch(e.target.value)}
@@ -1105,7 +1183,8 @@ export function HomeView({
           <div className="dashboard-card-box" style={{ background: "var(--bg-card)", padding: "24px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", borderBottom: "1px solid var(--border-subtle)", paddingBottom: "12px" }}>
               <div style={{ fontSize: "18px", fontWeight: 800, color: "var(--text-main)", display: "flex", alignItems: "center", gap: "8px" }}>
-                <span>✨ Create New Client</span>
+                <SparklesIcon size={18} color="var(--cyan)" />
+                <span>Create New Client</span>
               </div>
               <button
                 type="button"
@@ -1128,19 +1207,19 @@ export function HomeView({
                 <input
                   value={idInput}
                   onChange={(e) => setIdInput(e.target.value)}
-                  placeholder="🆔 org id (unique slug, e.g. acme-corp)…"
+                  placeholder="org id (unique slug, e.g. acme-corp)…"
                   className="client-select-input"
                 />
                 <input
                   value={nameInput}
                   onChange={(e) => setNameInput(e.target.value)}
-                  placeholder="🏢 organization / client display name…"
+                  placeholder="organization / client display name…"
                   className="client-select-input"
                 />
                 <input
                   value={domainInput}
                   onChange={(e) => setDomainInput(e.target.value)}
-                  placeholder="🌐 official website domain (e.g. acme.com)…"
+                  placeholder="official website domain (e.g. acme.com)…"
                   className="client-select-input"
                 />
               </div>
@@ -1188,9 +1267,13 @@ export function HomeView({
               onClick={saveConfig}
               disabled={saving || !idInput.trim()}
               className="btn-cyber-primary"
-              style={{ marginTop: "16px" }}
+              style={{ marginTop: "16px", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "8px" }}
             >
-              {saving ? "Creating Client…" : "💾 Save & Create Client"}
+              {saving ? "Creating Client…" : (
+                <>
+                  <SaveIcon size={15} /> Save & Create Client
+                </>
+              )}
             </button>
           </div>
         ) : !activeClient ? (
@@ -1207,7 +1290,7 @@ export function HomeView({
               gap: "12px",
             }}
           >
-            <div style={{ fontSize: "42px" }}>🏢</div>
+            <BuildingIcon size={48} color="var(--cyan)" />
             <div style={{ fontSize: "18px", fontWeight: 800, color: "var(--text-main)" }}>
               Select or Create a Client
             </div>
@@ -1217,10 +1300,10 @@ export function HomeView({
             <button
               type="button"
               className="btn-cyber-primary"
-              style={{ width: "auto", padding: "10px 24px", marginTop: "12px" }}
+              style={{ width: "auto", padding: "10px 24px", marginTop: "12px", display: "inline-flex", alignItems: "center", gap: "8px" }}
               onClick={switchToCreate}
             >
-              ➕ Create New Client
+              <PlusIcon size={14} /> Create New Client
             </button>
           </div>
         ) : (
@@ -1235,9 +1318,11 @@ export function HomeView({
                 <div className="client-hero-title-group">
                   <div className="client-hero-name">{activeClient.name || activeClient.client_id}</div>
                   <div className="client-hero-meta-row">
-                    <span className="client-hero-id">🆔 {activeClient.client_id}</span>
+                    <span className="client-hero-id">{activeClient.client_id}</span>
                     {activeClient.domain && (
-                      <span className="client-hero-domain">🌐 {activeClient.domain}</span>
+                      <span className="client-hero-domain" style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                        <GlobeIcon size={12} /> {activeClient.domain}
+                      </span>
                     )}
                     <span className="status-dot-badge">
                       <span className="status-dot" /> Active
@@ -1252,16 +1337,18 @@ export function HomeView({
                   className="client-hero-btn"
                   onClick={startEditing}
                   title="Edit client configuration"
+                  style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}
                 >
-                  ✏️ Edit
+                  <EditIcon size={13} /> Edit
                 </button>
                 <button
                   type="button"
                   className="client-hero-btn"
                   onClick={() => cloneClient(activeClient)}
                   title="Duplicate configuration"
+                  style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}
                 >
-                  📋 Clone
+                  <CloneIcon size={13} /> Clone
                 </button>
                 <button
                   type="button"
@@ -1270,7 +1357,7 @@ export function HomeView({
                   disabled={deleting}
                   title="Permanently delete client"
                 >
-                  {deleting ? "Deleting…" : "🗑️"}
+                  {deleting ? "Deleting…" : <TrashIcon size={14} />}
                 </button>
               </div>
             </div>
@@ -1282,7 +1369,7 @@ export function HomeView({
                 className={`client-workspace-tab-btn ${activeWorkspaceTab === "overview" ? "active" : ""}`}
                 onClick={() => setActiveWorkspaceTab("overview")}
               >
-                <span>⚡</span>
+                <ZapIcon size={15} />
                 <span>Run & Overview</span>
               </button>
 
@@ -1291,7 +1378,7 @@ export function HomeView({
                 className={`client-workspace-tab-btn ${activeWorkspaceTab === "keywords" ? "active" : ""}`}
                 onClick={() => setActiveWorkspaceTab("keywords")}
               >
-                <span>🏷️</span>
+                <TagIcon size={15} />
                 <span>Keywords & Assets</span>
                 <span className="workspace-tab-counter">{activeKeywordCount}</span>
               </button>
@@ -1301,7 +1388,7 @@ export function HomeView({
                 className={`client-workspace-tab-btn ${activeWorkspaceTab === "limits" ? "active" : ""}`}
                 onClick={() => setActiveWorkspaceTab("limits")}
               >
-                <span>🎯</span>
+                <TargetIcon size={15} />
                 <span>Scraping Limits</span>
               </button>
 
@@ -1310,7 +1397,7 @@ export function HomeView({
                 className={`client-workspace-tab-btn ${activeWorkspaceTab === "settings" ? "active" : ""}`}
                 onClick={() => setActiveWorkspaceTab("settings")}
               >
-                <span>⚙️</span>
+                <SettingsGearIcon size={15} />
                 <span>Client Settings</span>
               </button>
             </div>
@@ -1320,25 +1407,14 @@ export function HomeView({
               <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
                 {/* UNIFIED COMMAND RUNNER */}
                 <div className="unified-runner-card">
-                  <div className="runner-header">
-                    <div>
-                      <div className="runner-title">
-                        <span>⚡ Platform Target & Run Hub</span>
-                      </div>
-                      <div className="runner-subtitle">
-                        Select target platform to execute discovery sweep or re-run deep analysis.
-                      </div>
-                    </div>
-                  </div>
-
                   <div className="unified-platform-selector">
                     <button
                       type="button"
-                      className={`unified-platform-btn ${targetPlatform === "" ? "active" : ""}`}
-                      onClick={() => setTargetPlatform("")}
-                      disabled={busy || analysisBusy}
+                      className={`unified-platform-btn ${targetPlatforms.size === 0 ? "active" : ""}`}
+                      onClick={selectAllPlatforms}
+                      title="Run on every platform with a ready session"
                     >
-                      <CyberGlobeIcon size={15} color={targetPlatform === "" ? "#7C5CFF" : "#94A3B8"} />
+                      <CyberGlobeIcon size={15} color={targetPlatforms.size === 0 ? "#7C5CFF" : "#94A3B8"} />
                       <span>All Platforms</span>
                     </button>
                     {platforms.map((p) => {
@@ -1352,10 +1428,10 @@ export function HomeView({
                         <button
                           key={p.platform}
                           type="button"
-                          className={`unified-platform-btn ${targetPlatform === p.platform ? "active" : ""}`}
-                          onClick={() => setTargetPlatform(p.platform)}
-                          disabled={busy || analysisBusy}
-                          title={`Platform: ${p.name} (Session: ${p.session_state})`}
+                          className={`unified-platform-btn ${targetPlatforms.has(p.platform) ? "active" : ""}`}
+                          onClick={() => togglePlatform(p.platform)}
+                          title={`${targetPlatforms.has(p.platform) ? "Click to remove" : "Click to add"} ${p.name} `
+                            + `(Session: ${p.session_state}) -- pick as many as you like`}
                         >
                           <PlatformIcon platform={p.platform} size={15} />
                           <span>{p.name}</span>
@@ -1365,23 +1441,28 @@ export function HomeView({
                     })}
                   </div>
 
+                  {/* Discover/Analyse stay available while something is
+                      already in flight -- including a sweep the round-robin
+                      scheduler started for this client, which the app adopts
+                      and reports as `busy`. Replacing the action button with
+                      Stop (as this used to) meant an operator simply could
+                      not queue a manual run for as long as the engine held
+                      the client, with no way to tell the two apart. The
+                      backend serialises the two safely on its per-platform
+                      locks, so the new run just queues behind the running
+                      one -- which is what the hint below says. */}
                   <div className="runner-actions-grid">
-                    {busy ? (
-                      <button
-                        type="button"
-                        className="runner-btn-stop"
-                        onClick={onStopDiscovery}
-                        title="Stop running discovery sweep"
-                      >
-                        <StopIcon size={17} color="#fff" />
-                        <span>Stop Discovery</span>
-                      </button>
-                    ) : (
+                    <div className="runner-action-cell">
                       <button
                         type="button"
                         className="runner-btn-primary"
                         disabled={!activeKeywordCount}
                         onClick={handleSearch}
+                        title={
+                          busy
+                            ? "Queue another discovery sweep -- it starts when the running one finishes"
+                            : "Run a discovery sweep now"
+                        }
                       >
                         <DiscoverIcon size={17} color="#fff" />
                         <span>
@@ -1390,23 +1471,30 @@ export function HomeView({
                             : "Discover"}
                         </span>
                       </button>
-                    )}
+                      {busy && onStopDiscovery && (
+                        <button
+                          type="button"
+                          className="runner-btn-stop"
+                          onClick={onStopDiscovery}
+                          disabled={stoppingDiscovery}
+                          title="Abort the discovery sweep that is running now"
+                        >
+                          <StopIcon size={17} color="#fff" />
+                          <span>{stoppingDiscovery ? "Stopping..." : "Stop Discovery"}</span>
+                        </button>
+                      )}
+                    </div>
 
-                    {analysisBusy ? (
-                      <button
-                        type="button"
-                        className="runner-btn-stop"
-                        onClick={onStopAnalysis}
-                        title="Stop running analysis"
-                      >
-                        <StopIcon size={17} color="#fff" />
-                        <span>Stop Analysis</span>
-                      </button>
-                    ) : (
+                    <div className="runner-action-cell">
                       <button
                         type="button"
                         className="runner-btn-secondary"
                         onClick={handleRunAnalysis}
+                        title={
+                          analysisBusy
+                            ? "Queue another analysis run -- it starts when the running one finishes"
+                            : "Re-run analysis now"
+                        }
                       >
                         <AnalyseIcon size={17} color="#00F0FF" />
                         <span>
@@ -1415,8 +1503,28 @@ export function HomeView({
                             : "Analyse"}
                         </span>
                       </button>
-                    )}
+                      {analysisBusy && onStopAnalysis && (
+                        <button
+                          type="button"
+                          className="runner-btn-stop"
+                          onClick={onStopAnalysis}
+                          disabled={stoppingAnalysis}
+                          title="Abort the analysis run that is running now"
+                        >
+                          <StopIcon size={17} color="#fff" />
+                          <span>{stoppingAnalysis ? "Stopping..." : "Stop Analysis"}</span>
+                        </button>
+                      )}
+                    </div>
                   </div>
+
+                  {(busy || analysisBusy) && (
+                    <div className="runner-queue-hint">
+                      A run is already in flight for this client (it may be the
+                      scheduler&rsquo;s). Starting another queues it behind the
+                      current one rather than running both at once.
+                    </div>
+                  )}
                 </div>
 
                 {/* QUICK STATS METRIC GRID */}
@@ -1481,9 +1589,13 @@ export function HomeView({
                     onClick={saveConfig}
                     disabled={saving}
                     className="btn-cyber-primary"
-                    style={{ width: "auto", padding: "10px 24px", margin: 0 }}
+                    style={{ width: "auto", padding: "10px 24px", margin: 0, display: "inline-flex", alignItems: "center", gap: "6px" }}
                   >
-                    {saving ? "Saving…" : saved ? "✓ Saved" : "💾 Save Keyword Changes"}
+                    {saving ? "Saving…" : saved ? "✓ Saved" : (
+                      <>
+                        <SaveIcon size={14} /> Save Keyword Changes
+                      </>
+                    )}
                   </button>
                 </div>
               </div>
@@ -1510,9 +1622,13 @@ export function HomeView({
                     onClick={saveConfig}
                     disabled={saving}
                     className="btn-cyber-primary"
-                    style={{ width: "auto", padding: "10px 24px", margin: 0 }}
+                    style={{ width: "auto", padding: "10px 24px", margin: 0, display: "inline-flex", alignItems: "center", gap: "6px" }}
                   >
-                    {saving ? "Saving…" : saved ? "✓ Saved" : "💾 Save Scrape Limits"}
+                    {saving ? "Saving…" : saved ? "✓ Saved" : (
+                      <>
+                        <SaveIcon size={14} /> Save Scrape Limits
+                      </>
+                    )}
                   </button>
                 </div>
               </div>
@@ -1522,8 +1638,9 @@ export function HomeView({
             {activeWorkspaceTab === "settings" && (
               <div className="dashboard-card-box" style={{ background: "var(--bg-card)", padding: "24px", display: "flex", flexDirection: "column", gap: "20px" }}>
                 <div>
-                  <div style={{ fontSize: "15px", fontWeight: 700, color: "var(--text-main)", marginBottom: "4px" }}>
-                    🏢 Client Information
+                  <div style={{ fontSize: "15px", fontWeight: 700, color: "var(--text-main)", marginBottom: "4px", display: "flex", alignItems: "center", gap: "8px" }}>
+                    <BuildingIcon size={16} color="var(--cyan)" />
+                    <span>Client Information</span>
                   </div>
                   <div style={{ fontSize: "12px", color: "var(--text-dim)", marginBottom: "12px" }}>
                     Update organization display name, associated domain, and identifier.
@@ -1532,7 +1649,7 @@ export function HomeView({
                     <input
                       value={idInput}
                       onChange={(e) => setIdInput(e.target.value)}
-                      placeholder="🆔 org id…"
+                      placeholder="org id…"
                       disabled={true}
                       className="client-select-input"
                       style={{ opacity: 0.6 }}
@@ -1541,13 +1658,13 @@ export function HomeView({
                     <input
                       value={nameInput}
                       onChange={(e) => setNameInput(e.target.value)}
-                      placeholder="🏢 organization name…"
+                      placeholder="organization name…"
                       className="client-select-input"
                     />
                     <input
                       value={domainInput}
                       onChange={(e) => setDomainInput(e.target.value)}
-                      placeholder="🌐 domain, e.g. xyz.com…"
+                      placeholder="domain, e.g. xyz.com…"
                       className="client-select-input"
                     />
                   </div>
@@ -1574,15 +1691,20 @@ export function HomeView({
                     onClick={saveConfig}
                     disabled={saving}
                     className="btn-cyber-primary"
-                    style={{ width: "auto", padding: "10px 24px", margin: 0 }}
+                    style={{ width: "auto", padding: "10px 24px", margin: 0, display: "inline-flex", alignItems: "center", gap: "6px" }}
                   >
-                    {saving ? "Saving…" : saved ? "✓ Saved" : "💾 Save Changes"}
+                    {saving ? "Saving…" : saved ? "✓ Saved" : (
+                      <>
+                        <SaveIcon size={14} /> Save Changes
+                      </>
+                    )}
                   </button>
                 </div>
 
                 <div style={{ borderTop: "1px solid rgba(239, 68, 68, 0.2)", paddingTop: "18px", marginTop: "10px" }}>
-                  <div style={{ fontSize: "14px", fontWeight: 700, color: "var(--danger)", marginBottom: "4px" }}>
-                    ⚠️ Danger Zone
+                  <div style={{ fontSize: "14px", fontWeight: 700, color: "var(--danger)", marginBottom: "4px", display: "flex", alignItems: "center", gap: "6px" }}>
+                    <AlertTriangleIcon size={16} color="var(--danger)" />
+                    <span>Danger Zone</span>
                   </div>
                   <div style={{ fontSize: "12px", color: "var(--text-dim)", marginBottom: "12px" }}>
                     Permanently delete this organization and cascade remove all associated discovery hits, validated profiles, and incident tickets.
@@ -1591,8 +1713,13 @@ export function HomeView({
                     onClick={handleDelete}
                     disabled={deleting}
                     className="danger-link-btn"
+                    style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
                   >
-                    {deleting ? "Deleting Organization…" : "🗑️ Delete Organization & All Associated Data"}
+                    {deleting ? "Deleting Organization…" : (
+                      <>
+                        <TrashIcon size={14} /> Delete Organization & All Associated Data
+                      </>
+                    )}
                   </button>
                 </div>
               </div>

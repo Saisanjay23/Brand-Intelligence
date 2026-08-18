@@ -82,27 +82,63 @@ class Scraper:
 
     def __init__(
         self, args, cookies: list[dict], session_id: str = "", proxy: Optional[dict] = None,
+        anonymous: bool = False,
     ):
         self.a = args
         self.evidence = args.evidence or None  # GridFS key prefix, not a path
-        self.session = TikTokSession(
+        # ANONYMOUS MODE: no cookies, driven from the same persistent
+        # browser profile discovery uses (see discovery_engine.
+        # anonymous_context). Every field this scraper normally reads --
+        # name, followers, following, avatar, name match -- comes out of
+        # the profile's own hydration payload, which a logged-out browser
+        # gets in full. The single thing a login buys is the exact
+        # last-post date (the video grid renders empty when logged out),
+        # and losing one field beats losing the platform because a cookie
+        # expired.
+        self.anonymous = anonymous
+        self._anon_cm = None
+        self._anon_ctx = None
+        self.session = None if anonymous else TikTokSession(
             args, cookies, load_images=bool(self.evidence), session_id=session_id, proxy=proxy,
         )
+        self._proxy = proxy
 
     @property
     def ctx(self):
-        return self.session.ctx
+        return self._anon_ctx if self.anonymous else self.session.ctx
 
     async def start(self):
+        if self.anonymous:
+            from backend.platforms.tiktok.discovery_engine import anonymous_context
+
+            self._anon_cm = anonymous_context(self._proxy)
+            self._anon_ctx = await self._anon_cm.__aenter__()
+            return
         await self.session.start()
 
     async def stop(self):
+        if self.anonymous:
+            if self._anon_cm is not None:
+                try:
+                    await self._anon_cm.__aexit__(None, None, None)
+                finally:
+                    self._anon_cm = self._anon_ctx = None
+            return
         await self.session.stop()
 
     async def pause(self, mult: float = 1.0):
+        if self.anonymous:
+            import asyncio as _asyncio
+
+            await _asyncio.sleep(max(0.1, getattr(self.a, "delay", 2.0) * mult))
+            return
         await self.session.pause(mult)
 
     async def check_session(self) -> bool:
+        # Nothing to validate without credentials -- and nothing to
+        # quarantine either, which is the point.
+        if self.anonymous:
+            return True
         return await self.session.check_session()
 
     # ─────────────────────────── DOM fallback ─────────────────────────── #
@@ -312,7 +348,8 @@ class Scraper:
         stem = re.sub(r"[^A-Za-z0-9._-]", "_", row.profile_id or "entity")[:60]
         key = f"{self.evidence}/{stem}.png"
         try:
-            await self.session.wait_for_visible_content(page)
+            if self.session is not None:
+                await self.session.wait_for_visible_content(page)
             data = await page.screenshot(full_page=False)
             from backend.database.repositories import evidence_repository
             await evidence_repository.save(key, data)

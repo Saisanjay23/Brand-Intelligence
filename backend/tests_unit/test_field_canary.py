@@ -155,3 +155,70 @@ class TestStaysQuietOtherwise:
                    new_callable=AsyncMock) as rec:
             await _check_field_extraction_health("unknown-platform", _job(), rows, _Mgr())
             rec.assert_not_called()
+
+
+class TestFacebookPublishesFollowersOrFriends:
+    """A Facebook Page publishes a follower count; a personal profile
+    publishes a friend count instead (facebook/analysis_engine.py::
+    take_chip says exactly that). Judging the batch on `followers` alone
+    fired a CRITICAL "follower count stopped extracting" incident on a
+    real run -- 14 of 18 profiles -- while every one of those had had its
+    friend count read successfully from graphql-social-context.
+
+    An alert that is wrong most of the time is worse than no alert: it
+    teaches everyone to scroll past the ones that are right.
+    """
+
+    @staticmethod
+    def _fb(followers=None, friends=None, url="https://www.facebook.com/profile.php?id=1"):
+        r = Row(url=url, target="Adani")
+        r.status = "OK"
+        r.profile_name = "Gautam Adani"
+        r.followers = followers
+        r.friends = friends
+        return r
+
+    def test_a_personal_profile_with_friends_is_not_blank(self):
+        assert _field_blank(self._fb(friends=143), ("followers", "friends")) is False
+
+    def test_a_page_with_followers_is_not_blank(self):
+        assert _field_blank(self._fb(followers=98000), ("followers", "friends")) is False
+
+    def test_neither_count_is_genuinely_blank(self):
+        assert _field_blank(self._fb(), ("followers", "friends")) is True
+
+    def test_zero_friends_is_a_real_reading(self):
+        # 0 is extracted data, not a missing field
+        assert _field_blank(self._fb(friends=0), ("followers", "friends")) is False
+
+    def test_a_single_field_spec_still_behaves(self):
+        assert _field_blank(self._fb(followers=None), "followers") is True
+        assert _field_blank(self._fb(followers=5), "followers") is False
+
+    @pytest.mark.asyncio
+    async def test_the_real_batch_that_misfired_no_longer_alerts(self):
+        """Reconstructed from the incident of 2026-08-18 13:35: 18 loaded
+        profiles, 14 of them personal (friends only), 4 Pages."""
+        rows = [self._fb(friends=n) for n in (313, 143, 12, 34, 126, 76, 4, 3,
+                                              43, 129, 464, 162, 55, 88)]
+        rows += [self._fb(followers=n, url="https://www.facebook.com/page") for n in
+                 (98000, 1200, 640, 77)]
+        assert len(rows) == 18
+
+        with patch("backend.services.incident_service.record",
+                   new_callable=AsyncMock) as rec:
+            await _check_field_extraction_health(
+                "facebook", _job(), rows, AsyncMock())
+        rec.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_genuine_break_still_alerts(self):
+        """The detector must not have been defanged: if NEITHER count comes
+        back across the batch, that is a real break and must still fire."""
+        rows = [self._fb() for _ in range(18)]
+        with patch("backend.services.incident_service.record",
+                   new_callable=AsyncMock) as rec:
+            await _check_field_extraction_health(
+                "facebook", _job(), rows, AsyncMock())
+        rec.assert_awaited_once()
+        assert rec.await_args.args[4] == "FieldExtractionDrift"

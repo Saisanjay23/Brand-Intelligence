@@ -16,6 +16,14 @@ import { sessionsApi } from "../api/sessionsApi";
 import type { SessionInfo, SessionItem } from "../api/types";
 import { PlatformIcon } from "../components/PlatformIcon";
 import {
+  ProxyNodeIcon,
+  ZapIcon,
+  AlertTriangleIcon,
+  GlobeIcon,
+  RefreshIcon,
+  LayersIcon,
+} from "../components/AppIcons";
+import {
   ALLOWED_PROXY_SCHEMES,
   PROXY_FORMAT_EXAMPLES,
   describeParsedProxy,
@@ -154,8 +162,9 @@ export function ProxyPanel({ sessions, onChanged }: Props) {
     <div style={{ padding: "24px", color: "var(--text-main, #f2f4f7)", maxWidth: "1200px", margin: "0 auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "20px", flexWrap: "wrap", gap: "12px" }}>
         <div>
-          <h1 style={{ fontSize: "22px", fontWeight: 700, color: "var(--text-primary, #fff)", margin: 0, letterSpacing: "-0.3px" }}>
-            🌐 Proxy Configuration
+          <h1 style={{ fontSize: "22px", fontWeight: 700, color: "var(--text-primary, #fff)", margin: 0, letterSpacing: "-0.3px", display: "flex", alignItems: "center", gap: "10px" }}>
+            <ProxyNodeIcon size={24} color="var(--cyan)" />
+            <span>Proxy Configuration</span>
           </h1>
           <p style={{ fontSize: "13px", color: "var(--text-muted, #98a2b3)", margin: "4px 0 0 0" }}>
             Each pooled session can exit through its own proxy instead of every account in the pool sharing
@@ -166,9 +175,10 @@ export function ProxyPanel({ sessions, onChanged }: Props) {
           className="btn-cyber-primary"
           onClick={testAllProxies}
           disabled={testingProxies}
-          style={{ width: "auto", padding: "8px 16px", fontSize: "12px", marginTop: 0 }}
+          style={{ width: "auto", padding: "8px 16px", fontSize: "12px", marginTop: 0, display: "inline-flex", alignItems: "center", gap: "6px" }}
         >
-          {testingProxies ? "⚡ Testing Proxies…" : "⚡ Test All Proxies"}
+          <ZapIcon size={14} />
+          <span>{testingProxies ? "Testing Proxies…" : "Test All Proxies"}</span>
         </button>
       </div>
 
@@ -178,7 +188,9 @@ export function ProxyPanel({ sessions, onChanged }: Props) {
           color: "var(--danger)", borderRadius: "10px", marginBottom: "16px", fontSize: "13px",
           display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px",
         }}>
-          <span>⚠️ {error}</span>
+          <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <AlertTriangleIcon size={15} color="var(--danger)" /> {error}
+          </span>
           <button onClick={() => setError("")} style={{ background: "transparent", border: "none", color: "inherit", cursor: "pointer", fontSize: "14px", fontWeight: 700 }}>
             ✕
           </button>
@@ -198,7 +210,10 @@ export function ProxyPanel({ sessions, onChanged }: Props) {
             display: "flex", justifyContent: "space-between", alignItems: "center",
           }}
         >
-          <span>📋 Accepted proxy formats ({ALLOWED_PROXY_SCHEMES.join(", ")})</span>
+          <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <LayersIcon size={14} color="var(--cyan)" />
+            <span>Accepted proxy formats ({ALLOWED_PROXY_SCHEMES.join(", ")})</span>
+          </span>
           <span>{showFormats ? "▾" : "▸"}</span>
         </button>
         {showFormats && (
@@ -241,9 +256,11 @@ export function ProxyPanel({ sessions, onChanged }: Props) {
                 marginLeft: "auto", padding: "5px 10px", borderRadius: "6px", fontSize: "11px", fontWeight: 600,
                 background: "var(--bg-surface-3, #344054)", border: "1px solid var(--border-color, #344054)",
                 color: "var(--text-primary, #fff)", cursor: "pointer",
+                display: "inline-flex", alignItems: "center", gap: "5px",
               }}
             >
-              {busyId === `check:${s.platform}` ? "Checking…" : "🔄 Check Session"}
+              <RefreshIcon size={12} />
+              <span>{busyId === `check:${s.platform}` ? "Checking…" : "Check Session"}</span>
             </button>
           </div>
 
@@ -274,8 +291,9 @@ export function ProxyPanel({ sessions, onChanged }: Props) {
                         {item.identifier || `Account ${idx + 1}`}
                       </span>
                       {item.available === false && (
-                        <span style={{ fontSize: "10px", color: "var(--danger, #F04438)" }}>
-                          ⛔ {item.status}{cooldown ? ` · cooling off ${cooldown}` : ""}
+                        <span style={{ fontSize: "10px", color: "var(--danger, #F04438)", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                          <AlertTriangleIcon size={11} color="var(--danger)" />
+                          <span>{item.status}{cooldown ? ` · cooling off ${cooldown}` : ""}</span>
                         </span>
                       )}
                       <span style={{ flex: 1 }} />
@@ -292,13 +310,24 @@ export function ProxyPanel({ sessions, onChanged }: Props) {
                             color: proxyLatencies[key].ok
                               ? (proxyLatencies[key].ms! < 500 ? "var(--success)" : "var(--warn-yellow)")
                               : "var(--danger)",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "4px",
                           }}
                         >
-                          {proxyLatencies[key].ok ? `🟢 ${proxyLatencies[key].ms}ms` : `🔴 ${proxyLatencies[key].err || "Failed"}`}
+                          <span style={{ width: 6, height: 6, borderRadius: "50%", background: proxyLatencies[key].ok ? "var(--success)" : "var(--danger)" }} />
+                          {proxyLatencies[key].ok ? `${proxyLatencies[key].ms}ms` : (proxyLatencies[key].err || "Failed")}
                         </span>
                       )}
-                      <span style={{ fontSize: "12px", color: item.proxy_host ? "var(--text-primary, #fff)" : "var(--text-muted, #98a2b3)" }}>
-                        {item.proxy_host ? `🌐 ${item.proxy_host}` : "no proxy set (direct)"}
+                      <span style={{ fontSize: "12px", color: item.proxy_host ? "var(--text-primary, #fff)" : "var(--text-muted, #98a2b3)", display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                        {item.proxy_host ? (
+                          <>
+                            <GlobeIcon size={12} color="var(--cyan)" />
+                            <span>{item.proxy_host}</span>
+                          </>
+                        ) : (
+                          "no proxy set (direct)"
+                        )}
                       </span>
                       <button
                         onClick={() => (isEditing ? closeEditor() : openEditor(s.platform, item.id))}

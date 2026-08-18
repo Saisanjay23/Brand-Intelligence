@@ -15,6 +15,8 @@ class AnalysisIn(BaseModel):
     # platform id to scope the run to just that platform. Validated against
     # the registry in analysis_controller.py.
     platform: Optional[str] = None
+    # Same multi-select as discovery; see dto/discovery_dto.py.
+    platforms: Optional[list[str]] = None
     # Normally this trigger only picks up approved profiles that have never
     # been successfully analysed (or failed and are still within their
     # retry budget), see profile_repository.urls_for's exclude_analysed.

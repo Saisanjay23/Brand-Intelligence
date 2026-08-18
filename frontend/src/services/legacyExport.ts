@@ -33,7 +33,7 @@ export const LEGACY_EXPORT_COLUMNS = [
 ] as const;
 
 export type LegacyExportColumn = (typeof LEGACY_EXPORT_COLUMNS)[number];
-export type LegacyExportRow = Record<LegacyExportColumn, string>;
+export type LegacyExportRow = Record<LegacyExportColumn, string | number>;
 
 // "2026-07-16..." -> "16-07-2026". Passes through unrecognised/empty input
 // rather than guessing, a blank date must stay blank, not become "NaN".
@@ -65,14 +65,19 @@ export function toLegacyExportRow(r: Profile): LegacyExportRow {
     // signal. Reading the raw scraper fields here used to mean a match
     // undone in the table never showed up in this export.
     "Logo (Yes / No)": triYesNo(logoMatchOf(r)),
-    Followers: r.followers != null ? String(r.followers) : "",
-    "Active (Yes / No)": triYesNo(r.is_active),
+    Followers: r.followers != null && Number.isFinite(Number(r.followers)) ? Number(r.followers) : "",
+    // Yes/No only, never blank -- see Row.active_yes in
+    // backend/shared/models/row.py for the reasoning. `null` here is a row
+    // analysed BEFORE that rule existed (the column was tri-state then),
+    // so it is normalised the same way rather than left blank in an export
+    // that is meant to have no third state.
+    "Active (Yes / No)": r.is_active === true ? "Yes" : "No",
     "Name (Yes / No)": triYesNo(usernameMatchOf(r)),
     Location: r.location ?? "",
     "Last Post (DD-MM-YYYY) (Optional)": toDDMMYYYY(r.last_post_date),
     // Numbers only, the High/Low label goes under `priority` below
     // instead, per analyst request.
-    "Risk Score": String(displayedRisk(r)),
+    "Risk Score": Number.isFinite(Number(displayedRisk(r))) ? Number(displayedRisk(r)) : "",
     // The table's own Risk badge label (resultsFilter.ts::riskLabel, shared
     // with ResultsGrid.tsx::getRiskBadgeDetails so the two can't drift
     // apart), not the raw `r.priority` field, the raw field is a
@@ -84,7 +89,12 @@ export function toLegacyExportRow(r: Profile): LegacyExportRow {
     // when this row was actually analysed, distinct from Last Post
     // (the impersonating account's own most recent activity)
     Date: toDDMMYYYY(r.analysed_at),
-    Comments: r.comments ?? "",
+    // Deliberately always blank. The column stays (the sheet's shape is
+    // fixed by what downstream consumes) but the scraper's own notes --
+    // bios, "creation date not exposed", session diagnostics -- are
+    // working detail, not analyst-facing content, and were never meant to
+    // ship in a client deliverable. Left for a human to fill in.
+    Comments: "",
   };
 }
 

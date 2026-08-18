@@ -5,14 +5,30 @@
 //
 // Data still comes from GET /jobs and GET /jobs/{id}/events (job_routes.py).
 import { useEffect, useMemo, useRef, useState } from "react";
+import { incidentsApi, type Incident } from "../api/incidentsApi";
 import { clientsApi } from "../api/clientsApi";
 import { jobsApi } from "../api/jobsApi";
 import { profilesApi } from "../api/profilesApi";
 import type { Client, Job, JobEvent, PlatformProgress, Profile } from "../api/types";
 import { confirmAction } from "../utils/confirmAction";
 import { download } from "../utils/download";
+import { PlatformIcon } from "../components/PlatformIcon";
+import {
+  ZapIcon,
+  DiscoverIcon,
+  AnalyseIcon,
+  ClockIcon,
+  LockIcon,
+  UnlockIcon,
+  SearchIcon,
+  TrashIcon,
+  DatabaseIcon,
+  AlertTriangleIcon,
+  DownloadIcon,
+} from "../components/AppIcons";
 
 const JOBS_REFRESH_MS = 4_000;
+const INCIDENTS_REFRESH_MS = 15_000;
 const LOG_REFRESH_MS  = 2_000;
 const BROWSE_PAGE_SIZE = 50;
 
@@ -117,6 +133,155 @@ const PANEL_STYLES = `
 
 // ─── Atoms ───────────────────────────────────────────────────────────────────
 
+const SEVERITY_LOOK: Record<string, { color: string; label: string }> = {
+  critical: { color: "#ef4444", label: "CRITICAL" },
+  warning: { color: "#fdb71b", label: "WARNING" },
+  info: { color: "#7c5cff", label: "INFO" },
+};
+
+/**
+ * Operational incidents, live.
+ *
+ * Until now these existed only as email and rows in Mongo -- so the only
+ * way to know the pipeline was struggling was to already be on the alert
+ * list. Critical first (a dead session, a parser that stopped recognising
+ * a page), because that is the set someone has to act on; warnings are
+ * still shown, just not shouted.
+ */
+function IncidentsFeed() {
+  const [items, setItems] = useState<Incident[]>([]);
+  const [counts, setCounts] = useState<Record<string, number>>({});
+  const [severity, setSeverity] = useState("");
+  const [expanded, setExpanded] = useState<string>("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      incidentsApi
+        .list(40, severity)
+        .then((r) => {
+          if (cancelled) return;
+          setItems(r.items);
+          setCounts(r.counts);
+          setError("");
+        })
+        .catch((e) => !cancelled && setError((e as Error).message));
+    };
+    load();
+    const t = setInterval(load, INCIDENTS_REFRESH_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [severity]);
+
+  const pill = (value: string, label: string, color: string) => (
+    <button
+      key={value || "all"}
+      type="button"
+      onClick={() => setSeverity(value)}
+      style={{
+        padding: "3px 10px",
+        borderRadius: "999px",
+        fontSize: "11px",
+        fontWeight: 700,
+        cursor: "pointer",
+        border: `1px solid ${severity === value ? color : "var(--border-subtle)"}`,
+        background: severity === value ? `${color}22` : "transparent",
+        color: severity === value ? color : "var(--text-muted)",
+      }}
+    >
+      {label}
+      {counts[value] != null ? ` ${counts[value]}` : ""}
+    </button>
+  );
+
+  return (
+    <div
+      style={{
+        background: "var(--bg-surface)",
+        border: "1px solid var(--border-subtle)",
+        borderRadius: "12px",
+        padding: "14px 16px",
+        marginBottom: "18px",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", marginBottom: "10px" }}>
+        <span style={{ fontSize: "10px", letterSpacing: "1px", textTransform: "uppercase", fontWeight: 700, color: "var(--text-dim)" }}>
+          Incidents
+        </span>
+        {pill("", "all", "var(--cyan-bright, #00e5ff)")}
+        {pill("critical", "critical", SEVERITY_LOOK.critical.color)}
+        {pill("warning", "warning", SEVERITY_LOOK.warning.color)}
+        {pill("info", "info", SEVERITY_LOOK.info.color)}
+      </div>
+
+      {error && <div style={{ fontSize: "12px", color: "var(--danger)" }}>{error}</div>}
+      {!error && items.length === 0 && (
+        <div style={{ fontSize: "13px", color: "var(--text-dim)", padding: "6px 0" }}>
+          Nothing recorded{severity ? ` at ${severity} severity` : ""}. The pipeline is healthy.
+        </div>
+      )}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: "6px", maxHeight: "340px", overflowY: "auto" }}>
+        {items.map((i) => {
+          const look = SEVERITY_LOOK[i.severity] ?? { color: "var(--text-dim)", label: i.severity || "?" };
+          const open = expanded === i.id;
+          return (
+            <div
+              key={i.id}
+              onClick={() => setExpanded(open ? "" : i.id)}
+              style={{
+                padding: "8px 10px",
+                borderRadius: "8px",
+                background: "var(--bg-inner)",
+                borderLeft: `3px solid ${look.color}`,
+                cursor: "pointer",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                <span style={{ fontSize: "10px", fontWeight: 700, color: look.color }}>{look.label}</span>
+                <strong style={{ fontSize: "12px", color: "var(--text-primary, #fff)" }}>
+                  {i.platform}/{i.kind}
+                </strong>
+                <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>{i.error_type}</span>
+                <span style={{ flex: 1 }} />
+                <span style={{ fontSize: "11px", color: "var(--text-dim)" }}>{relativeTime(i.ts)}</span>
+              </div>
+              <div
+                style={{
+                  fontSize: "12px",
+                  color: "var(--text-muted)",
+                  marginTop: "3px",
+                  ...(open ? {} : { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }),
+                }}
+              >
+                {i.message}
+              </div>
+              {open && (
+                <div style={{ marginTop: "8px", fontSize: "11px", color: "var(--text-dim)", lineHeight: 1.6 }}>
+                  {i.cause && <div><strong>Cause:</strong> {i.cause}</div>}
+                  {i.fix && <div><strong>Fix:</strong> {i.fix}</div>}
+                  {i.where && (
+                    <div style={{ fontFamily: "var(--font-mono)", whiteSpace: "pre-wrap", marginTop: "4px" }}>
+                      {i.where}
+                    </div>
+                  )}
+                  <div style={{ marginTop: "4px" }}>
+                    {exactTime(i.ts)}{i.job_id ? ` · job ${i.job_id}` : ""}
+                    {i.scope ? ` · ${i.scope}` : ""}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function StatusDot({ color }: { color: string }) {
   return (
     <span style={{ position: "relative", display: "inline-flex", alignItems: "center", justifyContent: "center", width: 10, height: 10 }}>
@@ -152,7 +317,6 @@ function PlatformChip({ pid, p, now }: { pid: string; p: PlatformProgress; now: 
   const liveElapsed = p.started
     ? p.status === "running" ? Math.floor((now - p.started * 1000) / 1000) : p.elapsed_seconds
     : null;
-  const icon = PLATFORM_ICON[pid] ?? "🌐";
   const accentColor = PLATFORM_COLOR[pid] ?? "#7c5cff";
   const isRunning = p.status === "running";
 
@@ -167,7 +331,7 @@ function PlatformChip({ pid, p, now }: { pid: string; p: PlatformProgress; now: 
     }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ fontSize: 16 }}>{icon}</span>
+          <PlatformIcon platform={pid} size={18} />
           <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-primary,#fff)", textTransform: "capitalize" }}>{pid}</span>
         </div>
         <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 999, background: look.bg, color: look.fg, border: `1px solid ${look.fg}55`, textTransform: "uppercase", letterSpacing: "0.4px" }}>
@@ -181,7 +345,11 @@ function PlatformChip({ pid, p, now }: { pid: string; p: PlatformProgress; now: 
           </div>
           <div style={{ fontSize: 10, color: "var(--text-dim,#667085)", marginTop: 2, display: "flex", justifyContent: "space-between" }}>
             <span>{p.processed}/{p.total} ({pct}%)</span>
-            {liveElapsed !== null && <span>⏱ {durationLabel(liveElapsed)}</span>}
+            {liveElapsed !== null && (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
+                <ClockIcon size={11} /> {durationLabel(liveElapsed)}
+              </span>
+            )}
           </div>
         </div>
       )}
@@ -280,11 +448,11 @@ function CyberTerminal({ jobId, onClose }: { jobId: string; onClose?: () => void
           {events.length > 0 && <StatusDot color="var(--success,#36b5a0)" />}
         </div>
         <div style={{ display: "flex", gap: 6 }}>
-          <button type="button" onClick={() => setAutoScroll((v) => !v)} style={{ fontSize: 10, padding: "3px 8px", borderRadius: 5, background: autoScroll ? "rgba(54,181,160,0.15)" : "rgba(255,255,255,0.06)", border: `1px solid ${autoScroll ? "var(--success,#36b5a0)" : "rgba(255,255,255,0.1)"}`, color: autoScroll ? "var(--success,#36b5a0)" : "var(--text-dim)", cursor: "pointer", fontWeight: 600 }}>
-            {autoScroll ? "🔒 Scroll ON" : "🔓 Scroll OFF"}
+          <button type="button" onClick={() => setAutoScroll((v) => !v)} style={{ fontSize: 10, padding: "3px 8px", borderRadius: 5, background: autoScroll ? "rgba(54,181,160,0.15)" : "rgba(255,255,255,0.06)", border: `1px solid ${autoScroll ? "var(--success,#36b5a0)" : "rgba(255,255,255,0.1)"}`, color: autoScroll ? "var(--success,#36b5a0)" : "var(--text-dim)", cursor: "pointer", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 }}>
+            {autoScroll ? <><LockIcon size={12} /> Scroll ON</> : <><UnlockIcon size={12} /> Scroll OFF</>}
           </button>
-          <button type="button" onClick={handleDownload} disabled={!events.length} style={{ fontSize: 10, padding: "3px 8px", borderRadius: 5, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", color: "var(--text-dim)", cursor: events.length ? "pointer" : "not-allowed", fontWeight: 600 }}>
-            📥 Export
+          <button type="button" onClick={handleDownload} disabled={!events.length} style={{ fontSize: 10, padding: "3px 8px", borderRadius: 5, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", color: "var(--text-dim)", cursor: events.length ? "pointer" : "not-allowed", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 }}>
+            <DownloadIcon size={12} /> Export
           </button>
           {onClose && (
             <button type="button" onClick={onClose} style={{ fontSize: 12, padding: "3px 8px", borderRadius: 5, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", color: "var(--text-muted)", cursor: "pointer", fontWeight: 700 }}>✕</button>
@@ -298,14 +466,17 @@ function CyberTerminal({ jobId, onClose }: { jobId: string; onClose?: () => void
             {pill.label}
           </button>
         ))}
-        <input type="text" value={filterText} onChange={(e) => setFilterText(e.target.value)} placeholder="🔍 Filter…" style={{ flex: 1, fontSize: 11, padding: "3px 8px", borderRadius: 5, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)", color: "var(--text-main)", outline: "none", fontFamily: "var(--font-mono)" }} />
+        <div style={{ position: "relative", flex: 1, display: "flex", alignItems: "center" }}>
+          <SearchIcon size={12} color="var(--text-dim)" style={{ position: "absolute", left: 8 }} />
+          <input type="text" value={filterText} onChange={(e) => setFilterText(e.target.value)} placeholder="Filter logs…" style={{ width: "100%", fontSize: 11, padding: "3px 8px 3px 26px", borderRadius: 5, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)", color: "var(--text-main)", outline: "none", fontFamily: "var(--font-mono)" }} />
+        </div>
         <span style={{ fontSize: 10, color: "var(--text-dim)", whiteSpace: "nowrap" }}>{filteredEvents.length}/{events.length} lines</span>
       </div>
       {/* Stream */}
       <div ref={boxRef} style={{ height: 240, overflowY: "auto", padding: "8px 12px", fontFamily: "var(--font-mono)", fontSize: 11, lineHeight: "1.65" }}>
         {filteredEvents.length === 0 ? (
           <div style={{ color: "var(--text-dim)", textAlign: "center", paddingTop: 40 }}>
-            {events.length === 0 ? "⏳ Waiting for activity…" : "No lines match the current filter."}
+            {events.length === 0 ? "Waiting for activity…" : "No lines match the current filter."}
           </div>
         ) : (
           filteredEvents.map((e) => {
@@ -349,24 +520,32 @@ function JobCard({
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 16 }}>{job.kind === "discovery" ? "🔍" : "🧪"}</span>
+            {job.kind === "discovery" ? <DiscoverIcon size={16} color="var(--cyan)" /> : <AnalyseIcon size={16} color="#7c5cff" />}
             <strong style={{ fontSize: 14, color: "var(--text-primary,#fff)" }}>{clientName}</strong>
             <span style={{ fontSize: 11, color: "var(--text-dim)", textTransform: "capitalize", background: "rgba(255,255,255,0.06)", padding: "2px 8px", borderRadius: 999 }}>{job.kind}</span>
             {isRunning ? <StatusDot color="var(--accent,#7c5cff)" /> : <Badge color={statusColor}>{job.status}</Badge>}
           </div>
           <div style={{ fontSize: 11, color: "var(--text-dim,#98a2b3)", display: "flex", flexWrap: "wrap", gap: "4px 12px" }}>
             <span title={exactTime(job.started)}>Started {relativeTime(job.started)}</span>
-            {elapsed !== null && <span>· ⏱ {durationLabel(elapsed)}</span>}
-            {throughput !== null && <span>· ⚡ ~{throughput} items/min</span>}
-            {job.blocked_by && <span style={{ color: "var(--warn-yellow,#fdb71b)" }}>· ⏳ waiting on {job.blocked_by.client_id}'s {job.blocked_by.kind}</span>}
+            {elapsed !== null && (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
+                <ClockIcon size={11} /> {durationLabel(elapsed)}
+              </span>
+            )}
+            {throughput !== null && (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
+                <ZapIcon size={11} color="var(--cyan)" /> ~{throughput} items/min
+              </span>
+            )}
+            {job.blocked_by && <span style={{ color: "var(--warn-yellow,#fdb71b)" }}>· waiting on {job.blocked_by.client_id}'s {job.blocked_by.kind}</span>}
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button type="button" className="la-action-btn" onClick={onToggleExpand} style={{ padding: "6px 12px", borderRadius: 8, background: expanded ? "rgba(124,92,255,0.15)" : "var(--bg-surface-3,#1d2939)", border: `1px solid ${expanded ? "var(--accent,#7c5cff)" : "rgba(255,255,255,0.1)"}`, color: expanded ? "var(--accent,#7c5cff)" : "var(--text-body,#fff)", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
             {expanded ? "▾ Terminal" : "▸ Terminal"}
           </button>
-          <button type="button" className="la-action-btn" onClick={() => onBrowse(job.client_id, job.platform)} style={{ padding: "6px 12px", borderRadius: 8, background: "var(--bg-surface-3,#1d2939)", border: "1px solid rgba(255,255,255,0.1)", color: "var(--text-body,#fff)", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-            🗄 Records
+          <button type="button" className="la-action-btn" onClick={() => onBrowse(job.client_id, job.platform)} style={{ padding: "6px 12px", borderRadius: 8, background: "var(--bg-surface-3,#1d2939)", border: "1px solid rgba(255,255,255,0.1)", color: "var(--text-body,#fff)", fontSize: 12, fontWeight: 600, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}>
+            <DatabaseIcon size={13} /> Records
           </button>
           {canStop && (
             <button type="button" onClick={() => onStop(job.id)} disabled={stopping} style={{ padding: "6px 12px", borderRadius: 8, background: "rgba(233,80,83,0.12)", border: "1px solid rgba(233,80,83,0.4)", color: "var(--danger,#e95053)", fontSize: 12, fontWeight: 700, cursor: stopping ? "wait" : "pointer" }}>
@@ -492,10 +671,10 @@ export function LiveActivityPanel() {
   const toggleAll = () =>
     setSelected((prev) => prev.size === profiles.length ? new Set() : new Set(profiles.map((p) => p.id)));
 
-  const TABS: Array<{ id: "live" | "history" | "records"; label: string; badge?: number }> = [
-    { id: "live",    label: "⚡ In-Flight Runs", badge: activeJobs.length || undefined },
-    { id: "history", label: "📜 Job History",   badge: terminalJobs.length || undefined },
-    { id: "records", label: "🗄 Record Manager" },
+  const TABS: Array<{ id: "live" | "history" | "records"; label: string; icon: React.ReactNode; badge?: number }> = [
+    { id: "live",    label: "In-Flight Runs", icon: <ZapIcon size={14} />, badge: activeJobs.length || undefined },
+    { id: "history", label: "Job History",   icon: <ClockIcon size={14} />, badge: terminalJobs.length || undefined },
+    { id: "records", label: "Record Manager", icon: <DatabaseIcon size={14} /> },
   ];
 
   return (
@@ -504,7 +683,10 @@ export function LiveActivityPanel() {
 
       {/* Page header */}
       <div style={{ marginBottom: 16 }}>
-        <h2 style={{ fontSize: 20, fontWeight: 700, color: "var(--text-primary,#fff)", margin: 0 }}>⚡ Live Activity</h2>
+        <h2 style={{ fontSize: 20, fontWeight: 700, color: "var(--text-primary,#fff)", margin: 0, display: "flex", alignItems: "center", gap: 8 }}>
+          <ZapIcon size={22} color="var(--cyan)" />
+          <span>Live Activity</span>
+        </h2>
         <p style={{ fontSize: 13, color: "var(--text-muted,#98a2b3)", margin: "4px 0 0 0" }}>
           Monitor every in-flight scrape engine, inspect job logs, and manage the discovered profile database.
         </p>
@@ -531,7 +713,9 @@ export function LiveActivityPanel() {
       {/* Error banner */}
       {error && (
         <div style={{ padding: "10px 16px", background: "rgba(233,80,83,0.1)", border: "1px solid rgba(233,80,83,0.25)", color: "var(--danger,#e95053)", borderRadius: 10, marginBottom: 16, fontSize: 13, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span>⚠️ {error}</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <AlertTriangleIcon size={15} color="var(--danger)" /> {error}
+          </span>
           <button type="button" onClick={() => setError("")} style={{ background: "transparent", border: "none", color: "var(--danger,#e95053)", cursor: "pointer", fontWeight: 700, fontSize: 14 }}>✕</button>
         </div>
       )}
@@ -540,7 +724,8 @@ export function LiveActivityPanel() {
       <div style={{ display: "flex", gap: 4, background: "var(--bg-app,#101828)", padding: 4, borderRadius: 10, border: "1px solid var(--border-color,#344054)", marginBottom: 20 }}>
         {TABS.map((tab) => (
           <button key={tab.id} type="button" className={`la-tab${activeTab === tab.id ? " active" : ""}`} onClick={() => setActiveTab(tab.id)} style={{ flex: 1, padding: "8px 10px", borderRadius: 8, border: "none", background: activeTab === tab.id ? "var(--bg-surface,#1e2837)" : "transparent", color: activeTab === tab.id ? "var(--accent,#7c5cff)" : "var(--text-muted,#98a2b3)", fontSize: 13, fontWeight: activeTab === tab.id ? 700 : 500, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, boxShadow: activeTab === tab.id ? "0 1px 6px rgba(0,0,0,0.25)" : "none" }}>
-            {tab.label}
+            {tab.icon}
+            <span>{tab.label}</span>
             {tab.badge !== undefined && (
               <span style={{ padding: "1px 7px", borderRadius: 999, fontSize: 10, fontWeight: 800, background: activeTab === tab.id ? "var(--accent,#7c5cff)" : "var(--bg-surface-3,#344054)", color: "#fff" }}>{tab.badge}</span>
             )}
@@ -551,6 +736,10 @@ export function LiveActivityPanel() {
       {/* ══ TAB 1: IN-FLIGHT RUNS ══ */}
       {activeTab === "live" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {/* What the pipeline is struggling with, alongside what it is
+              doing. Above the job cards on purpose: a dead session or a
+              broken parser explains the jobs below it. */}
+          <IncidentsFeed />
           {activeJobs.length === 0 ? (
             <EmptyState icon="🛸" text="No active scrapes right now — launch a Discovery Sweep or Re-run Analysis from the Clients tab, or wait for the round-robin engine to pick up the next job." />
           ) : (
@@ -585,13 +774,20 @@ export function LiveActivityPanel() {
                       <>
                         <tr key={job.id}>
                           <td style={{ fontWeight: 600, color: "var(--text-primary,#fff)" }}>{clientName(job.client_id)}</td>
-                          <td><span style={{ fontSize: 11, background: "rgba(255,255,255,0.06)", padding: "2px 8px", borderRadius: 999 }}>{job.kind === "discovery" ? "🔍" : "🧪"} {job.kind}</span></td>
+                          <td>
+                            <span style={{ fontSize: 11, background: "rgba(255,255,255,0.06)", padding: "2px 8px", borderRadius: 999, display: "inline-flex", alignItems: "center", gap: 4 }}>
+                              {job.kind === "discovery" ? <DiscoverIcon size={12} color="var(--cyan)" /> : <AnalyseIcon size={12} color="#7c5cff" />}
+                              {job.kind}
+                            </span>
+                          </td>
                           <td><Badge color={JOB_STATUS_COLOR[job.status] ?? "var(--text-dim)"}>{job.status}</Badge></td>
                           <td style={{ fontSize: 12, color: "var(--text-dim)" }}>{durationLabel(took)}</td>
                           <td style={{ fontSize: 12, color: "var(--text-dim)" }} title={exactTime(job.finished)}>{relativeTime(job.finished)}</td>
                           <td>
                             <div style={{ display: "flex", gap: 6 }}>
-                              <button type="button" className="la-records-btn" onClick={() => browseTo(job.client_id, job.platform)} style={{ fontSize: 11, padding: "4px 10px", borderRadius: 6, cursor: "pointer", background: "rgba(54,181,160,0.1)", border: "1px solid rgba(54,181,160,0.3)", color: "var(--text-muted)", fontWeight: 600 }}>🗄 Records</button>
+                              <button type="button" className="la-records-btn" onClick={() => browseTo(job.client_id, job.platform)} style={{ fontSize: 11, padding: "4px 10px", borderRadius: 6, cursor: "pointer", background: "rgba(54,181,160,0.1)", border: "1px solid rgba(54,181,160,0.3)", color: "var(--text-muted)", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 }}>
+                                <DatabaseIcon size={11} /> Records
+                              </button>
                               <button type="button" className="la-action-btn" onClick={() => toggleExpand(job.id)} style={{ fontSize: 11, padding: "4px 10px", borderRadius: 6, cursor: "pointer", background: isExpanded ? "rgba(124,92,255,0.15)" : "rgba(255,255,255,0.06)", border: `1px solid ${isExpanded ? "var(--accent,#7c5cff)" : "rgba(255,255,255,0.1)"}`, color: isExpanded ? "var(--accent,#7c5cff)" : "var(--text-muted)", fontWeight: 600 }}>{isExpanded ? "▾ Logs" : "▸ Logs"}</button>
                             </div>
                           </td>
@@ -617,7 +813,10 @@ export function LiveActivityPanel() {
       {activeTab === "records" && (
         <div>
           <div style={{ marginBottom: 16 }}>
-            <h3 style={{ fontSize: 15, fontWeight: 700, color: "var(--text-primary,#fff)", margin: "0 0 4px 0" }}>🗄 Browse & Manage Discovery Records</h3>
+            <h3 style={{ fontSize: 15, fontWeight: 700, color: "var(--text-primary,#fff)", margin: "0 0 4px 0", display: "flex", alignItems: "center", gap: 8 }}>
+              <DatabaseIcon size={18} color="var(--cyan)" />
+              <span>Browse & Manage Discovery Records</span>
+            </h3>
             <p style={{ fontSize: 12, color: "var(--text-muted,#98a2b3)", margin: 0 }}>Inspect what each job saved to the database — filter, search, and permanently delete records.</p>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
@@ -628,7 +827,7 @@ export function LiveActivityPanel() {
             <select value={browsePlatform} onChange={(e) => { setBrowsePlatform(e.target.value); setOffset(0); }} style={LA_SELECT_STYLE}>
               <option value="">All platforms</option>
               {["facebook", "instagram", "twitter", "youtube", "telegram", "tiktok"].map((p) => (
-                <option key={p} value={p}>{PLATFORM_ICON[p] || ""} {p}</option>
+                <option key={p} value={p}>{p}</option>
               ))}
             </select>
             <select value={browseStatus} onChange={(e) => { setBrowseStatus(e.target.value); setOffset(0); }} style={LA_SELECT_STYLE}>
@@ -637,19 +836,22 @@ export function LiveActivityPanel() {
               <option value="approved">Approved</option>
               <option value="rejected">Rejected</option>
             </select>
-            <input value={browseSearch} onChange={(e) => setBrowseSearch(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (setOffset(0), loadProfiles())} placeholder="🔎 Search name / URL…" style={{ ...LA_SELECT_STYLE, flex: "1 1 200px" }} />
+            <div style={{ position: "relative", flex: "1 1 200px", display: "flex", alignItems: "center" }}>
+              <SearchIcon size={12} color="var(--text-dim)" style={{ position: "absolute", left: 8 }} />
+              <input value={browseSearch} onChange={(e) => setBrowseSearch(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (setOffset(0), loadProfiles())} placeholder="Search name / URL…" style={{ ...LA_SELECT_STYLE, width: "100%", paddingLeft: 26 }} />
+            </div>
             <button type="button" onClick={() => { setOffset(0); loadProfiles(); }} style={{ ...LA_SELECT_STYLE, cursor: "pointer", fontWeight: 700 }}>Search</button>
           </div>
           {!browseClientId ? (
-            <EmptyState icon="🔍" text="Select a client above, or click '🗄 Records' on any job to jump straight here." />
+            <EmptyState icon="🔍" text="Select a client above, or click 'Records' on any job to jump straight here." />
           ) : (
             <>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                 <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
                   {browseLoading ? "Loading…" : `${profilesTotal} record(s)`}{selected.size > 0 && ` · ${selected.size} selected`}
                 </span>
-                <button type="button" onClick={deleteSelected} disabled={selected.size === 0 || deleting} style={{ padding: "6px 14px", borderRadius: 8, background: selected.size ? "rgba(233,80,83,0.15)" : "var(--bg-surface-3,#1d2939)", border: `1px solid ${selected.size ? "rgba(233,80,83,0.4)" : "rgba(255,255,255,0.1)"}`, color: selected.size ? "var(--danger,#e95053)" : "var(--text-dim)", fontSize: 12, fontWeight: 700, cursor: selected.size ? "pointer" : "not-allowed" }}>
-                  🗑 Delete selected{selected.size > 0 ? ` (${selected.size})` : ""}
+                <button type="button" onClick={deleteSelected} disabled={selected.size === 0 || deleting} style={{ padding: "6px 14px", borderRadius: 8, background: selected.size ? "rgba(233,80,83,0.15)" : "var(--bg-surface-3,#1d2939)", border: `1px solid ${selected.size ? "rgba(233,80,83,0.4)" : "rgba(255,255,255,0.1)"}`, color: selected.size ? "var(--danger,#e95053)" : "var(--text-dim)", fontSize: 12, fontWeight: 700, cursor: selected.size ? "pointer" : "not-allowed", display: "inline-flex", alignItems: "center", gap: 5 }}>
+                  <TrashIcon size={13} /> Delete selected{selected.size > 0 ? ` (${selected.size})` : ""}
                 </button>
               </div>
               <div style={{ overflowX: "auto" }}>

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { SearchIcon } from "./AppIcons";
 
 export interface ClientOption {
   client_id: string;
@@ -163,23 +164,24 @@ export function CustomClientSelect({
         >
           {/* Search Input */}
           {clients.length > 5 && (
-            <div style={{ marginBottom: "8px" }}>
+            <div style={{ marginBottom: "8px", position: "relative", display: "flex", alignItems: "center" }}>
+              <SearchIcon size={13} color="var(--text-muted, #98a2b3)" style={{ position: "absolute", left: "10px", pointerEvents: "none" }} />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="🔎 Search saved clients…"
+                placeholder="Search saved clients…"
                 style={{
                   width: "100%",
-                  padding: "8px 12px",
+                  padding: "8px 12px 8px 30px",
                   fontSize: "12px",
                   background: "var(--bg-surface-3, #1D2939)",
                   border: "1px solid var(--border-color, #344054)",
                   borderRadius: "8px",
                   color: "var(--text-main, #fff)",
                   outline: "none",
+                  boxSizing: "border-box",
                 }}
-                onClick={(e) => e.stopPropagation()}
                 autoFocus
               />
             </div>

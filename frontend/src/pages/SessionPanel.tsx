@@ -15,17 +15,16 @@ interface ModalState {
   targetSession?: { id: string; identifier: string; isApiKey?: boolean };
 }
 
-function getPlatformIcon(platform: string): string {
-  switch (platform) {
-    case "facebook": return "📘";
-    case "instagram": return "📸";
-    case "twitter": return "𝕏";
-    case "youtube": return "▶️";
-    case "telegram": return "✈️";
-    case "tiktok": return "🎵";
-    default: return "🌐";
-  }
-}
+import { PlatformIcon } from "../components/PlatformIcon";
+import {
+  AlertTriangleIcon,
+  DatabaseIcon,
+  ZapIcon,
+  ShieldIcon,
+  SearchIcon,
+  RefreshIcon,
+  TrashIcon,
+} from "../components/AppIcons";
 
 // How long these login cookies have left. Only worth showing when it's
 // close enough to act on, a token good for another eight months is noise,
@@ -155,7 +154,7 @@ export function SessionPanel({ sessions, onChanged }: Props) {
           color: "var(--warn-yellow, #FDB71B)", borderRadius: "10px", marginBottom: "20px", fontSize: "13px",
           display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap",
         }}>
-          <span style={{ fontSize: "16px" }}>⚠️</span>
+          <AlertTriangleIcon size={16} color="var(--warn-yellow, #FDB71B)" />
           <span>
             <strong>{expiringSessions.length} session(s) require attention:</strong>{" "}
             {expiringSessions.map((s) => `${s.platform} (${s.identifier || "account"} — ${s.expiry?.text})`).join(", ")}
@@ -177,10 +176,12 @@ export function SessionPanel({ sessions, onChanged }: Props) {
           gap: "10px",
           marginBottom: "20px"
         }}>
-          <span>⚠️ Notice: {globalError}</span>
+          <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <AlertTriangleIcon size={15} color="var(--danger)" /> Notice: {globalError}
+          </span>
           <button
             onClick={() => setGlobalError("")}
-            style={{ background: "transparent", border: "none", color: "#fff", cursor: "pointer", fontSize: "14px", fontWeight: 700 }}
+            style={{ background: "transparent", border: "none", color: "#fff", cursor: "pointer", fontSize: "14px", fontWeight: 700, marginLeft: "auto" }}
           >
             ✕
           </button>
@@ -197,18 +198,6 @@ export function SessionPanel({ sessions, onChanged }: Props) {
         {sessions.map((s) => {
           const tab = activeTabs[s.platform] || "pool";
           const poolCount = s.sessions?.length || 0;
-          // `available` is the server's own "a job could pick this right
-          // now" (not dead AND past any cooldown, sessions/manager.py::
-          // _is_available), which is what the header count and the platform
-          // rail are derived from too. Counting `status === "ready"` here
-          // instead made this panel disagree with both for a session that
-          // was cooling off. Fall back to the old test only for a server
-          // too old to send the field.
-          // ...except while an auto-login is still running: that row is a
-          // placeholder with no cookies in it yet, and the server's
-          // `available` says true for it (it is neither dead nor cooling
-          // off), which would paint it green before the login has actually
-          // produced anything. It gets its own in-progress badge below.
           const isUsable = (x: SessionItem) =>
             x.status !== "running_login" && (x.available ?? x.status === "ready");
           const activeCount = s.sessions?.filter(isUsable).length || 0;
@@ -242,10 +231,9 @@ export function SessionPanel({ sessions, onChanged }: Props) {
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  fontSize: "20px",
                   flexShrink: 0
                 }}>
-                  {getPlatformIcon(s.platform)}
+                  <PlatformIcon platform={s.platform} size={22} />
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div title={s.name} style={{ fontSize: "16px", fontWeight: 700, color: "var(--text-primary, #fff)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -316,7 +304,8 @@ export function SessionPanel({ sessions, onChanged }: Props) {
                     boxShadow: tab === "pool" ? "0 2px 6px rgba(0, 0, 0, 0.2)" : "none"
                   }}
                 >
-                  <span>🗃️ Pool</span>
+                  <DatabaseIcon size={13} />
+                  <span>Pool</span>
                   <span style={{
                     padding: "1px 6px",
                     borderRadius: "999px",
@@ -344,10 +333,12 @@ export function SessionPanel({ sessions, onChanged }: Props) {
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
+                    gap: "5px",
                     boxShadow: tab === "controls" ? "0 2px 6px rgba(0, 0, 0, 0.2)" : "none"
                   }}
                 >
-                  <span>⚡ Verification</span>
+                  <ZapIcon size={13} />
+                  <span>Verification</span>
                 </button>
               </div>
 
@@ -383,7 +374,9 @@ export function SessionPanel({ sessions, onChanged }: Props) {
                         border: "1px dashed var(--border-color, #344054)",
                         margin: "auto 0"
                       }}>
-                        <div style={{ fontSize: "20px", marginBottom: "6px" }}>🛡️</div>
+                        <div style={{ display: "flex", justifyContent: "center", marginBottom: "6px" }}>
+                          <ShieldIcon size={24} color="var(--text-muted)" />
+                        </div>
                         <div style={{ fontSize: "12px", fontWeight: 600, color: "var(--text-primary, #fff)" }}>No accounts saved</div>
                         <div style={{ fontSize: "11px", color: "var(--text-muted, #98a2b3)", margin: "3px auto 0 auto" }}>
                           Click <strong>"＋ Add"</strong> above to input cookies or keys.
@@ -624,14 +617,16 @@ export function SessionPanel({ sessions, onChanged }: Props) {
               {tab === "controls" && (
                 <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: "10px" }}>
                   {s.state === "checkpointed" && (
-                    <div style={{ padding: "10px", background: "var(--bg-surface-alt, #1d2939)", borderRadius: "6px", border: "1px solid var(--border-color, #344054)", color: "var(--text-secondary, #d8d8d8)", fontSize: "11px" }}>
-                      ⚠️ <strong>Checkpoint:</strong> {s.message || "Platform may require verification."}
+                    <div style={{ padding: "10px", background: "var(--bg-surface-alt, #1d2939)", borderRadius: "6px", border: "1px solid var(--border-color, #344054)", color: "var(--text-secondary, #d8d8d8)", fontSize: "11px", display: "flex", alignItems: "center", gap: "6px" }}>
+                      <AlertTriangleIcon size={14} color="var(--warn-yellow, #FDB71B)" />
+                      <span><strong>Checkpoint:</strong> {s.message || "Platform may require verification."}</span>
                     </div>
                   )}
 
                   <div style={{ background: "var(--bg-surface-alt, #1d2939)", padding: "10px", borderRadius: "6px", border: "1px solid var(--border-color, #344054)" }}>
-                    <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-primary, #fff)", marginBottom: "3px" }}>
-                      🔍 Health Verification Status
+                    <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-primary, #fff)", marginBottom: "3px", display: "flex", alignItems: "center", gap: "6px" }}>
+                      <SearchIcon size={13} color="var(--cyan)" />
+                      <span>Health Verification Status</span>
                     </div>
                     <div style={{ fontSize: "11px", color: "var(--text-muted, #98a2b3)" }}>
                       {s.last_verified ? `Last check: ${new Date(s.last_verified).toLocaleString()}` : "No verification sweep recorded yet."}
@@ -653,10 +648,18 @@ export function SessionPanel({ sessions, onChanged }: Props) {
                           color: "var(--text-primary, #fff)",
                           fontSize: "12px",
                           fontWeight: 600,
-                          cursor: "pointer"
+                          cursor: "pointer",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: "6px"
                         }}
                       >
-                        {isBusy ? "Checking..." : "🔄 Verify Sweep Now"}
+                        {isBusy ? "Checking..." : (
+                          <>
+                            <RefreshIcon size={14} /> Verify Sweep Now
+                          </>
+                        )}
                       </button>
                     )}
 
@@ -674,10 +677,18 @@ export function SessionPanel({ sessions, onChanged }: Props) {
                           border: "none",
                           fontSize: "12px",
                           fontWeight: 600,
-                          cursor: "pointer"
+                          cursor: "pointer",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: "6px"
                         }}
                       >
-                        {isBusy ? "Launching..." : "🚀 Launch Login"}
+                        {isBusy ? "Launching..." : (
+                          <>
+                            <ZapIcon size={14} /> Launch Login
+                          </>
+                        )}
                       </button>
                     )}
 
@@ -699,10 +710,14 @@ export function SessionPanel({ sessions, onChanged }: Props) {
                           color: "var(--text-primary, #ffffff)",
                           fontSize: "12px",
                           fontWeight: 600,
-                          cursor: "pointer"
+                          cursor: "pointer",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: "6px"
                         }}
                       >
-                        🗑️ Clear Pool ({poolCount})
+                        <TrashIcon size={14} /> Clear Pool ({poolCount})
                       </button>
                     )}
                   </div>
@@ -720,28 +735,23 @@ export function SessionPanel({ sessions, onChanged }: Props) {
           mode={modal.mode}
           targetSession={modal.targetSession}
           onClose={() => setModal({ isOpen: false, mode: "create" })}
-          onComplete={() => {
+          onSuccess={() => {
             setModal({ isOpen: false, mode: "create" });
             onChanged();
           }}
-          onError={(err) => setGlobalError(err)}
         />
       )}
     </div>
   );
 }
 
-// Dedicated Modal Component for simple, two-field input
-interface ModalProps {
+const SessionEditModal: FC<{
   platform: SessionInfo;
   mode: "create" | "update";
   targetSession?: { id: string; identifier: string; isApiKey?: boolean };
   onClose: () => void;
-  onComplete: () => void;
-  onError: (msg: string) => void;
-}
-
-const SessionEditModal: FC<ModalProps> = ({ platform, mode, targetSession, onClose, onComplete, onError }) => {
+  onSuccess: () => void;
+}> = ({ platform, mode, targetSession, onClose, onSuccess }) => {
   const isUpdate = mode === "update";
   const [identifier, setIdentifier] = useState<string>(targetSession?.identifier || "");
   const [cookieBlob, setCookieBlob] = useState<string>("");
@@ -751,6 +761,7 @@ const SessionEditModal: FC<ModalProps> = ({ platform, mode, targetSession, onClo
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
+
     try {
       if (isUpdate && targetSession) {
         await sessionsApi.updateSessionItem(platform.platform, targetSession.id, {
@@ -765,9 +776,9 @@ const SessionEditModal: FC<ModalProps> = ({ platform, mode, targetSession, onClo
           await sessionsApi.saveCookies(platform.platform, cookieBlob.trim(), identifier.trim() || "Unnamed Account");
         }
       }
-      onComplete();
-    } catch (err) {
-      onError((err as Error).message);
+      onSuccess();
+    } catch (err: any) {
+      alert(err?.message || "Failed to save session");
     } finally {
       setIsSubmitting(false);
     }
@@ -778,25 +789,28 @@ const SessionEditModal: FC<ModalProps> = ({ platform, mode, targetSession, onClo
   return (
     <div style={{
       position: "fixed",
-      inset: 0,
-      background: "rgba(8, 15, 30, 0.75)",
-      backdropFilter: "blur(8px)",
-      zIndex: 9999,
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      background: "rgba(0, 0, 0, 0.75)",
+      backdropFilter: "blur(4px)",
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
-      padding: "20px",
-      animation: "fadeIn 0.15s ease-out"
+      zIndex: 1000,
+      padding: "20px"
     }}>
       <div style={{
         background: "var(--bg-surface, #1e2837)",
         border: "1px solid var(--border-color, #344054)",
         borderRadius: "12px",
+        padding: "24px",
         width: "100%",
         maxWidth: "500px",
-        padding: "24px",
-        boxShadow: "0 20px 50px rgba(0, 0, 0, 0.65)",
-        animation: "modalPopIn 0.2s cubic-bezier(0.16, 1, 0.3, 1)"
+        boxShadow: "0 10px 25px rgba(0, 0, 0, 0.5)",
+        maxHeight: "90vh",
+        overflowY: "auto"
       }}>
         {/* Modal Header */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
@@ -810,9 +824,8 @@ const SessionEditModal: FC<ModalProps> = ({ platform, mode, targetSession, onClo
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              fontSize: "20px"
             }}>
-              {getPlatformIcon(platform.platform)}
+              <PlatformIcon platform={platform.platform} size={24} />
             </span>
             <div>
               <h3 style={{ margin: 0, fontSize: "17px", fontWeight: 700, color: "var(--text-primary, #fff)" }}>

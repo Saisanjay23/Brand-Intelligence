@@ -73,6 +73,12 @@ def _to_out(doc: dict) -> dict:
         # failed, and skipped alike, since all three mean the round-robin
         # engine actually reached this client's slot in the rotation.
         "run_count": doc.get("run_count", 0),
+        # False takes this client OUT of the round-robin rotation entirely:
+        # the engine stops picking it up until an admin re-enables it from
+        # the Scheduler tab. Manual Discover/Analyse runs are unaffected --
+        # this is about the automatic rotation only. Absent means enabled,
+        # so every client saved before this existed keeps running.
+        "scheduler_enabled": doc.get("scheduler_enabled", True),
     }
 
 
@@ -158,6 +164,19 @@ async def record_run_result(
         {"_id": client_id},
         {"$set": fields, "$inc": {"run_count": 1}},
     )
+
+
+async def set_scheduler_enabled(client_id: str, enabled: bool) -> bool:
+    """Take a client in or out of the round-robin rotation. Persisted (not
+    just held in the engine's memory) so an admin's decision to park a
+    client survives a restart -- the engine's own rotation is rebuilt from
+    Mongo once per lap, which is where this is read."""
+    res = await db()[CLIENTS].update_one(
+        {"_id": client_id}, {"$set": {"scheduler_enabled": enabled}},
+    )
+    if res.matched_count == 0:
+        raise NotFoundError(f"client {client_id!r} not found")
+    return enabled
 
 
 async def delete(client_id: str) -> dict:

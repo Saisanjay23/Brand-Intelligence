@@ -60,12 +60,27 @@ class Row:
 
     @property
     def active_yes(self) -> str:
+        """Yes/No only -- never blank, by explicit product decision.
+
+        "Active" means a post inside ACTIVE_WINDOW_DAYS. Anything we cannot
+        show to be inside that window reads as "No", including the case
+        where the account HAS posts but no date could be scraped for them.
+
+        That last case is a deliberate accepted cost, not an oversight: it
+        means an account we merely failed to date is reported inactive
+        rather than blank. The alternative -- a third, empty state -- was
+        rejected because a blank cell in the analyst's Active column and in
+        the export is not actionable. Where the distinction still matters,
+        `last_post_date` is the honest field: it is empty exactly when the
+        date is unknown, so "Active=No with no Last Post" is recognisably
+        different from "Active=No with a date older than the window".
+        """
         if not self.last_post_iso:
-            return "No" if self.posts_seen == "no" else ""
+            return "No"
         try:
             dt = datetime.strptime(self.last_post_iso[:10], "%Y-%m-%d")
         except ValueError:
-            return ""
+            return "No"
         cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=ACTIVE_WINDOW_DAYS)
         return "Yes" if dt >= cutoff else "No"
 

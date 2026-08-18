@@ -4,13 +4,22 @@
 // around. Refreshed on an interval, not the 2s job-polling cadence used
 // for a single in-flight job, this is a status table over ~hundreds of
 // clients, not a live progress bar.
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
+import { toast } from "react-hot-toast";
 import { jobsApi } from "../api/jobsApi";
 import type { JobEvent } from "../api/types";
-import { schedulerApi, type SchedulerStatus } from "../api/schedulerApi";
+import {
+  schedulerApi,
+  type SchedulerQueue,
+  type SchedulerStatus,
+} from "../api/schedulerApi";
+import { PlayIcon, PauseIcon, AlertTriangleIcon, SearchIcon, StopIcon } from "../components/AppIcons";
 
 const REFRESH_MS = 20_000;
 const EVENTS_REFRESH_MS = 3_000;
+// The queue is served from memory (no Mongo read), so it can be polled at
+// roughly the cadence a single job is, instead of the 20s status refresh.
+const QUEUE_REFRESH_MS = 3_000;
 
 // The analyst's whole point of expanding a row is to watch this client's
 // current run without ever opening the actual platform, so poll its
@@ -136,6 +145,285 @@ const PHASE_LOOK: Record<string, string> = {
   analysis: "analysing approved profiles",
 };
 
+const QUEUE_BTN: React.CSSProperties = {
+  padding: "3px 8px",
+  borderRadius: "6px",
+  border: "1px solid var(--border-color)",
+  background: "var(--bg-inner)",
+  color: "var(--text-muted)",
+  fontSize: "11px",
+  fontWeight: 600,
+  cursor: "pointer",
+  lineHeight: 1.6,
+};
+
+function SourceTag({ source }: { source: "scheduler" | "manual" | "queue" | "rotation" }) {
+  const look = {
+    scheduler: { label: "scheduler", color: "var(--accent, #7c5cff)" },
+    manual: { label: "manual", color: "var(--cyan-bright, #00e5ff)" },
+    queue: { label: "queued by you", color: "var(--warn-yellow, #fdb71b)" },
+    rotation: { label: "rotation", color: "var(--text-dim)" },
+  }[source];
+  return (
+    <span
+      style={{
+        fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px",
+        color: look.color, border: `1px solid ${look.color}`, borderRadius: "999px",
+        padding: "1px 7px", whiteSpace: "nowrap",
+      }}
+    >
+      {look.label}
+    </span>
+  );
+}
+
+// The live queue: what is running or waiting right now (real jobs, which
+// can be stopped) and which clients come next (not started yet, so they
+// can be reordered or dropped instead). Deliberately two lists rather than
+// one -- the actions available on each half are different, and merging
+// them would put a Stop button next to something that has not started.
+function QueuePanel({
+  onChanged,
+  clientNames,
+}: {
+  onChanged: () => void;
+  clientNames: Record<string, string>;
+}) {
+  const [queue, setQueue] = useState<SchedulerQueue | null>(null);
+  const [error, setError] = useState("");
+  const [busyId, setBusyId] = useState("");
+  const [addId, setAddId] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      setQueue(await schedulerApi.queue(12));
+      setError("");
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+    const t = setInterval(load, QUEUE_REFRESH_MS);
+    return () => clearInterval(t);
+  }, [load]);
+
+  // Every mutation refreshes from the server rather than patching local
+  // state: the engine moves on its own between renders, so a locally
+  // spliced list would drift from what it is actually about to run.
+  const act = async (id: string, fn: () => Promise<unknown>, done: string) => {
+    setBusyId(id);
+    try {
+      await fn();
+      toast.success(done);
+      await load();
+      onChanged();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusyId("");
+    }
+  };
+
+  const jobs = queue?.jobs ?? [];
+  const upcoming = queue?.upcoming ?? [];
+  const queuedIds = new Set(queue?.queue ?? []);
+  const addable = Object.entries(clientNames).filter(([id]) => !queuedIds.has(id));
+
+  return (
+    <div
+      style={{
+        marginBottom: "20px", background: "var(--bg-surface)",
+        border: "1px solid var(--border-subtle)", borderRadius: "12px", padding: "14px 16px",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", flexWrap: "wrap", marginBottom: "10px" }}>
+        <div style={{ fontSize: "10px", color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "1px", fontWeight: 700 }}>
+          Queue &mdash; {jobs.length} in flight, {upcoming.length} up next
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+          <select
+            value={addId}
+            onChange={(e) => setAddId(e.target.value)}
+            style={{
+              background: "var(--bg-inner)", border: "1px solid var(--border-color)", borderRadius: "6px",
+              color: "var(--text-main)", fontSize: "12px", padding: "4px 8px", maxWidth: "200px",
+            }}
+          >
+            <option value="">Queue a client&hellip;</option>
+            {addable.map(([id, name]) => (
+              <option key={id} value={id}>{name}</option>
+            ))}
+          </select>
+          <button
+            style={{ ...QUEUE_BTN, opacity: addId ? 1 : 0.5, cursor: addId ? "pointer" : "not-allowed" }}
+            disabled={!addId || busyId === addId}
+            onClick={() => {
+              const id = addId;
+              setAddId("");
+              void act(id, () => schedulerApi.enqueue(id, true), `${clientNames[id] ?? id} will run next`);
+            }}
+            title="Put this client at the front of the queue"
+          >
+            &uarr; Run next
+          </button>
+        </div>
+      </div>
+
+      {error && <div style={{ fontSize: "12px", color: "var(--danger)", marginBottom: "8px" }}>{error}</div>}
+
+      {jobs.length === 0 && upcoming.length === 0 && (
+        <div style={{ fontSize: "13px", color: "var(--text-dim)", padding: "6px 0" }}>
+          Nothing running and nothing queued.
+          {queue && !queue.running && " The engine is paused."}
+        </div>
+      )}
+
+      {jobs.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginBottom: upcoming.length ? "14px" : 0 }}>
+          {jobs.map((j) => (
+            <div
+              key={j.job_id}
+              style={{
+                display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap",
+                padding: "8px 10px", borderRadius: "8px",
+                background: j.status === "running" ? "rgba(124, 92, 255, 0.07)" : "var(--bg-inner)",
+                border: `1px solid ${j.status === "running" ? "var(--accent, #7c5cff)" : "var(--border-subtle)"}`,
+              }}
+            >
+              <span
+                style={{
+                  fontSize: "11px", fontWeight: 700, minWidth: "62px",
+                  color: j.status === "running" ? "var(--accent, #7c5cff)" : "var(--warn-yellow, #fdb71b)",
+                }}
+              >
+                {j.status === "running" ? "● running" : "◌ waiting"}
+              </span>
+              <strong style={{ fontSize: "13px", color: "var(--text-primary, #fff)" }}>{j.client_name}</strong>
+              <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                {j.kind}{j.platform ? ` · ${j.platform}` : " · all platforms"}
+              </span>
+              <SourceTag source={j.source} />
+              {j.blocked_by && (
+                <span style={{ fontSize: "11px", color: "var(--text-dim)" }}>
+                  waiting on {j.blocked_by.kind} for{" "}
+                  {clientNames[j.blocked_by.client_id] ?? j.blocked_by.client_id}
+                </span>
+              )}
+              <span style={{ flex: 1 }} />
+              <button
+                style={{
+                  ...QUEUE_BTN,
+                  color: "#ff6b6b",
+                  borderColor: "rgba(239,68,68,0.5)",
+                  background: "rgba(239,68,68,0.12)",
+                  cursor: busyId === j.job_id ? "progress" : "pointer",
+                  opacity: busyId === j.job_id ? 0.6 : 1,
+                  display: "inline-flex", alignItems: "center", gap: "4px",
+                }}
+                disabled={busyId === j.job_id}
+                onClick={() =>
+                  void act(
+                    j.job_id,
+                    () => jobsApi.cancelJob(j.job_id),
+                    `Stopped ${j.kind} for ${j.client_name}`,
+                  )
+                }
+                title={j.status === "running" ? "Abort this run" : "Drop this waiting run"}
+              >
+                <StopIcon size={10} color="#ff6b6b" />
+                {busyId === j.job_id ? "Stopping…" : j.status === "running" ? "Stop" : "Remove"}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {upcoming.length > 0 && (
+        <>
+          <div style={{ fontSize: "10px", color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "1px", fontWeight: 700, marginBottom: "6px" }}>
+            Up next
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+            {upcoming.map((u, i) => {
+              const mine = u.source === "queue";
+              const busy = busyId === u.client_id;
+              return (
+                <div
+                  key={`${u.client_id}-${i}`}
+                  style={{
+                    display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap",
+                    padding: "6px 10px", borderRadius: "8px", background: "var(--bg-inner)",
+                    border: `1px solid ${mine ? "rgba(253,183,27,0.35)" : "var(--border-subtle)"}`,
+                    opacity: busy ? 0.6 : 1,
+                  }}
+                >
+                  <span style={{ fontSize: "11px", color: "var(--text-dim)", minWidth: "20px", fontFamily: "var(--font-mono)" }}>
+                    {i + 1}.
+                  </span>
+                  <strong style={{ fontSize: "13px", color: "var(--text-main)" }}>{u.client_name}</strong>
+                  <SourceTag source={u.source} />
+                  <span style={{ flex: 1 }} />
+                  {mine ? (
+                    <>
+                      <button
+                        style={QUEUE_BTN}
+                        disabled={busy || i === 0}
+                        onClick={() => void act(u.client_id, () => schedulerApi.moveInQueue(u.client_id, "up"), "Moved up")}
+                        title="Move up the queue"
+                      >
+                        &uarr;
+                      </button>
+                      <button
+                        style={QUEUE_BTN}
+                        disabled={busy}
+                        onClick={() => void act(u.client_id, () => schedulerApi.moveInQueue(u.client_id, "down"), "Moved down")}
+                        title="Move down the queue"
+                      >
+                        &darr;
+                      </button>
+                      <button
+                        style={{ ...QUEUE_BTN, color: "#ff6b6b", borderColor: "rgba(239,68,68,0.4)" }}
+                        disabled={busy}
+                        onClick={() =>
+                          void act(
+                            u.client_id,
+                            () => schedulerApi.dequeue(u.client_id),
+                            `${u.client_name} removed from the queue`,
+                          )
+                        }
+                        title="Remove from the queue (it stays in the normal rotation)"
+                      >
+                        &#10005;
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      style={QUEUE_BTN}
+                      disabled={busy}
+                      onClick={() =>
+                        void act(
+                          u.client_id,
+                          () => schedulerApi.enqueue(u.client_id, true),
+                          `${u.client_name} will run next`,
+                        )
+                      }
+                      title="Jump this client to the front of the queue"
+                    >
+                      &uarr; Run next
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // A 1s local tick so "running for Xs" counts up live between the panel's
 // own 20s network refreshes, without polling the server any harder.
 function useNowTick(): number {
@@ -154,6 +442,7 @@ export function SchedulerPanel() {
   const [toggling, setToggling] = useState(false);
   const [togglingAutostart, setTogglingAutostart] = useState(false);
   const [expanded, setExpanded] = useState<string>("");
+  const [busyClient, setBusyClient] = useState("");
 
   const load = () => {
     schedulerApi
@@ -207,6 +496,30 @@ export function SchedulerPanel() {
   );
   const runningNow = clients.filter((c) => c.current_phase);
 
+  // Unfiltered on purpose: the queue names clients by id, including ones
+  // the search box is currently hiding, and a blocked-by row can point at
+  // a client that is not in this table at all.
+  const clientNames = Object.fromEntries(
+    (status?.clients ?? []).map((c) => [c.client_id, c.name]),
+  );
+
+  const toggleClient = async (clientId: string, enabled: boolean) => {
+    setBusyClient(clientId);
+    try {
+      await schedulerApi.setClientEnabled(clientId, enabled);
+      toast.success(
+        enabled
+          ? `${clientNames[clientId] ?? clientId} is back in the rotation`
+          : `${clientNames[clientId] ?? clientId} parked -- the engine will skip it`,
+      );
+      load();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusyClient("");
+    }
+  };
+
   return (
     <div style={{ padding: "24px", color: "var(--text-main, #f2f4f7)", maxWidth: "1100px", margin: "0 auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "20px", flexWrap: "wrap", gap: "12px" }}>
@@ -257,9 +570,18 @@ export function SchedulerPanel() {
                 border: `1px solid ${status.running ? "rgba(233,80,83,0.4)" : "rgba(54,181,160,0.4)"}`,
                 color: status.running ? "var(--danger)" : "var(--success)",
                 fontSize: "13px", fontWeight: 700, whiteSpace: "nowrap",
+                display: "inline-flex", alignItems: "center", gap: "6px",
               }}
             >
-              {status.running ? "⏸ Pause engine" : "▶ Resume engine"}
+              {status.running ? (
+                <>
+                  <PauseIcon size={14} /> Pause engine
+                </>
+              ) : (
+                <>
+                  <PlayIcon size={14} /> Resume engine
+                </>
+              )}
             </button>
           </div>
         )}
@@ -269,8 +591,10 @@ export function SchedulerPanel() {
         <div style={{
           padding: "10px 16px", background: "rgba(233, 80, 83,0.1)", border: "1px solid rgba(233, 80, 83,0.25)",
           color: "var(--danger)", borderRadius: "10px", marginBottom: "16px", fontSize: "13px",
+          display: "flex", alignItems: "center", gap: "8px",
         }}>
-          ⚠️ {error}
+          <AlertTriangleIcon size={15} color="var(--danger)" />
+          <span>{error}</span>
         </div>
       )}
 
@@ -278,10 +602,14 @@ export function SchedulerPanel() {
         <div style={{
           padding: "10px 16px", background: "rgba(255,193,7,0.1)", border: "1px solid rgba(255,193,7,0.3)",
           color: "var(--warn-yellow, #fdb71b)", borderRadius: "10px", marginBottom: "16px", fontSize: "13px",
+          display: "flex", alignItems: "flex-start", gap: "8px",
         }}>
-          ⚠️ {status.consecutive_failures} client turns in a row have failed. The engine is backing off
-          automatically between attempts. This usually means something systemic (not one client's own
-          keywords/session) -- check the Incidents list, or an admin email if Mail alerts are configured.
+          <AlertTriangleIcon size={16} color="var(--warn-yellow, #fdb71b)" style={{ marginTop: 2 }} />
+          <span>
+            {status.consecutive_failures} client turns in a row have failed. The engine is backing off
+            automatically between attempts. This usually means something systemic (not one client's own
+            keywords/session) -- check the Incidents list, or an admin email if Mail alerts are configured.
+          </span>
         </div>
       )}
 
@@ -342,15 +670,21 @@ export function SchedulerPanel() {
         </div>
       )}
 
-      <input
-        value={filter}
-        onChange={(e) => setFilter(e.target.value)}
-        placeholder="🔎 Filter by client name…"
-        style={{
-          width: "100%", marginBottom: "12px", background: "var(--bg-inner)", border: "1px solid var(--border-color)",
-          borderRadius: "10px", padding: "10px 12px", color: "var(--text-main)", fontSize: "13px", outline: "none",
-        }}
-      />
+      {status && <QueuePanel onChanged={load} clientNames={clientNames} />}
+
+      <div style={{ position: "relative", width: "100%", marginBottom: "12px", display: "flex", alignItems: "center" }}>
+        <SearchIcon size={14} color="var(--text-muted, #98a2b3)" style={{ position: "absolute", left: "12px", pointerEvents: "none" }} />
+        <input
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder="Filter by client name…"
+          style={{
+            width: "100%", background: "var(--bg-inner)", border: "1px solid var(--border-color)",
+            borderRadius: "10px", padding: "10px 12px 10px 34px", color: "var(--text-main)", fontSize: "13px", outline: "none",
+            boxSizing: "border-box",
+          }}
+        />
+      </div>
 
       <div style={{ overflowX: "auto" }}>
         <table className="core_table">
@@ -363,13 +697,14 @@ export function SchedulerPanel() {
               <th>Runs</th>
               <th>Next run</th>
               <th>Note</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
             {!status ? (
-              <tr><td colSpan={7} style={{ textAlign: "center", padding: "24px", color: "var(--text-dim)" }}>Loading…</td></tr>
+              <tr><td colSpan={8} style={{ textAlign: "center", padding: "24px", color: "var(--text-dim)" }}>Loading…</td></tr>
             ) : clients.length === 0 ? (
-              <tr><td colSpan={7} style={{ textAlign: "center", padding: "24px", color: "var(--text-dim)" }}>No clients with keywords set yet.</td></tr>
+              <tr><td colSpan={8} style={{ textAlign: "center", padding: "24px", color: "var(--text-dim)" }}>No clients with keywords set yet.</td></tr>
             ) : (
               clients.map((c) => {
                 const look = c.last_run_status ? STATUS_LOOK[c.last_run_status] : null;
@@ -379,7 +714,15 @@ export function SchedulerPanel() {
                   <Fragment key={c.client_id}>
                     <tr
                       onClick={() => setExpanded(isOpen ? "" : c.client_id)}
-                      style={{ cursor: "pointer", background: running ? "rgba(124, 92, 255, 0.06)" : undefined }}
+                      style={{
+                        cursor: "pointer",
+                        background: running
+                          ? "rgba(124, 92, 255, 0.06)"
+                          : c.queue_position !== null
+                          ? "rgba(253, 183, 27, 0.06)"
+                          : undefined,
+                        opacity: c.scheduler_enabled ? 1 : 0.55,
+                      }}
                       title="Click to see this client's live progress"
                     >
                       <td>{isOpen ? "▾" : "▸"} {c.name}</td>
@@ -392,6 +735,10 @@ export function SchedulerPanel() {
                             }} />
                             running — {PHASE_LOOK[c.current_phase ?? ""] ?? c.current_phase} ({elapsedLabel(c.current_since, now)})
                           </span>
+                        ) : !c.scheduler_enabled ? (
+                          <span style={{ color: "var(--text-dim)", fontWeight: 600 }} title="Parked by an admin -- the engine skips this client entirely">
+                            ⏸ skipped by admin
+                          </span>
                         ) : look ? (
                           <span style={{ color: look.color, fontWeight: 600 }}>{look.icon} {look.label}</span>
                         ) : (
@@ -401,12 +748,63 @@ export function SchedulerPanel() {
                       <td title={exactTime(c.last_run_at)}>{relativeTime(c.last_run_at)}</td>
                       <td>{durationLabel(c.last_run_duration_s)}</td>
                       <td title="Total completed turns through the round-robin rotation">{c.run_count}×</td>
-                      <td>{running ? "—" : status.running ? etaLabel(c.eta_seconds) : "paused"}</td>
+                      <td>
+                        {running
+                          ? "—"
+                          : !c.scheduler_enabled
+                          ? "skipped"
+                          : c.queue_position !== null
+                          ? `queued #${c.queue_position + 1}`
+                          : status.running
+                          ? etaLabel(c.eta_seconds)
+                          : "paused"}
+                      </td>
                       <td style={{ color: "var(--text-dim)", fontSize: "12px", maxWidth: "260px" }}>{c.last_run_note || "—"}</td>
+                      {/* stopPropagation throughout: the row itself toggles
+                          the event log, and an admin clicking Run next has
+                          no reason to also expand a log panel. */}
+                      <td onClick={(e) => e.stopPropagation()} style={{ whiteSpace: "nowrap" }}>
+                        <button
+                          style={{ ...QUEUE_BTN, marginRight: "6px" }}
+                          disabled={busyClient === c.client_id || !c.scheduler_enabled || c.queue_position === 0}
+                          onClick={() =>
+                            void schedulerApi
+                              .enqueue(c.client_id, true)
+                              .then(() => {
+                                toast.success(`${c.name} will run next`);
+                                load();
+                              })
+                              .catch((err) => toast.error((err as Error).message))
+                          }
+                          title={
+                            c.scheduler_enabled
+                              ? "Jump this client to the front of the queue"
+                              : "Paused clients cannot be queued -- re-enable it first"
+                          }
+                        >
+                          &uarr; Run next
+                        </button>
+                        <button
+                          style={{
+                            ...QUEUE_BTN,
+                            color: c.scheduler_enabled ? "var(--text-muted)" : "var(--success, #36b5a0)",
+                            cursor: busyClient === c.client_id ? "progress" : "pointer",
+                          }}
+                          disabled={busyClient === c.client_id}
+                          onClick={() => void toggleClient(c.client_id, !c.scheduler_enabled)}
+                          title={
+                            c.scheduler_enabled
+                              ? "Take this client out of the rotation (manual runs still work)"
+                              : "Put this client back in the rotation"
+                          }
+                        >
+                          {c.scheduler_enabled ? "Skip" : "Un-skip"}
+                        </button>
+                      </td>
                     </tr>
                     {isOpen && (
                       <tr>
-                        <td colSpan={7} style={{ padding: "0 0 12px" }}>
+                        <td colSpan={8} style={{ padding: "0 0 12px" }}>
                           <ClientEventLog clientId={c.client_id} />
                         </td>
                       </tr>

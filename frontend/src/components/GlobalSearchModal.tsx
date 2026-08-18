@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Client } from "../api/types";
+import { GlobeIcon, TagIcon, SearchIcon } from "./AppIcons";
 
 // Full-text client finder: name, id, domain, or any configured keyword --
 // broader than CustomClientSelect's own name/id-only filter, since this is
@@ -90,8 +91,15 @@ export function GlobalSearchModal({
                     <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--text-main)" }}>
                       {c.name || c.client_id}
                     </div>
-                    <div style={{ fontSize: "11px", color: "var(--text-dim)" }}>
-                      🆔 {c.client_id} {c.domain ? `· 🌐 ${c.domain}` : ""}
+                    <div style={{ fontSize: "11px", color: "var(--text-dim)", display: "flex", alignItems: "center", gap: "6px" }}>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: "3px" }}>
+                        <TagIcon size={11} color="var(--cyan)" /> {c.client_id}
+                      </span>
+                      {c.domain && (
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: "3px" }}>
+                          · <GlobeIcon size={11} color="var(--cyan)" /> {c.domain}
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>

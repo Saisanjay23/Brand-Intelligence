@@ -25,6 +25,46 @@ export interface SchedulerClientStatus {
   // now; null otherwise. When set, this row is live, not historical.
   current_phase: "checking" | "discovery" | "analysis" | null;
   current_since: string | null;
+  // false = parked by an admin; the round-robin engine skips this client
+  // entirely. Manual Discover/Analyse runs are unaffected.
+  scheduler_enabled: boolean;
+  // 0-based place in the admin-controlled queue, null when the client is
+  // only in the normal rotation
+  queue_position: number | null;
+}
+
+// One live job the engine is running or waiting to run. `source` says who
+// started it: both the engine and an analyst's manual run share the same
+// per-platform locks, so a `queued` engine job may simply be waiting on a
+// manual one, and vice versa.
+export interface SchedulerQueueJob {
+  job_id: string;
+  client_id: string;
+  client_name: string;
+  kind: string;
+  platform: string | null;
+  status: string;
+  message: string;
+  started: string | null;
+  source: "scheduler" | "manual";
+  blocked_by: { job_id: string; client_id: string; kind: string; platform: string | null } | null;
+}
+
+// A client the engine has not started yet. Only `source: "queue"` entries
+// are the admin's own -- those can be reordered or removed; "rotation"
+// entries are just the remainder of the current lap.
+export interface SchedulerUpcoming {
+  client_id: string;
+  client_name: string;
+  source: "queue" | "rotation";
+  position: number;
+}
+
+export interface SchedulerQueue {
+  running: boolean;
+  jobs: SchedulerQueueJob[];
+  upcoming: SchedulerUpcoming[];
+  queue: string[];
 }
 
 export interface SchedulerStatus {
@@ -56,4 +96,25 @@ export const schedulerApi = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ enabled }),
     }).then(json<{ autostart: boolean }>),
+
+  // In-memory only, so it is cheap enough to poll on a much tighter
+  // interval than status() (which reads every client out of Mongo).
+  queue: (limit = 12) =>
+    fetch(url(`/scheduler/queue?limit=${limit}`)).then(json<SchedulerQueue>),
+  enqueue: (clientId: string, front = true) =>
+    post("/scheduler/queue", { client_id: clientId, front }).then(json<{ queue: string[] }>),
+  moveInQueue: (clientId: string, direction: "up" | "down") =>
+    post(`/scheduler/queue/${encodeURIComponent(clientId)}/move`, { direction }).then(
+      json<{ queue: string[] }>,
+    ),
+  dequeue: (clientId: string) =>
+    fetch(url(`/scheduler/queue/${encodeURIComponent(clientId)}`), { method: "DELETE" }).then(
+      json<{ queue: string[] }>,
+    ),
+  setClientEnabled: (clientId: string, enabled: boolean) =>
+    fetch(url(`/scheduler/clients/${encodeURIComponent(clientId)}/enabled`), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    }).then(json<{ client_id: string; scheduler_enabled: boolean }>),
 };

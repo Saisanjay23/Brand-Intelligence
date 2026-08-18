@@ -188,6 +188,8 @@ export default function App() {
           analysisBusy={analysisJobs.running}
           onStopDiscovery={discoveryJobs.cancelAll}
           onStopAnalysis={analysisJobs.cancelAll}
+          stoppingDiscovery={discoveryJobs.cancelling}
+          stoppingAnalysis={analysisJobs.cancelling}
           onJobs={(jobs) => {
             setError("");
             const disc = jobs.filter((j) => j.kind === "discovery");
@@ -212,6 +214,8 @@ export default function App() {
           analysisProgress={analysisJobs.platformProgress}
           onStopDiscovery={discoveryJobs.cancelAll}
           onStopAnalysis={analysisJobs.cancelAll}
+          stoppingDiscovery={discoveryJobs.cancelling}
+          stoppingAnalysis={analysisJobs.cancelling}
           onError={setError}
         />
       )}

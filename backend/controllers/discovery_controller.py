@@ -32,6 +32,36 @@ def _validated_platform(platform_id: str) -> str:
     return platform_id
 
 
+def _resolve_platforms(
+    platforms: "list[str] | None", platform: "str | None",
+) -> tuple["str | None", "list[str] | None"]:
+    """-> (job.platform, params["platforms"]).
+
+    `job.platform` decides which locks the job takes (see
+    job_service::_lock_keys), so it can only ever name ONE platform. A
+    multi-platform run therefore reports itself as platform=None -- taking
+    every platform's lock, exactly as an "All Platforms" sweep does -- and
+    carries the actual selection in params, which is what scopes the
+    sweep. Broader locking than strictly needed is safe (it only reduces
+    concurrency); narrower would let two jobs drive one session at once.
+
+    A single-item selection collapses to the plain single-platform case so
+    it keeps that path's tighter locking and its coalescing behaviour.
+    """
+    chosen = [p for p in (platforms or []) if str(p).strip()]
+    if not chosen:
+        return (_validated_platform(platform) if platform else None), None
+
+    seen: list[str] = []
+    for pid in chosen:
+        valid = _validated_platform(pid)
+        if valid not in seen:
+            seen.append(valid)
+    if len(seen) == 1:
+        return seen[0], None
+    return None, seen
+
+
 async def start_discovery(body: DiscoveryIn) -> dict:
     await client_service.get(body.client_id)  # 404s if the client was never configured
 
@@ -58,9 +88,11 @@ async def start_discovery(body: DiscoveryIn) -> dict:
     if not body.keywords:
         raise ValidationError("keywords required (or pass profile_ids to re-resolve specific profiles instead)")
 
-    platform = _validated_platform(body.platform) if body.platform else None
+    platform, scoped = _resolve_platforms(body.platforms, body.platform)
 
     params: dict = {"keywords": body.keywords, "tabs": body.tabs, "max_results": body.max_results}
+    if scoped:
+        params["platforms"] = scoped
     if body.max_seconds is not None:
         params["max_seconds"] = body.max_seconds
     if body.concurrency is not None:

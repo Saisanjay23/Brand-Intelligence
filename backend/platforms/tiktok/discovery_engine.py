@@ -57,11 +57,14 @@ import json
 import re
 import sys
 import time
+import weakref
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterator, Optional
 from urllib.parse import quote
 
+from backend.config.settings import settings
 from backend.shared.extraction import ExtractionResult, run_strategies
 from backend.shared.logging import get_logger
 from backend.shared.text import iter_dicts
@@ -128,6 +131,12 @@ class TikTokUser:
     heart_count: Optional[int] = None
     video_count: Optional[int] = None
     last_post_iso: str = ""
+    # "account" = TikTok surfaced this as a NAME MATCH for the query (its
+    # own user-card block); "author" = it merely posted a video the query
+    # matched. Only the first kind is what impersonation triage is looking
+    # for, and the two arrive mixed together in one response -- see
+    # iter_users. Analysts see this as the profile's discovery_source.
+    match_kind: str = "author"
 
     @property
     def url(self) -> str:
@@ -136,6 +145,23 @@ class TikTokUser:
     @property
     def has_custom_pic(self) -> bool:
         return bool(self.avatar)
+
+
+def _avatar_url(*candidates: Any) -> str:
+    """TikTok hands avatars over in two shapes depending on which of its
+    own JSON dialects a response uses: a bare URL string (the camelCase
+    hydration/`author` shape) or a dict carrying a `url_list` (the
+    snake_case `user_info` shape). Take the first usable one."""
+    for c in candidates:
+        if isinstance(c, str) and c:
+            return c
+        if isinstance(c, dict):
+            urls = c.get("url_list") or c.get("urlList")
+            if isinstance(urls, list):
+                for u in urls:
+                    if isinstance(u, str) and u:
+                        return u
+    return ""
 
 
 def user_from_node(user: dict, stats: Optional[dict] = None) -> Optional[TikTokUser]:
@@ -161,40 +187,114 @@ def user_from_node(user: dict, stats: Optional[dict] = None) -> Optional[TikTokU
     raw_bio_link = user.get("bioLink") or {}
     bio_link = raw_bio_link.get("link", "") if isinstance(raw_bio_link, dict) else str(raw_bio_link or "")
 
+    # LIVE-CONFIRMED (2026-08-18): TikTok's search response mixes two
+    # dialects of the same record. Video authors arrive camelCase
+    # (`uniqueId`, `avatarLarger`, `followerCount`, `verified`); the
+    # user-card block that carries actual name matches arrives snake_case
+    # (`unique_id`, `avatar_thumb` as a url_list dict, `follower_count`,
+    # `total_favorited`, and verification as a non-empty `custom_verify` /
+    # `enterprise_verify_reason` string rather than a bool). Reading only
+    # the camelCase spelling is what silently dropped every name match --
+    # for "reliance" that meant discarding `reliance`, `reliance163` and
+    # `re1iance` (a digit-swap impersonation) while keeping twelve
+    # unrelated creators who happened to mention the word.
+    verified = bool(
+        user.get("verified")
+        or (user.get("custom_verify") or "").strip()
+        or (user.get("enterprise_verify_reason") or "").strip()
+    )
+
     return TikTokUser(
-        entity_id=str(user.get("id") or user.get("secUid") or ""),
+        entity_id=str(user.get("id") or user.get("uid") or user.get("secUid") or user.get("sec_uid") or ""),
         username=username,
         nickname=(user.get("nickname") or "").strip(),
-        avatar=user.get("avatarLarger") or user.get("avatarMedium") or user.get("avatarThumb") or "",
+        avatar=_avatar_url(
+            user.get("avatarLarger"), user.get("avatarMedium"), user.get("avatarThumb"),
+            user.get("avatar_larger"), user.get("avatar_medium"), user.get("avatar_thumb"),
+        ),
         bio=(user.get("signature") or "").strip(),
         bio_link=bio_link.strip(),
-        verified=bool(user.get("verified")),
-        private=bool(user.get("privateAccount") or user.get("secret")),
-        follower_count=stat("followerCount", "followers"),
-        following_count=stat("followingCount", "following"),
-        heart_count=stat("heartCount", "heart", "diggCount"),
-        video_count=stat("videoCount"),
+        verified=verified,
+        private=bool(user.get("privateAccount") or user.get("secret") or user.get("private_account")),
+        follower_count=stat("followerCount", "follower_count", "followers"),
+        following_count=stat("followingCount", "following_count", "following"),
+        heart_count=stat("heartCount", "total_favorited", "heart", "diggCount"),
+        video_count=stat("videoCount", "aweme_count", "video_count"),
     )
 
 
 def iter_users(blob: Any) -> Iterator[TikTokUser]:
     """Every user-shaped node in a hydration/search payload, deduped by
-    username, in document order. Walks the whole tree rather than trusting
-    one fixed path, see this module's docstring on the key layout already
-    having moved once."""
+    username. Walks the whole tree rather than trusting one fixed path,
+    see this module's docstring on the key layout already having moved
+    once.
+
+    NAME MATCHES COME FIRST. A search response carries two populations
+    that look alike structurally but mean opposite things for
+    impersonation triage:
+
+      * `user_list[].user_info` nodes (TikTok's own `type: 4` user-card
+        block) -- accounts it considers a match for the QUERY. These are
+        the impersonation candidates.
+      * `author` nodes hanging off video items -- whoever happened to post
+        a clip the query matched. Overwhelmingly irrelevant here: a
+        "reliance" search returns a dozen unrelated creators who said the
+        word.
+
+    Both are yielded, since a real impersonator does also post videos, but
+    accounts are yielded first so `rank` (and therefore the order an
+    analyst reviews cards in) puts genuine name matches at the top instead
+    of burying one behind twelve creators.
+    """
+    accounts: list[TikTokUser] = []
+    authors: list[TikTokUser] = []
     seen: set[str] = set()
-    for d in iter_dicts(blob):
-        nested = d.get("user")
-        if isinstance(nested, dict) and nested.get("uniqueId"):
-            stats = d.get("stats") if isinstance(d.get("stats"), dict) else d.get("statsV2")
-            u = user_from_node(nested, stats if isinstance(stats, dict) else None)
-        elif d.get("uniqueId"):
-            u = user_from_node(d)
-        else:
-            continue
+
+    def take(u: Optional[TikTokUser], bucket: list[TikTokUser]) -> None:
         if u and u.username.lower() not in seen:
             seen.add(u.username.lower())
-            yield u
+            bucket.append(u)
+
+    for d in iter_dicts(blob):
+        # the user-card block: {"user_list": [{"user_info": {...}}, ...]}
+        info = d.get("user_info")
+        if isinstance(info, dict) and (info.get("unique_id") or info.get("uniqueId")):
+            u = user_from_node(info)
+            if u:
+                u.match_kind = "account"
+            take(u, accounts)
+            continue
+
+        nested = d.get("user")
+        if isinstance(nested, dict) and (nested.get("uniqueId") or nested.get("unique_id")):
+            stats = d.get("stats") if isinstance(d.get("stats"), dict) else d.get("statsV2")
+            take(user_from_node(nested, stats if isinstance(stats, dict) else None), authors)
+        elif d.get("uniqueId") or d.get("unique_id"):
+            take(user_from_node(d), authors)
+
+    yield from accounts
+    yield from authors
+
+
+def viewer_username(blob: Any) -> str:
+    """The logged-in account's own handle, per the page's app context.
+
+    LIVE-CONFIRMED (2026-08-18): every rendered TikTok page embeds the
+    VIEWER at `__DEFAULT_SCOPE__["webapp.app-context"].user.uniqueId`, and
+    the sidebar renders an `a[href="/@<viewer>"]` link. Both sit inside
+    exactly the surfaces this module harvests, so before this the session's
+    own account was collected as a discovered "impersonator" of every
+    keyword, on every sweep, ranked first (it is in the hydration payload,
+    which is read before any search response arrives). It appeared in zero
+    /api/search/ payloads and in 5 of 5 DOM reads -- it is page chrome, not
+    a result.
+    """
+    try:
+        scope = blob.get("__DEFAULT_SCOPE__", {}) if isinstance(blob, dict) else {}
+        user = (scope.get("webapp.app-context") or {}).get("user") or {}
+        return str(user.get("uniqueId") or user.get("unique_id") or "")
+    except Exception:
+        return ""
 
 
 def profile_from(blob: Any, username: str = "") -> Optional[TikTokUser]:
@@ -376,53 +476,60 @@ def parse_lines(text: str) -> Iterator[Any]:
 
 SEARCH_URL = "https://www.tiktok.com/search?q={q}"
 
-# LIVE-CONFIRMED (2026-08-11, against a real session): deep-linking straight
-# into `/search/user?q=...` trips TikTok's bot detection, the page loads
-# but its own results panel renders "Something went wrong / Sorry,
-# something wrong with the server, please try again", no /api/search/*
-# call ever fires, and the hydration payload carries nothing for the
-# query. Landing on the plain `/search?q=...` URL (the Top tab, exactly
-# where a person typing a query and hitting Enter actually lands) and then
-# clicking the "Users" tab in-page, exactly what this JS does, behaves
-# completely differently: the real `/api/search/general/full/` and
-# `/api/search/general/preview/` calls fire immediately and the Users tab
-# renders real results. Not spoofing anything extra to get there; simply
-# not doing the one thing (a direct sub-tab deep link) that reads as
-# non-human.
-JS_CLICK_USERS_TAB = """
-() => {
-  const els = Array.from(document.querySelectorAll('[role="tab"], a, div, span, p'));
-  const t = els.find(el => (el.textContent || '').trim() === 'Users' && el.offsetParent !== null);
-  if (t) { t.click(); return true; }
-  return false;
-}
-"""
-
-JS_CLICK_VIDEOS_TAB = """
-() => {
-  const els = Array.from(document.querySelectorAll('[role="tab"], a, div, span, p'));
-  const t = els.find(el => (el.textContent || '').trim() === 'Videos' && el.offsetParent !== null);
-  if (t) { t.click(); return true; }
-  return false;
-}
-"""
-
+# THE USERS TAB IS UNREACHABLE, AND REACHING IT MAKES RESULTS WORSE.
+#
+# An earlier revision landed on `/search?q=...` (the Top tab) and then
+# clicked the in-page "Users" tab, on the theory that only a direct
+# deep-link to `/search/user?q=...` tripped bot detection. Re-verified
+# against a real logged-in session on 2026-08-18, that is no longer true,
+# and the click never actually worked in the first place:
+#
+#   * The selector looked for `[role="tab"]` / any element whose text is
+#     "Users". TikTok's search tab strip is `div#search-tabs` holding plain
+#     `<button>`s -- no role, no data-e2e. The ONLY `[role="tab"]` nodes on
+#     the page belong to the notifications panel ("All activity", "Likes",
+#     ...). So the click landed on the inner `<span>`, which does not
+#     switch tabs. Discovery has therefore always been reading the Top tab.
+#   * Clicking the real button DOES switch (the URL becomes
+#     `/search/user?q=...`) -- and that is strictly worse. The resulting
+#     `/api/search/user/full/` call returns HTTP 200 with a ZERO-BYTE body,
+#     the panel renders "Something went wrong", and the rendered results
+#     collapse from 13 accounts to 1. A reload reproduces it exactly. The
+#     request carries msToken and X-Bogus but no `_signature`; this is
+#     TikTok soft-blocking the endpoint, not a timing or selector problem,
+#     and no amount of clicking fixes it.
+#
+# So: stay on the Top tab, deliberately. It is the surface that actually
+# answers, and it carries BOTH populations -- TikTok's own user-card block
+# (`type: 4`, real name matches) and video authors -- which `iter_users`
+# now separates and ranks. See that function.
 
 async def newest_post_via_search(ctx, username: str, timeout_s: float = 20.0) -> str:
-    """The one CAPTCHA-free way found (live-confirmed 2026-08-11) to learn
-    when an account last posted.
+    """The one CAPTCHA-free way found to learn when an account last posted.
 
     Visiting a profile's OWN video grid to find this out repeatedly put
     the session behind TikTok's slide-verify challenge, the grid tiles
     render as empty placeholders, no `/api/post/item_list/` response ever
     carries a body, and this backend will never automate solving that
     challenge (out of scope on principle, not just difficulty). Searching
-    the account's own username on the Videos tab is the SAME search
-    surface `Discovery.sweep` already uses successfully, and never
-    triggered the challenge across repeated live testing, likely because
-    it's an ordinary keyword search, not a deep-link into one account's
-    own content feed. TikTok's search response carries a real `createTime`
+    the account's own username is the SAME search surface
+    `Discovery.sweep` already uses successfully, and never triggered the
+    challenge across repeated live testing, likely because it's an
+    ordinary keyword search, not a deep-link into one account's own
+    content feed. TikTok's search response carries a real `createTime`
     (epoch seconds) directly on each video node, no id-decoding needed.
+
+    STAYS ON THE TOP TAB, deliberately. An earlier revision tried to click
+    through to the "Videos" tab first. That click never actually worked
+    (same `[role="tab"]` selector defect as the Users tab -- it clicked an
+    inert `<span>`), and this function only ever worked BECAUSE of that:
+    it listens for `/api/search/general/full/`, which is the Top tab's own
+    response. Re-verified live on 2026-08-18, genuinely reaching the
+    Videos tab is worse, not better -- the URL becomes `/search/video?q=`
+    and its `/api/search/item/full/` call returns HTTP 200 with a
+    ZERO-BYTE body, exactly like the Users tab. So the click is gone
+    rather than "fixed": repairing that selector would have silently
+    broken last-post detection for every TikTok profile.
 
     NOT exhaustive: this is whatever TikTok's search ranks as relevant for
     the username as a query, not a full chronological listing of the
@@ -450,11 +557,12 @@ async def newest_post_via_search(ctx, username: str, timeout_s: float = 20.0) ->
             SEARCH_URL.format(q=quote(username)), wait_until="domcontentloaded",
             timeout=int(timeout_s * 1000),
         )
-        await page.wait_for_timeout(3000)
-        for _ in range(4):
-            if await page.evaluate(JS_CLICK_VIDEOS_TAB):
-                break
-            await page.wait_for_timeout(500)
+        # Wait for the results view itself rather than a flat sleep -- the
+        # response this reads only fires once it renders.
+        try:
+            await page.wait_for_selector("#search-tabs button", timeout=int(timeout_s * 1000))
+        except Exception:
+            pass
         await page.wait_for_timeout(4000)
 
         want = username.lower()
@@ -479,6 +587,357 @@ async def newest_post_via_search(ctx, username: str, timeout_s: float = 20.0) ->
             pass
 
 
+# TikTok's search results do NOT scroll the window. They live inside
+# `<main id="grid-main">`, an inner overflow container: the document itself
+# stays exactly one viewport tall (scrollHeight == innerHeight == 864,
+# window.scrollY pinned at 0 no matter what). So
+# `window.scrollTo(0, document.body.scrollHeight)` -- and `End`, and even a
+# mouse wheel -- moved nothing, TikTok's lazy-loader was never triggered,
+# and every sweep stopped after the single page that arrives with the
+# initial render. It then reported `stalled`, which looks identical to
+# "the results genuinely ran out" from the outside. It is not: scrolling
+# the real container walks the cursor 12 -> 132 across 11 pages and ends
+# on the payload's own `has_more: 0`, i.e. actual exhaustion.
+#
+# Measured live for "reliance": 15 users before, 135 after (9x), same
+# session, same query, same time budget (~53s).
+#
+# Falls back to the window scroll when no inner container owns the
+# overflow, so a future layout that does scroll the document still works.
+JS_SCROLL_RESULTS = """
+() => {
+  const el = document.querySelector('#grid-main')
+    || Array.from(document.querySelectorAll('div, main, section')).find(e => {
+         const st = getComputedStyle(e);
+         return /(auto|scroll)/.test(st.overflowY) && e.scrollHeight > e.clientHeight + 40;
+       });
+  if (el) { el.scrollTop = el.scrollHeight; return true; }
+  window.scrollTo(0, document.body.scrollHeight);
+  return false;
+}
+"""
+
+
+# ── the Users tab ────────────────────────────────────────────────────────
+#
+# This is the surface impersonation triage actually wants. Searching
+# "gautam adani" here returns @gautam.adani33, @realgautamadani,
+# @gautam.adani1, @gautamadami ... -- accounts wearing the name. The Top
+# tab (Discovery.sweep) structurally cannot see them: its payload is video
+# items, with a small user-card rider that is often absent entirely.
+#
+# Getting in meant isolating what TikTok gates on. Verified live
+# (2026-08-18) that it is NOT any of the obvious candidates -- in every one
+# of these the answer is HTTP 200 with a ZERO-BYTE body and a "Something
+# went wrong" panel:
+#   * the tab selector      clicking the real #search-tabs button navigates
+#                           to /search/user?q= correctly
+#   * headless              headful behaves identically
+#   * request signing       a warmed context sends X-Dynosaur, X-Gnarly,
+#                           X-Bogus, msToken, device_id and odinId -- the
+#                           same set the working request carries
+#   * being logged in       an anonymous context is refused just the same
+#   * search_id ordering    waiting for the Top results first changes nothing
+#
+# What it gates on is the BROWSER CONTEXT TYPE. Playwright's ordinary
+# `launch()` + `new_context()` -- an incognito-style context, which is what
+# stealth/browser.py::Session uses -- is refused indefinitely.
+# `launch_persistent_context()` against a real on-disk profile directory is
+# answered normally: 23KB of JSON, ten accounts, byte-identical to what a
+# human sees. Confirmed headless, and on a brand-new profile directory, so
+# this needs neither a display nor a warm-up period.
+#
+# Deliberately ANONYMOUS: no pooled cookies are loaded. The endpoint does
+# not want them (it answers a logged-out browser perfectly well), and not
+# sending them means this pass cannot burn the logged-in session that
+# analysis depends on.
+#
+# Additive and non-fatal by construction: any failure here degrades
+# discovery to the Top-tab results it had before, never fails the job.
+USER_SEARCH_URL = "https://www.tiktok.com/search/user?q={q}"
+
+# `launch_persistent_context` takes an exclusive lock on the profile
+# directory, and sweeps run concurrently (DiscoveryOptions.concurrency),
+# so two keywords reaching this at once would collide. One at a time.
+# Created per running loop, not once at import: a module-level
+# asyncio.Lock binds to the first loop that touches it and then raises
+# "Event loop is closed" in every later one. Production runs a single
+# loop, so this stays invisible there -- it surfaced as one flaky test,
+# which is exactly the cheap warning worth heeding. Keyed weakly so a
+# finished loop does not keep its lock alive.
+_PROFILE_LOCKS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _profile_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _PROFILE_LOCKS.get(loop)
+    if lock is None:
+        lock = _PROFILE_LOCKS[loop] = asyncio.Lock()
+    return lock
+
+
+def _profile_dir():
+    return settings.session_blob_path / "tiktok-profile"
+
+
+@asynccontextmanager
+async def anonymous_context(proxy: Optional[dict] = None):
+    """A credential-free TikTok browser context, on a persistent profile.
+
+    BOTH halves matter and both are load-bearing:
+
+    * PERSISTENT. Playwright's ordinary `launch()` + `new_context()` (an
+      incognito-style context, which is what stealth/browser.py::Session
+      uses) is refused by TikTok -- blank pages, zero-byte API responses.
+      `launch_persistent_context` against a real on-disk profile is served
+      normally. This is the single difference that unlocked the Users tab.
+    * ANONYMOUS. TikTok's account search answers a logged-out browser
+      perfectly, and profile analysis reads every field it normally reads.
+      Sending no cookies means a sweep cannot burn the pooled session, and
+      cannot be stopped by that session expiring.
+
+    Serialised on `_profile_lock()`: the profile directory takes an
+    exclusive OS lock, so two of these at once would collide.
+    """
+    from playwright.async_api import async_playwright
+
+    from backend.stealth.fingerprint import LAUNCH_ARGS, chrome_binary
+    from backend.stealth.proxy import build_proxy_config
+
+    profile = _profile_dir()
+    profile.mkdir(parents=True, exist_ok=True)
+
+    launch: dict[str, Any] = {"headless": settings.headless, "args": LAUNCH_ARGS}
+    if binary := chrome_binary():
+        launch["executable_path"] = binary
+    if proxy and (cfg := build_proxy_config(proxy)):
+        launch["proxy"] = cfg
+
+    async with _profile_lock():
+        pw = ctx = None
+        try:
+            pw = await async_playwright().start()
+            ctx = await pw.chromium.launch_persistent_context(str(profile), **launch)
+            await _warm(ctx)
+            yield ctx
+        finally:
+            if ctx is not None:
+                try:
+                    await ctx.close()
+                except Exception:
+                    pass
+            if pw is not None:
+                try:
+                    await pw.stop()
+                except Exception:
+                    pass
+
+
+async def _warm(ctx, timeout_s: float = 45.0) -> None:
+    """Load the homepage once before doing anything else.
+
+    A freshly launched context that navigates STRAIGHT to a search URL is
+    refused on that first request and only answers from the second onward
+    -- which showed up as the first keyword of every batch silently
+    returning nothing while the rest worked.
+    """
+    page = await ctx.new_page()
+    try:
+        await page.goto("https://www.tiktok.com/", wait_until="domcontentloaded",
+                        timeout=int(timeout_s * 1000))
+        await page.wait_for_timeout(5000)
+    except Exception as e:
+        log.warning(f"tiktok: warm-up failed -- {type(e).__name__}: {e}")
+    finally:
+        try:
+            await page.close()
+        except Exception:
+            pass
+
+
+# The Users tab is SERVER-RENDERED. `/api/search/user/full/` fires only
+# sometimes; on a normal load the accounts arrive inside the HTML itself
+# and no XHR ever carries them. Listening only for that response therefore
+# reported zero while ten accounts sat on screen. Reading the cards is also
+# the more faithful answer to "show me what TikTok shows": this walks them
+# in DOM order, which IS the order TikTok ranked them in.
+#
+# Each card is an `a[href="/@handle"]` whose innerText is
+#   <nickname> \n <handle> \n <n> \n Followers \n · \n <n> \n Likes
+# so the counts are read by the label that follows them rather than by
+# position -- the same tactic the profile-header parse uses.
+JS_USER_CARDS = r"""
+() => {
+  const out = [];
+  const seen = new Set();
+  for (const a of document.querySelectorAll('a[href^="/@"]')) {
+    const m = (a.getAttribute('href') || '').match(/^\/@([^/?]+)/);
+    if (!m) continue;
+    const username = m[1];
+    if (!username || seen.has(username.toLowerCase())) continue;
+    const lines = (a.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
+    // the sidebar's own profile link has no card body; a result always does
+    if (lines.length < 2) continue;
+    seen.add(username.toLowerCase());
+    let followers = '', likes = '';
+    for (let i = 1; i < lines.length; i++) {
+      if (/^followers$/i.test(lines[i])) followers = lines[i - 1];
+      else if (/^likes$/i.test(lines[i])) likes = lines[i - 1];
+    }
+    const img = a.querySelector('img');
+    const nickname = lines[0];   // first line is the display name
+    out.push({ username, nickname, followers, likes,
+               avatar: img ? (img.getAttribute('src') || '') : '' });
+  }
+  return out;
+}
+"""
+
+
+async def user_cards(page) -> list[TikTokUser]:
+    """The Users tab's rendered results, in the order TikTok ranked them."""
+    from backend.shared.text import parse_count
+
+    rows = await page.evaluate(JS_USER_CARDS)
+    out: list[TikTokUser] = []
+    for r in rows or []:
+        username = (r.get("username") or "").strip()
+        if not username:
+            continue
+        followers, _ = parse_count(r.get("followers") or "")
+        hearts, _ = parse_count(r.get("likes") or "")
+        out.append(TikTokUser(
+            username=username,
+            nickname=(r.get("nickname") or "").strip(),
+            avatar=(r.get("avatar") or "").strip(),
+            follower_count=followers,
+            heart_count=hearts,
+            match_kind="account",
+        ))
+    return out
+
+
+async def search_users(
+    keywords: list[str], proxy: Optional[dict] = None, timeout_s: float = 45.0,
+) -> dict[str, list[TikTokUser]]:
+    """{keyword: name-matched accounts} from TikTok's Users tab.
+
+    One browser for the whole batch -- the persistent profile is the
+    scarce resource, not the page load.
+    """
+    out: dict[str, list[TikTokUser]] = {kw: [] for kw in keywords}
+    if not keywords:
+        return out
+    try:
+        async with anonymous_context(proxy) as ctx:
+            for kw in keywords:
+                out[kw] = await _users_for(ctx, kw, timeout_s)
+                log.info(f"tiktok/users {kw!r}: {len(out[kw])} account(s)")
+    except Exception as e:
+        log.warning(f"tiktok/users: account search unavailable -- {type(e).__name__}: {e}")
+    return out
+
+
+async def search_users_in(ctx, keywords: list[str], timeout_s: float = 45.0
+                          ) -> dict[str, list[TikTokUser]]:
+    """`search_users` against a context the caller already owns -- used when
+    a sweep is ALREADY running anonymously and must not try to take the
+    profile lock a second time (it would deadlock against itself)."""
+    out: dict[str, list[TikTokUser]] = {}
+    for kw in keywords:
+        try:
+            out[kw] = await _users_for(ctx, kw, timeout_s)
+        except Exception as e:
+            log.warning(f"tiktok/users {kw!r}: {type(e).__name__}: {e}")
+            out[kw] = []
+        log.info(f"tiktok/users {kw!r}: {len(out[kw])} account(s)")
+    return out
+
+
+async def _users_for(ctx, keyword: str, timeout_s: float) -> list[TikTokUser]:
+    """One keyword's Users tab, read off `/api/search/user/full/`, scrolled
+    to the end of the list the same way the Top tab is."""
+    page = await ctx.new_page()
+    bodies: list[str] = []
+
+    async def on_response(resp):
+        if "/api/search/user" not in resp.url:
+            return
+        try:
+            text = await resp.text()
+        except Exception:
+            return
+        if text:
+            bodies.append(text)
+
+    page.on("response", lambda r: asyncio.create_task(on_response(r)))
+    try:
+        await page.goto(USER_SEARCH_URL.format(q=quote(keyword)),
+                        wait_until="domcontentloaded", timeout=int(timeout_s * 1000))
+
+        # Wait for the cards themselves, not a fixed sleep. Server-rendered
+        # results have been observed taking ~12s to paint; a 6s sleep read
+        # an empty page and reported no accounts at all.
+        # Poll for the cards rather than sleeping a fixed amount:
+        # server-rendered results have been observed taking ~12s to paint,
+        # and a 6s sleep read an empty page and reported no accounts at all.
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            if len(await user_cards(page)) >= 1:
+                break
+            await page.wait_for_timeout(1000)
+        else:
+            log.info(f"tiktok/users {keyword!r}: no result cards rendered")
+            return []
+        await page.wait_for_timeout(1500)
+
+        # Ordered accumulator: DOM order IS TikTok's ranking, so keep first
+        # sight of each handle and let scrolling append.
+        ordered: dict[str, TikTokUser] = {}
+
+        async def harvest() -> int:
+            for u in await user_cards(page):
+                ordered.setdefault(u.username.lower(), u)
+            return len(ordered)
+
+        await harvest()
+        stalls = 0
+        for _ in range(25):
+            before = len(ordered)
+            await page.evaluate(JS_SCROLL_RESULTS)
+            await page.wait_for_timeout(2200)
+            stalls = stalls + 1 if await harvest() == before else 0
+            if stalls >= 4:
+                break
+
+        # Fold in anything the XHR did carry -- it is richer (verified
+        # flag, exact counts, entity id) -- without disturbing DOM order.
+        for text in bodies:
+            for blob in parse_lines(text):
+                for u in iter_users(blob):
+                    key = u.username.lower()
+                    u.match_kind = "account"
+                    if key in ordered:
+                        prev = ordered[key]
+                        u.nickname = u.nickname or prev.nickname
+                        u.avatar = u.avatar or prev.avatar
+                        if u.follower_count is None:
+                            u.follower_count = prev.follower_count
+                        if u.heart_count is None:
+                            u.heart_count = prev.heart_count
+                    ordered[key] = u
+
+        return list(ordered.values())
+    except Exception as e:
+        log.warning(f"tiktok/users {keyword!r}: {type(e).__name__}: {e}")
+        return []
+    finally:
+        try:
+            await page.close()
+        except Exception:
+            pass
+
+
 @dataclass
 class Sweep:
     keyword: str
@@ -495,17 +954,30 @@ class Sweep:
     source: str = "hydration+network"
     extraction: Optional[ExtractionResult] = None
 
+    @property
+    def account_hits(self) -> int:
+        """Hits that came from TikTok's own user-card block (a name match
+        for the query) rather than from a video's author."""
+        return sum(1 for u in self.users if u.match_kind == "account")
+
     def summary(self) -> str:
-        base = f"{len(self.hits)} hits, {self.pages} pages, {self.stopped}"
+        base = (f"{len(self.hits)} hits ({self.account_hits} name-matched accounts), "
+                f"{self.pages} pages, {self.stopped}")
         return f"{base}, via {self.source}" if self.source != "hydration+network" else base
 
 
 class Discovery:
     """Runs keyword sweeps on an already-started browser session."""
 
-    def __init__(self, args, ctx):
+    def __init__(self, args, ctx, anonymous: bool = False):
         self.a = args
         self.ctx = ctx
+        # True when `ctx` is ALREADY the anonymous persistent context. The
+        # Users-tab pass must then reuse it rather than opening its own,
+        # which would block forever on a profile lock this same task holds.
+        self.anonymous = anonymous
+        # the logged-in handle, learned per sweep from the page itself
+        self._viewer = ""
 
     async def sweep(self, keyword: str, tab: str = "people") -> Sweep:
         out = Sweep(keyword=keyword, tab=tab)
@@ -535,31 +1007,26 @@ class Discovery:
                 SEARCH_URL.format(q=quote(keyword)), wait_until="domcontentloaded",
                 timeout=self.a.timeout * 1000,
             )
+            # Wait for the search tab strip itself, not for a body-text
+            # length: `#search-tabs` only mounts once the results view has
+            # actually rendered, whereas innerText clears 400 characters
+            # from the chrome (nav, footer, cookie banner) alone, on a page
+            # that has no results on it yet. Falling through early is what
+            # made the first read land before the results existed.
             try:
-                await page.wait_for_function(
-                    "() => document.body.innerText.length > 400", timeout=self.a.settle * 1000,
-                )
+                await page.wait_for_selector("#search-tabs button", timeout=self.a.settle * 1000)
             except Exception:
-                pass
+                log.warning(f"tiktok/people {keyword!r}: search results never rendered")
 
-            # Land on Top (the default tab) like a person would, THEN click
-            # into Users, see SEARCH_URL's own comment on why the direct
-            # deep-link doesn't work. A couple of retries: the tab element
-            # may not be mounted yet the instant innerText clears 400 chars.
-            clicked = False
-            for _ in range(4):
-                if await page.evaluate(JS_CLICK_USERS_TAB):
-                    clicked = True
-                    break
-                await page.wait_for_timeout(500)
-            if not clicked:
-                log.warning(f"tiktok/people {keyword!r}: could not find the Users tab to click")
+            # Deliberately NOT switching to the Users tab -- see the block
+            # above SEARCH_URL. The Top tab is the one that answers.
 
             # The first batch of results may already be in the hydration
             # payload embedded at load, try it before waiting on any XHR,
             # same reasoning as the profile page (see module docstring).
             hydration = await read_hydration(page)
             if hydration:
+                self._viewer = viewer_username(hydration).lower()
                 for u in iter_users(hydration):
                     by_username.setdefault(u.username.lower(), u)
 
@@ -583,7 +1050,7 @@ class Discovery:
 
                 before = len(by_username)
                 arrived.clear()
-                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await page.evaluate(JS_SCROLL_RESULTS)
                 try:
                     await asyncio.wait_for(arrived.wait(), timeout=self.a.page_wait)
                 except asyncio.TimeoutError:
@@ -616,10 +1083,20 @@ class Discovery:
                     ("dom:profile-links", lambda: dom_users(page)),
                 ],
             )
-            out.users = chain.value or []
+            users = chain.value or []
             out.extraction = chain
             if chain.degraded:
                 out.source = "dom"
+
+            # Drop the logged-in account (see viewer_username) and put
+            # TikTok's own name matches ahead of incidental video authors,
+            # so `rank` -- and therefore the order an analyst works through
+            # the cards in -- leads with the actual impersonation
+            # candidates. Stable within each group: TikTok's own relevance
+            # ordering is preserved, only the two groups are separated.
+            viewer = getattr(self, "_viewer", "")
+            users = [u for u in users if u.username.lower() != viewer]
+            out.users = sorted(users, key=lambda u: u.match_kind != "account")
 
             out.hits = [
                 Hit(
@@ -633,11 +1110,23 @@ class Discovery:
                     keyword=keyword,
                     tab=tab,
                     rank=i,
-                    source=out.source,
+                    # "search:account" == TikTok returned this as a name
+                    # match for the keyword; "search:author" == it merely
+                    # posted a video the keyword matched. Stored as the
+                    # profile's discovery_source so the difference survives
+                    # into triage instead of being flattened away.
+                    source=out.source if out.source == "dom" else f"search:{u.match_kind}",
                 )
                 for i, u in enumerate(out.users)
                 if u.url
             ]
+            # TikTok's Users tab, which this Top-tab sweep structurally
+            # cannot see (video items, not accounts). Merged here rather
+            # than in run(): the discovery service drives sweep() directly
+            # per (keyword, tab) and never calls run(), so anything hung
+            # off run() is dead code in production.
+            await self._merge_user_accounts(out)
+
             if self.a.max_results:
                 out.hits = out.hits[: self.a.max_results]
         except Exception as e:
@@ -649,6 +1138,47 @@ class Discovery:
                 pass
             out.seconds = time.time() - started
         return out
+
+    async def _merge_user_accounts(self, out: "Sweep") -> None:
+        """Fold the Users-tab accounts into this sweep, ahead of the video
+        authors. Best-effort: a failure here leaves the Top-tab results
+        exactly as they were."""
+        try:
+            if self.anonymous:
+                # This task already owns the profile lock (the whole sweep
+                # is running inside anonymous_context), so reuse that
+                # context -- taking the lock again would deadlock.
+                found = (await search_users_in(self.ctx, [out.keyword])).get(out.keyword) or []
+            else:
+                # search_users takes the lock itself, via anonymous_context
+                found = (await search_users(
+                    [out.keyword], proxy=getattr(self.a, "proxy", None),
+                )).get(out.keyword) or []
+        except Exception as e:
+            log.warning(f"tiktok/users {out.keyword!r}: skipped -- {type(e).__name__}: {e}")
+            return
+        if not found:
+            return
+
+        names = {u.username.lower() for u in found}
+        out.users = found + [u for u in out.users if u.username.lower() not in names]
+        out.hits = [
+            Hit(
+                entity_id=u.entity_id or u.username,
+                name=u.nickname or u.username,
+                url=u.url,
+                avatar=u.avatar,
+                has_custom_pic=u.has_custom_pic,
+                verified=u.verified,
+                entity_type="profile",
+                keyword=out.keyword,
+                tab=out.tab,
+                rank=i,
+                source=out.source if out.source == "dom" else f"search:{u.match_kind}",
+            )
+            for i, u in enumerate(out.users)
+            if u.url
+        ]
 
     async def run(self, keywords: list[str], tabs: Optional[list[str]] = None) -> list[Sweep]:
         """TikTok has one people-search surface, so `tabs` is accepted and ignored."""

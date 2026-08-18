@@ -43,7 +43,7 @@ async def get_job_events(job_id: str, after_seq: int = 0) -> dict:
 
 async def cancel_job(job_id: str) -> dict:
     job = _get(job_id)
-    ok = await job_manager.cancel(job_id)
+    ok = job_manager.cancel(job_id)
     if not ok:
         # distinct from a 404 (the job id is real), the current state just
         # doesn't allow a cancel, e.g. it's already DONE/FAILED/CANCELLED.

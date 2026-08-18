@@ -4,6 +4,7 @@
 // the backend so a value entered here survives a process restart.
 import { useEffect, useState } from "react";
 import { settingsApi } from "../api/settingsApi";
+import { MailIcon, SaveIcon, AlertTriangleIcon } from "../components/AppIcons";
 
 const inputStyle: React.CSSProperties = {
   width: "100%",
@@ -38,41 +39,45 @@ export function MailPanel() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
-  const load = () => {
-    setLoading(true);
+  useEffect(() => {
     settingsApi
       .getMailSettings()
       .then((s) => {
-        setSmtpHost(s.smtp_host);
-        setSmtpPort(s.smtp_port);
-        setSmtpUser(s.smtp_user);
-        setPassSet(s.smtp_pass_set);
-        setEmailsText(s.alert_emails.join(", "));
-        setAlertFrom(s.alert_from);
+        setSmtpHost(s.smtp_host || "");
+        setSmtpPort(s.smtp_port || 587);
+        setSmtpUser(s.smtp_user || "");
+        setPassSet(Boolean(s.smtp_pass_set));
+        setEmailsText((s.alert_emails || []).join(", "));
+        setAlertFrom(s.alert_from || "");
       })
       .catch((e) => setError((e as Error).message))
       .finally(() => setLoading(false));
-  };
-
-  useEffect(load, []);
+  }, []);
 
   const save = async () => {
     setSaving(true);
     setError("");
     setNotice("");
+    const alert_emails = emailsText
+      .split(/[\n,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
     try {
-      const emails = emailsText.split(/[,\n]/).map((e) => e.trim()).filter(Boolean);
       const updated = await settingsApi.updateMailSettings({
         smtp_host: smtpHost.trim(),
         smtp_port: smtpPort,
         smtp_user: smtpUser.trim(),
         smtp_pass: smtpPass,
-        alert_emails: emails,
+        alert_emails,
         alert_from: alertFrom.trim(),
       });
       setPassSet(updated.smtp_pass_set);
       setSmtpPass("");
-      setNotice("Saved. Alert emails will use these settings immediately -- no restart needed.");
+      setNotice("Settings saved.");
+      if (smtpPass) {
+        setPassSet(true);
+        setSmtpPass("");
+      }
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -96,14 +101,15 @@ export function MailPanel() {
   };
 
   if (loading) {
-    return <div style={{ padding: "24px", color: "var(--text-dim)" }}>Loading mail settings…</div>;
+    return <div style={{ padding: "32px", color: "var(--text-dim)" }}>Loading settings…</div>;
   }
 
   return (
-    <div style={{ padding: "24px", color: "var(--text-main, #f2f4f7)", maxWidth: "640px", margin: "0 auto" }}>
+    <div style={{ padding: "24px", color: "var(--text-main, #f2f4f7)", maxWidth: "800px", margin: "0 auto" }}>
       <div style={{ marginBottom: "20px" }}>
-        <h1 style={{ fontSize: "22px", fontWeight: 700, color: "var(--text-primary, #fff)", margin: 0, letterSpacing: "-0.3px" }}>
-          📧 Mail Alerts
+        <h1 style={{ fontSize: "22px", fontWeight: 700, color: "var(--text-primary, #fff)", margin: 0, letterSpacing: "-0.3px", display: "flex", alignItems: "center", gap: "10px" }}>
+          <MailIcon size={24} color="var(--cyan)" />
+          <span>Mail Alerts</span>
         </h1>
         <p style={{ fontSize: "13px", color: "var(--text-muted, #98a2b3)", margin: "4px 0 0 0" }}>
           Where the tool sends an email when a platform session expires, a scraper breaks, or the
@@ -115,8 +121,10 @@ export function MailPanel() {
         <div style={{
           padding: "10px 16px", background: "rgba(233, 80, 83,0.1)", border: "1px solid rgba(233, 80, 83,0.25)",
           color: "var(--danger)", borderRadius: "10px", marginBottom: "16px", fontSize: "13px",
+          display: "flex", alignItems: "center", gap: "8px",
         }}>
-          ⚠️ {error}
+          <AlertTriangleIcon size={15} color="var(--danger)" />
+          <span>{error}</span>
         </div>
       )}
       {notice && (
@@ -188,9 +196,10 @@ export function MailPanel() {
             onClick={save}
             disabled={saving}
             className="btn-cyber-primary"
-            style={{ flex: 1, padding: "10px", borderRadius: "10px", cursor: saving ? "wait" : "pointer" }}
+            style={{ flex: 1, padding: "10px", borderRadius: "10px", cursor: saving ? "wait" : "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "6px" }}
           >
-            {saving ? "Saving…" : "💾 Save"}
+            <SaveIcon size={14} />
+            <span>{saving ? "Saving…" : "Save Settings"}</span>
           </button>
           <button
             onClick={sendTest}
@@ -198,10 +207,11 @@ export function MailPanel() {
             style={{
               flex: 1, padding: "10px", borderRadius: "10px", cursor: testing ? "wait" : "pointer",
               background: "var(--bg-inner)", border: "1px solid var(--border-color)", color: "var(--text-main)",
-              fontSize: "13px", fontWeight: 600,
+              fontSize: "13px", fontWeight: 600, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "6px"
             }}
           >
-            {testing ? "Sending…" : "✉️ Send test email"}
+            <MailIcon size={14} />
+            <span>{testing ? "Sending…" : "Send Test Email"}</span>
           </button>
         </div>
       </div>

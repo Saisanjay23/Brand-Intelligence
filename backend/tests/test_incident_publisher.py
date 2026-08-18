@@ -91,19 +91,34 @@ def test_old_post_is_inactive():
     assert pub._is_active(_doc(last_post_date=old)) is False
 
 
-def test_no_post_date_is_unknown_not_inactive():
-    """Telegram exposes no last-post date, Instagram often doesn't either,
-    and a cut-short analysis never gets one. Publishing that as
-    `isActive: false` asserts something nobody checked -- and drags the
-    risk rating down with it."""
-    assert pub._is_active(_doc()) is None
-    assert pub._is_active(_doc(last_post_date="")) is None
-    assert pub._is_active(_doc(last_post_date="not-a-date")) is None
+def test_no_post_date_reads_inactive():
+    """Binary by product decision: anything not shown to have posted inside
+    the window is inactive, including the cases that genuinely cannot be
+    checked (Telegram exposes no last-post date, Instagram often doesn't,
+    a cut-short analysis never got one).
+
+    This reverses the earlier tri-state rule. It costs nothing in scoring
+    -- the caller already passed `bool(active)`, so None and False always
+    scored the same -- and `lastPostDate` stays empty in exactly these
+    cases, which is where "never established" remains visible."""
+    assert pub._is_active(_doc()) is False
+    assert pub._is_active(_doc(last_post_date="")) is False
+    assert pub._is_active(_doc(last_post_date="not-a-date")) is False
 
 
-def test_incident_carries_unknown_activity_as_null():
+def test_incident_never_publishes_a_null_activity():
     inc = pub.build_incident_doc(_doc(), CLIENT)
-    assert inc["socialProfileInfo"]["isActive"] is None
+    assert inc["socialProfileInfo"]["isActive"] is False
+    assert inc["socialProfileInfo"]["isActive"] is not None
+
+
+def test_a_stored_null_override_cannot_reintroduce_the_third_state():
+    """An incident saved under the old rule carries isActive: null. Editing
+    and re-publishing it must not put that null back on the wire."""
+    doc = _doc()
+    doc["incident_overrides"] = {"socialProfileInfo.isActive": None}
+    inc = pub.build_incident_doc(doc, CLIENT)
+    assert inc["socialProfileInfo"]["isActive"] is False
 
 
 # The rest of the published shape

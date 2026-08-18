@@ -31,6 +31,13 @@ _ALLOWED_IMAGE_HOST_SUFFIXES = (
     "twimg.com", "x.com", "twitter.com",
     "ytimg.com", "ggpht.com", "googleusercontent.com", "googleapis.com", "youtube.com",
     "telesco.pe", "telegram.org", "cdn-telegram.org", "t.me",
+    # TikTok serves avatars off regional signed-CDN hosts
+    # (p16-common-sign.tiktokcdn-eu.com, p16-sign.tiktokcdn-us.com,
+    # p77-sign-va.tiktokcdn.com, ...). Missing here, every TikTok avatar
+    # was fetched and stored correctly by discovery and then refused by
+    # this proxy with 400 "Host not allowed" -- so TikTok cards were the
+    # only ones in the app that never showed a profile picture.
+    "tiktokcdn.com", "tiktokcdn-eu.com", "tiktokcdn-us.com", "tiktokv.com", "tiktok.com",
 )
 
 
@@ -267,16 +274,34 @@ async def export_xlsx(body: ExportXlsxRequest):
     if not body.rows:
         raise HTTPException(status_code=400, detail="no rows to export")
 
+    import re
+
     # same formula-injection concern as the CSV export (CWE-1236): Excel
     # auto-detects a formula from a cell's leading character regardless of
     # how the file was produced, so a scraped value like `=cmd|'/c calc'!A1`
     # (an impersonator's own display name/bio) is just as dangerous written
     # through openpyxl as it is in a hand-rolled CSV. Same mitigation: a
     # leading `'` neutralizes it without changing the visible text.
+    # Numeric values and numeric strings (like followers, risk score) are
+    # preserved as real int/float so Excel doesn't show "number stored as text" green marks.
     def _safe(v: object) -> object:
-        if isinstance(v, (int, float, bool)) or v is None:
+        if v is None:
+            return ""
+        if isinstance(v, (int, float, bool)):
             return v
-        s = str(v)
+        s = str(v).strip()
+        if not s:
+            return ""
+        if s == "0" or (s.lstrip("-").isdigit() and not (len(s) > 1 and s.startswith("0"))):
+            try:
+                return int(s)
+            except ValueError:
+                pass
+        elif re.match(r"^-?\d+\.\d+$", s):
+            try:
+                return float(s)
+            except ValueError:
+                pass
         return f"'{s}" if s[:1] in ("=", "+", "-", "@") else s
 
     wb = Workbook()

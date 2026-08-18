@@ -29,7 +29,7 @@ export const INCIDENT_EXPORT_COLUMNS = [
 ] as const;
 
 export type IncidentExportColumn = (typeof INCIDENT_EXPORT_COLUMNS)[number];
-export type IncidentExportRow = Record<IncidentExportColumn, string>;
+export type IncidentExportRow = Record<IncidentExportColumn, string | number>;
 
 // "2026-07-16" -> "16-07-2026". Passes through unrecognised/empty input
 // rather than guessing, a blank date must stay blank, not become "NaN".
@@ -51,7 +51,7 @@ export function toIncidentExportRow(r: Profile): IncidentExportRow | null {
     AssetType: inc.assetType,
     AssetName: inc.assetName,
     Source: inc.source,
-    RiskScore: inc.riskRating,
+    RiskScore: inc.riskRating != null && Number.isFinite(Number(inc.riskRating)) ? Number(inc.riskRating) : (inc.riskRating ?? ""),
     "ThirdParty YES/NO": inc.thirdParty ? "YES" : "NO",
     "Date (DD-MM-YYYY) (Optional)": toDDMMYYYY(inc.date),
     Title: inc.title,
@@ -60,7 +60,7 @@ export function toIncidentExportRow(r: Profile): IncidentExportRow | null {
     "Name (Yes/No)": yesNo(s.isSimilarName),
     "Logo (Yes/No)": yesNo(s.isSimilarLogo),
     Location: s.location ?? "",
-    "Number of Followers": s.numberOfFollowers != null ? String(s.numberOfFollowers) : "",
+    "Number of Followers": s.numberOfFollowers != null && Number.isFinite(Number(s.numberOfFollowers)) ? Number(s.numberOfFollowers) : "",
     "Last Post (DD-MM-YYYY) (Optional)": toDDMMYYYY(s.lastPostDate),
   };
 }

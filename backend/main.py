@@ -25,6 +25,7 @@ from backend.api.discovery_routes import router as discovery_router
 from backend.api.health_routes import router as health_router
 from backend.api.job_routes import router as jobs_router
 from backend.api.profile_routes import router as profiles_router
+from backend.api.incident_routes import router as incidents_router
 from backend.api.published_incident_routes import router as published_incidents_router
 from backend.api.scheduler_routes import router as scheduler_router
 from backend.api.session_routes import router as sessions_router
@@ -78,7 +79,7 @@ async def lifespan(app: FastAPI):
     round_robin.stop()
     scheduler.stop()
     sessions_engine.stop_monitor()
-    await job_manager.cancel_all()
+    job_manager.cancel_all()
     await mongo_close()
 
 
@@ -116,6 +117,7 @@ app.include_router(analysis_router)
 app.include_router(profiles_router)
 app.include_router(sessions_router)
 app.include_router(jobs_router)
+app.include_router(incidents_router)
 app.include_router(published_incidents_router)
 app.include_router(scheduler_router)
 app.include_router(settings_router)

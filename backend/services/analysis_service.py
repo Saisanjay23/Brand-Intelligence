@@ -105,8 +105,14 @@ async def run_analysis(job: Job) -> None:
         ))]
     else:
         from backend.platforms import registry
+        # The Run hub's multi-select (see discovery_controller
+        # ::_resolve_platforms). Absent means every ready platform, which
+        # is the long-standing "All Platforms" behaviour.
+        wanted = [str(x) for x in (p.get("platforms") or []) if str(x).strip()]
         targets = []
         for platform_id, plat in registry.PLATFORMS.items():
+            if wanted and platform_id not in wanted:
+                continue
             if not plat.enabled or await registry.session_state(plat) != "ready":
                 continue
             urls = await profiles_db.urls_for(
@@ -221,21 +227,45 @@ async def _analyse_platform(
     )
 
     while remaining:
-        try:
-            plat, session_item = await sessions_engine.session_for_job(platform_id)
-        except Exception as e:
-            log.warning(f"[{platform_id}] stopping analysis early: could not acquire session: {e}")
-            stop_reason = "no healthy session remaining"
-            await mgr.emit(job, "progress", f"[{platform_id}] stopped early: {stop_reason}")
-            await incidents_engine.record(
-                platform_id, "analysis", job.client_id, job.id, "PoolExhausted",
-                f"Analysis stopped after {attempted}/{len(urls)} profiles: {e}",
-            )
-            break
+        # A platform whose fields do not need a login analyses anonymously
+        # when the pool has nothing healthy, instead of stopping the run.
+        # Same trade discovery makes: one field (the exact last-post date,
+        # which needs the profile's video grid) rather than the whole
+        # platform. See Platform.anonymous_context_path.
+        #
+        # `session_item` stays {} on this path, which the rest of the loop
+        # already tolerates -- mark_session_ok/mark_session_failed both
+        # no-op on an empty session id, and check_session() returns True
+        # for an anonymous scraper because there is nothing to validate
+        # and nothing to quarantine.
+        from backend.platforms import registry as _registry
+
+        anon_plat = _registry.get(platform_id)
+        run_anonymously = (
+            anon_plat.can_run_anonymously
+            and await _registry.session_state(anon_plat) != "ready"
+        )
+        if run_anonymously:
+            log.info(f"[{platform_id}] no healthy session -- analysing anonymously")
+            plat, session_item = anon_plat, {}
+        else:
+            try:
+                plat, session_item = await sessions_engine.session_for_job(platform_id)
+            except Exception as e:
+                log.warning(
+                    f"[{platform_id}] stopping analysis early: could not acquire session: {e}")
+                stop_reason = "no healthy session remaining"
+                await mgr.emit(job, "progress", f"[{platform_id}] stopped early: {stop_reason}")
+                await incidents_engine.record(
+                    platform_id, "analysis", job.client_id, job.id, "PoolExhausted",
+                    f"Analysis stopped after {attempted}/{len(urls)} profiles: {e}",
+                )
+                break
 
         scraper = plat.scraper()(
             options, session_item.get("cookies", []),
             session_id=session_item.get("id", ""), proxy=session_item.get("proxy"),
+            **({"anonymous": True} if run_anonymously else {}),
         )
         await scraper.start()
         try:
@@ -431,7 +461,14 @@ async def _analyse_platform(
 # engine's actual `row.profile_name = ` / `row.followers = ` assignment
 # site, and tests_unit/test_field_canary.py asserts every one still
 # resolves, so a rename fails a test instead of shipping a dead pointer.
-_FIELD_CANARIES: dict[str, tuple[tuple[str, str, tuple[str, ...]], ...]] = {
+# Fields where 0 is a real, extracted value and only None means "never
+# read" -- as opposed to text fields, where an empty string is the blank.
+_NUMERIC_FIELDS = frozenset({"followers", "friends"})
+
+# Each entry is (field, label, targets). `field` may be a tuple of
+# alternatives, meaning the platform publishes ONE of them per profile and
+# the canary should only fire when none of them came back.
+_FIELD_CANARIES: dict[str, tuple[tuple[object, str, tuple[str, ...]], ...]] = {
     "twitter": (
         ("profile_name", "display name",
          ("backend.platforms.twitter.analysis_engine:Scraper.fill",)),
@@ -449,7 +486,13 @@ _FIELD_CANARIES: dict[str, tuple[tuple[str, str, tuple[str, ...]], ...]] = {
     "facebook": (
         ("profile_name", "display name",
          ("backend.platforms.facebook.analysis_engine:read_name",)),
-        ("followers", "follower count",
+        # Followers OR friends: a Page publishes one, a personal profile
+        # the other, and a creator profile both. Checking `followers`
+        # alone fired a critical "follower count stopped extracting"
+        # alert on 14 of 18 profiles that had all published a friend
+        # count perfectly well -- an alert that is wrong most of the time
+        # trains everyone to ignore the ones that are right.
+        (("followers", "friends"), "follower/friend count",
          ("backend.platforms.facebook.analysis_engine:read_counts",)),
     ),
     "youtube": (
@@ -491,8 +534,20 @@ def _field_blank(row: Row, field: str) -> bool:
     fire this canary on every genuinely-empty profile. Mirrors the same
     distinction shared/extraction.py::_default_is_empty draws.
     """
-    val = getattr(row, field)
-    return val is None if field == "followers" else not str(val or "").strip()
+    # A field may be published under more than one name, in which case the
+    # extraction only failed if NONE of them came back. Facebook is the
+    # case that forced this: a Page publishes a follower count, a personal
+    # profile publishes a friend count instead (see
+    # facebook/analysis_engine.py::take_chip, which says exactly that), so
+    # judging Facebook on `followers` alone declared a batch of personal
+    # profiles broken while `friends` had been read from every one of them.
+    fields = (field,) if isinstance(field, str) else tuple(field)
+    return all(_one_field_blank(row, f) for f in fields)
+
+
+def _one_field_blank(row: Row, field: str) -> bool:
+    val = getattr(row, field, None)
+    return val is None if field in _NUMERIC_FIELDS else not str(val or "").strip()
 
 
 async def _check_field_extraction_health(platform_id: str, job: Job, rows: list[Row], mgr) -> None:

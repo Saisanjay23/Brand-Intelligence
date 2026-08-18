@@ -46,6 +46,14 @@ export function useJobPolling(onFinish?: () => void, onItem?: () => void) {
   const epochs = useRef<Record<string, number>>({});
   const mounted = useRef(true);
 
+  // True from the moment a Stop click is accepted until nothing of this
+  // kind is running any more. The abort is asynchronous on the backend
+  // (the worker process tree has to be killed) and the UI only learns it
+  // landed on the next 2s poll, so without this the button sat there
+  // looking untouched for a couple of seconds and every extra click fired
+  // another cancel that the backend rightly rejected with a 409.
+  const [cancelling, setCancelling] = useState(false);
+
   const stopAll = useCallback(() => {
     mounted.current = false;
     Object.values(timers.current).forEach(clearTimeout);
@@ -136,8 +144,33 @@ export function useJobPolling(onFinish?: () => void, onItem?: () => void) {
     return merged;
   }, [jobs]);
 
-  const cancelAll = () => {
-    activeJobs.forEach((j) => jobsApi.cancelJob(j.id).catch(() => {}));
+  // Clear the pending-abort state once the backend has actually torn the
+  // run down (or it finished on its own), so the next run gets a live
+  // Stop button rather than a permanently greyed-out one.
+  useEffect(() => {
+    if (!running) setCancelling(false);
+  }, [running]);
+
+  const cancelAll = async () => {
+    if (cancelling) return;
+    const targets = activeJobs;
+    if (!targets.length) return;
+    setCancelling(true);
+    const results = await Promise.allSettled(targets.map((j) => jobsApi.cancelJob(j.id)));
+    const rejected = results.filter(
+      (r): r is PromiseRejectedResult => r.status === "rejected",
+    );
+    // Every cancel failing is the one case worth surfacing: the job is
+    // still running and the operator needs to know the click did nothing.
+    // A partial failure is almost always a job that finished on its own
+    // between the click and the request (the backend answers 409 for
+    // that), which is the outcome the operator wanted anyway.
+    if (rejected.length === results.length) {
+      setCancelling(false);
+      toast.error(`Could not stop: ${rejected[0].reason?.message ?? "request failed"}`);
+      return;
+    }
+    toast("Stopping - killing the worker, this can take a few seconds", { icon: "⏹" });
   };
 
   return {
@@ -149,5 +182,6 @@ export function useJobPolling(onFinish?: () => void, onItem?: () => void) {
     message,
     platformProgress,
     cancelAll,
+    cancelling,
   };
 }

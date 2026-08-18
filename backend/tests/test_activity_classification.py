@@ -1,10 +1,20 @@
 """Row.active_yes: the industry-standard 6-month dormant-account threshold.
 
-The critical property, and the one an incorrect implementation gets wrong
-most often: an account with NO discoverable last-post date must classify as
-UNKNOWN ("") -- never silently "No" (a false claim the account is dormant)
-and never silently "Yes" (a false claim it's live). Only a genuine zero-post
-account is a real "No".
+BINARY BY PRODUCT DECISION. `active_yes` returns "Yes" or "No" and never a
+third, empty state. "Yes" means a post inside ACTIVE_WINDOW_DAYS; anything
+not shown to be inside that window is "No".
+
+This reverses an earlier rule that returned "" whenever no date could be
+scraped, on the reasoning that "we could not find out" is not the same
+claim as "confirmed dormant". That reasoning still holds -- an account we
+merely failed to date now reads as inactive -- and the cost is accepted
+deliberately, because a blank cell in the Active column and in the client
+export is not something an analyst can act on.
+
+The distinction did not disappear, it moved: `last_post_date` is empty
+exactly when the date is unknown. So "Active=No with no Last Post" is
+still recognisably different from "Active=No with a date outside the
+window", for anyone who needs to tell them apart.
 """
 
 from __future__ import annotations
@@ -42,22 +52,42 @@ class TestSixMonthThreshold:
         assert _row_with_last_post(365).active_yes == "No"
 
 
-class TestUnknownIsNeverCollapsedToAFalsePositive:
-    def test_no_date_and_posts_status_unknown_is_UNKNOWN_not_inactive(self):
-        # extraction simply never found a date -- this must not be read as
-        # "confirmed dormant"
+class TestThereIsNoThirdState:
+    """Every path returns Yes or No -- nothing renders blank."""
+
+    def test_no_date_and_posts_status_unknown_reads_inactive(self):
+        # extraction never found a date. Previously "" (unknown); now "No",
+        # with last_post_date left empty as the honest marker.
         row = Row(url="u", target="t", last_post_iso="", posts_seen="")
-        assert row.active_yes == ""
+        assert row.active_yes == "No"
 
     def test_no_date_but_confirmed_zero_posts_is_a_real_no(self):
-        # this one IS a genuine, confirmed reading -- the account really has
-        # never posted, which is different from "we couldn't find out"
+        # the one case that was always a confident "No": the account has
+        # genuinely never posted
         row = Row(url="u", target="t", last_post_iso="", posts_seen="no")
         assert row.active_yes == "No"
 
-    def test_unparseable_date_is_unknown_not_a_guess(self):
+    def test_unparseable_date_reads_inactive(self):
         row = Row(url="u", target="t", last_post_iso="not-a-date")
-        assert row.active_yes == ""
+        assert row.active_yes == "No"
+
+    def test_a_dated_account_still_drives_the_answer(self):
+        """The collapse must not swallow the real signal: a recent date is
+        still "Yes", so this is a change to the UNKNOWN case only."""
+        assert _row_with_last_post(1).active_yes == "Yes"
+        assert _row_with_last_post(ACTIVE_WINDOW_DAYS + 1).active_yes == "No"
+
+    def test_active_yes_is_never_empty(self):
+        for row in (
+            Row(url="u", target="t"),
+            Row(url="u", target="t", last_post_iso="", posts_seen=""),
+            Row(url="u", target="t", last_post_iso="", posts_seen="no"),
+            Row(url="u", target="t", last_post_iso="", posts_seen="yes"),
+            Row(url="u", target="t", last_post_iso="garbage"),
+            _row_with_last_post(0),
+            _row_with_last_post(9999),
+        ):
+            assert row.active_yes in ("Yes", "No"), row.active_yes
 
 
 class TestFeedsIntoScoringCorrectly:

@@ -100,7 +100,19 @@ class TwitterSession(Session):
 
 SEARCH_QUERY = "SearchTimeline"
 USER_QUERIES = ("UserByScreenName", "UserByRestId")
-TWEETS_QUERY = "UserTweets"
+# X renames these. Confirmed live 2026-08-18: a profile visit now fires
+# `UserOriginalsTimeline` (199KB, 37 tweet nodes) and NOT `UserTweets`, so
+# matching the old name alone captured nothing and every last-post read
+# fell through to the DOM tier -- which is what raised a critical
+# "last-post extraction is broken" incident across 17 of 33 profiles.
+#
+# Both names are kept: the old one still appears on some account types and
+# costs nothing to keep matching. Add to this tuple rather than replacing
+# it when the name moves again.
+TWEETS_QUERIES = ("UserTweets", "UserOriginalsTimeline")
+
+# Back-compat alias; prefer TWEETS_QUERIES.
+TWEETS_QUERY = TWEETS_QUERIES[0]
 
 # the default egg avatar; anything else is a real upload
 RE_DEFAULT_PIC = re.compile(

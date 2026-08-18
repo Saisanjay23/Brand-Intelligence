@@ -34,9 +34,18 @@ async def start_analysis(body: AnalysisIn) -> dict:
     if not ok:
         raise ValidationError(reason)
 
-    platform = _validated_platform(body.platform) if body.platform else None
+    # Shared with discovery so both buttons in the Run hub scope a run the
+    # same way; see discovery_controller._resolve_platforms for why a
+    # multi-platform job reports platform=None.
+    from backend.controllers.discovery_controller import _resolve_platforms
+
+    platform, scoped = _resolve_platforms(body.platforms, body.platform)
+
+    params: dict = {"force": body.force}
+    if scoped:
+        params["platforms"] = scoped
 
     job = job_manager.create(
-        ANALYSIS, body.client_id, {"force": body.force}, platform=platform, callback_url=body.callback_url,
+        ANALYSIS, body.client_id, params, platform=platform, callback_url=body.callback_url,
     )
     return {"job_id": job.id, "status": job.status}

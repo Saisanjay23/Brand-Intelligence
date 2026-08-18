@@ -52,28 +52,38 @@ def _asset_type(platform: str) -> str:
 
 
 def _is_recent(iso: Optional[str], *, days: int) -> Optional[bool]:
-    """True/False when there is a date to judge, None when there isn't.
+    """True/False -- never None, by explicit product decision.
 
-    The None case is load-bearing. Telegram exposes no last-post date for a
-    user, Instagram's public profile payload often carries none, and any
-    profile whose analysis was cut short has none either, and "we never
-    got a date" is not the same claim as "this account is dormant". Folding
-    the two together made every such incident assert `isActive: false`
-    about an account nobody had actually checked, and depressed its
-    riskRating on top of that.
+    "Active" means a post inside the window. No date, or an unreadable
+    one, reads as NOT active.
+
+    This used to return None to keep "we never got a date" distinct from
+    "confirmed dormant" -- Telegram exposes no last-post date at all,
+    Instagram's public payload often carries none, and a cut-short
+    analysis has none either. That distinction was real, and it is
+    deliberately given up here: a third state left "? unknown" in the
+    analyst's Active column and a null in the published incident, neither
+    of which anyone could act on.
+
+    It costs nothing in scoring -- the caller already passed
+    `bool(active)`, so None and False have always scored identically. What
+    changes is only what is displayed and published. The distinction still
+    survives in `lastPostDate`, which is empty exactly when no date was
+    found, so "inactive with no date" stays distinguishable from
+    "inactive with an old date".
     """
     if not iso:
-        return None
+        return False
     try:
         dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
     except (ValueError, TypeError):
-        return None
+        return False
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return (datetime.now(timezone.utc) - dt).days < days
 
 
-def _is_active(doc: dict) -> Optional[bool]:
+def _is_active(doc: dict) -> bool:
     return _is_recent(doc.get("last_post_date"), days=ACTIVE_WINDOW_DAYS)
 
 
@@ -177,6 +187,11 @@ def _apply_overrides(incident: dict, overrides: dict[str, Any]) -> dict:
     for path, value in overrides.items():
         if path in ("socialProfileInfo.isSimilarName", "socialProfileInfo.isSimilarLogo"):
             continue  # ignore legacy cosmetic overrides; keep table match toggles authoritative
+        if path == "socialProfileInfo.isActive":
+            # This runs AFTER the field was resolved, so a null stored under
+            # the old tri-state rule would otherwise put the third state
+            # straight back on the wire. Activity is binary now.
+            value = bool(value)
         if "." in path:
             parent, child = path.split(".", 1)
             if isinstance(out.get(parent), dict):
@@ -214,7 +229,9 @@ def build_incident_doc(doc: dict, client: dict) -> dict:
     followers = overrides.get("socialProfileInfo.numberOfFollowers", doc.get("followers"))
     location = overrides.get("socialProfileInfo.location", doc.get("location") or None)
     last_post = overrides.get("socialProfileInfo.lastPostDate", doc.get("last_post_date") or None)
-    active = overrides.get("socialProfileInfo.isActive", _is_active(doc))
+    # `bool()` so an override stored under the old tri-state rule (null)
+    # cannot reintroduce a third state into a freshly published incident.
+    active = bool(overrides.get("socialProfileInfo.isActive", _is_active(doc)))
 
     risk = compute_incident_risk_score(
         has_logo=logo_match, has_name_match=name_match, followers=followers,

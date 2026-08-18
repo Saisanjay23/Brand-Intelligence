@@ -8,6 +8,29 @@ import { profilesApi } from "../api/profilesApi";
 import type { Coverage, JobEvent, PlatformHealth, PlatformProgress, Profile, Status } from "../api/types";
 import { PlatformIcon } from "./PlatformIcon";
 import {
+  TargetIcon,
+  UserIcon,
+  TagIcon,
+  SaveIcon,
+  SparklesIcon,
+  SearchIcon,
+  PlusIcon,
+  TrashIcon,
+  RefreshIcon,
+  LayersIcon,
+  AlertTriangleIcon,
+  DiscoverIcon,
+  AnalyseIcon,
+  CloneIcon,
+  GlobeIcon,
+  LockIcon,
+  UnlockIcon,
+  KeyIcon,
+  ZapIcon,
+  StopIcon,
+  VerifiedBadgeIcon,
+} from "./AppIcons";
+import {
   ageLabel,
   analysisWasBlocked,
   computeIncidentRiskScorePreview,
@@ -36,6 +59,8 @@ interface Props {
   analysisProgress: Record<string, PlatformProgress>;
   onStopDiscovery?: () => void;
   onStopAnalysis?: () => void;
+  stoppingDiscovery?: boolean;
+  stoppingAnalysis?: boolean;
   onError?: (msg: string) => void;
 }
 
@@ -58,38 +83,45 @@ function formatEta(seconds: number | null): string {
   return `~${hrs}h ${mins % 60}m left`;
 }
 
-const PLATFORM_STATUS_LOOK: Record<PlatformProgress["status"], { icon: string; color: string }> = {
-  pending: { icon: "⏳", color: "var(--text-dim)" },
-  running: { icon: "⚙️", color: "var(--cyan)" },
-  done: { icon: "✅", color: "var(--success)" },
-  // covered only part of what was asked: a result cap fired, the session
-  // pool ran dry mid-run, or a sweep stalled. The job's `message` says
-  // which. This used to be reported as "done" with processed forced to the
-  // full total, so a run that visited 12 of 200 profiles showed 200/200 ✅
-  // and nothing anywhere contradicted it.
-  partial: { icon: "🟡", color: "var(--warn-yellow)" },
-  failed: { icon: "⚠️", color: "var(--danger)" },
-  // never attempted at all (session wasn't ready when the sweep started),
-  // distinct from "failed" so the fix is obvious: check Sessions, not retry
-  // and hope. Previously a skipped platform had no progress entry
-  // whatsoever, so it just silently vanished from the sweep with nothing
-  // in the UI explaining why.
-  skipped: { icon: "🚫", color: "var(--warn-yellow)" },
+function StatusIcon({ status }: { status: PlatformProgress["status"] }) {
+  switch (status) {
+    case "running":
+      return <span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--cyan)", display: "inline-block", boxShadow: "0 0 6px var(--cyan)" }} />;
+    case "done":
+      return <span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--success)", display: "inline-block" }} />;
+    case "partial":
+      return <span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--warn-yellow)", display: "inline-block" }} />;
+    case "failed":
+      return <AlertTriangleIcon size={10} color="var(--danger)" />;
+    case "skipped":
+      return <span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--text-dim)", display: "inline-block" }} />;
+    default:
+      return <span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--text-dim)", display: "inline-block" }} />;
+  }
+}
+
+const PLATFORM_STATUS_COLOR: Record<PlatformProgress["status"], string> = {
+  pending: "var(--text-dim)",
+  running: "var(--cyan)",
+  done: "var(--success)",
+  partial: "var(--warn-yellow)",
+  failed: "var(--danger)",
+  skipped: "var(--warn-yellow)",
 };
 
-function PlatformProgressRow({ label, progress }: { label: string; progress: PlatformProgress }) {
-  const look = PLATFORM_STATUS_LOOK[progress.status];
+function PlatformProgressRow({ label, icon, progress }: { label: string; icon: React.ReactNode; progress: PlatformProgress }) {
+  const color = PLATFORM_STATUS_COLOR[progress.status] || "var(--text-dim)";
   const pct = progress.total > 0 ? Math.min(100, Math.round((progress.processed / progress.total) * 100)) : 0;
   return (
     <div style={{ marginTop: "4px" }}>
       <div
         style={{
           display: "flex", alignItems: "center", gap: "5px",
-          fontSize: "10px", fontFamily: "var(--font-mono)", color: look.color,
+          fontSize: "10px", fontFamily: "var(--font-mono)", color,
         }}
       >
-        <span>{look.icon}</span>
-        <span>{label}</span>
+        <StatusIcon status={progress.status} />
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>{icon} {label}</span>
         <span style={{ flex: 1 }} />
         <span>
           {progress.processed}/{progress.total || "?"}
@@ -310,7 +342,7 @@ function LiveInspectionPane({
     <div className="live-inspection-pane">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
         <div style={{ fontSize: "11px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--cyan)" }}>
-          🖥️ Live Inspection
+          <LayersIcon size={12} color="var(--cyan)" /> Live Inspection
         </div>
         <button
           onClick={onClose}
@@ -326,8 +358,9 @@ function LiveInspectionPane({
           <ProfileAvatar r={profile} size={40} />
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--text-main)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {name}
+          <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--text-main)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: "5px" }}>
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{name}</span>
+            {profile.verified && <VerifiedBadgeIcon size={14} />}
           </div>
           <div style={{ fontSize: "11px", color: "var(--text-dim)", display: "flex", alignItems: "center", gap: "6px", marginTop: "2px" }}>
             <span style={{ textTransform: "capitalize" }}>{profile.platform}</span>
@@ -354,7 +387,7 @@ function LiveInspectionPane({
           }}
           title="Open in new browser tab"
         >
-          🔗 Open ↗
+          <GlobeIcon size={11} color="var(--cyan)" /> Open ↗
         </a>
       </div>
 
@@ -989,9 +1022,12 @@ function ProfileCard({
       </div>
 
       <div className="profile-card-body">
-        <a href={linkUrl} target="_blank" rel="noreferrer" className="profile-display-name" style={{ color: "var(--text-main)" }} title={name}>
-          {name}
-        </a>
+        <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+          <a href={linkUrl} target="_blank" rel="noreferrer" className="profile-display-name" style={{ color: "var(--text-main)" }} title={name}>
+            {name}
+          </a>
+          {r.verified && <VerifiedBadgeIcon size={15} />}
+        </div>
         {isAnalysisView && inc && <div className="profile-handle">{inc.category} · {inc.subCategory}</div>}
 
         {isDiscovery && !!r.keywords?.length && (
@@ -1067,6 +1103,8 @@ export function ResultsGrid({
   analysisProgress,
   onStopDiscovery,
   onStopAnalysis,
+  stoppingDiscovery = false,
+  stoppingAnalysis = false,
   onError,
 }: Props) {
   const [platform, setPlatform] = useState(platforms[0]?.platform ?? "");
@@ -2524,7 +2562,9 @@ export function ResultsGrid({
                 onClick={() => setPhase(ph)}
               >
                 <div className="rail-card-head">
-                  <span style={{ fontSize: "16px" }}>{ph === "discovery" ? "🔍" : "📊"}</span>
+                  <span style={{ display: "flex", alignItems: "center" }}>
+                    {ph === "discovery" ? <DiscoverIcon size={16} color="var(--cyan)" /> : <AnalyseIcon size={16} color="#7c5cff" />}
+                  </span>
                   <span style={{ fontSize: "12px", fontWeight: 500, color: "var(--text-primary)" }}>
                     {ph === "discovery" ? "Discovery" : "Analysis"}
                   </span>
@@ -2561,10 +2601,10 @@ export function ResultsGrid({
                     </span>
                   </div>
                   {(discoveryRunning || phase === "discovery") && discoveryProgress[p.platform] && (
-                    <PlatformProgressRow label="🔍 Discovery" progress={discoveryProgress[p.platform]} />
+                    <PlatformProgressRow label="Discovery" icon={<DiscoverIcon size={11} color="var(--cyan)" />} progress={discoveryProgress[p.platform]} />
                   )}
                   {analysisRunning && analysisProgress[p.platform] && (
-                    <PlatformProgressRow label="📊 Analysis" progress={analysisProgress[p.platform]} />
+                    <PlatformProgressRow label="Analysis" icon={<AnalyseIcon size={11} color="#7c5cff" />} progress={analysisProgress[p.platform]} />
                   )}
                 </div>
               );
@@ -2581,7 +2621,7 @@ export function ResultsGrid({
               }}
             >
               <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
-                <span style={{ fontSize: "16px" }}>⚡</span>
+                <ZapIcon size={16} color="var(--cyan)" />
                 <span style={{ fontWeight: 700, fontSize: "13px", color: "var(--text-main)" }}>
                   Both Jobs Running — Live Split by Platform
                 </span>
@@ -2605,11 +2645,23 @@ export function ResultsGrid({
                         {p.name}
                       </span>
                       <span style={{ flex: 1 }} />
-                      <span style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "11px", color: d ? PLATFORM_STATUS_LOOK[d.status].color : "var(--text-dim)" }}>
-                        🔍 {d ? `${PLATFORM_STATUS_LOOK[d.status].icon} ${d.processed}/${d.total || "?"}${d.status === "running" && d.eta_seconds !== null ? ` · ${formatEta(d.eta_seconds)}` : ""}` : "idle"}
+                      <span style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "11px", color: d ? PLATFORM_STATUS_COLOR[d.status] : "var(--text-dim)" }}>
+                        <DiscoverIcon size={12} color="var(--cyan)" />
+                        {d ? (
+                          <>
+                            <StatusIcon status={d.status} /> {d.processed}/{d.total || "?"}
+                            {d.status === "running" && d.eta_seconds !== null ? ` · ${formatEta(d.eta_seconds)}` : ""}
+                          </>
+                        ) : "idle"}
                       </span>
-                      <span style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "11px", color: a ? PLATFORM_STATUS_LOOK[a.status].color : "var(--text-dim)" }}>
-                        📊 {a ? `${PLATFORM_STATUS_LOOK[a.status].icon} ${a.processed}/${a.total || "?"}${a.status === "running" && a.eta_seconds !== null ? ` · ${formatEta(a.eta_seconds)}` : ""}` : "idle"}
+                      <span style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "11px", color: a ? PLATFORM_STATUS_COLOR[a.status] : "var(--text-dim)" }}>
+                        <AnalyseIcon size={12} color="#7c5cff" />
+                        {a ? (
+                          <>
+                            <StatusIcon status={a.status} /> {a.processed}/{a.total || "?"}
+                            {a.status === "running" && a.eta_seconds !== null ? ` · ${formatEta(a.eta_seconds)}` : ""}
+                          </>
+                        ) : "idle"}
                       </span>
                     </div>
                   );
@@ -2622,7 +2674,7 @@ export function ResultsGrid({
             <div className="dashboard-card-box" style={{ marginTop: "16px", borderLeft: "4px solid var(--cyan)", background: "rgba(0, 229, 255, 0.04)" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px", flexWrap: "wrap", gap: "8px" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                  <span style={{ fontSize: "18px" }}>🔍</span>
+                  <DiscoverIcon size={18} color="var(--cyan)" />
                   <span style={{ fontWeight: 700, color: "var(--text-main)", fontSize: "14px" }}>
                     {discoveryRunning ? "Live Discovery Sweep Progress" : "Recent Discovery Status"}
                   </span>
@@ -2639,6 +2691,7 @@ export function ResultsGrid({
                     <button
                       type="button"
                       onClick={onStopDiscovery}
+                      disabled={stoppingDiscovery}
                       style={{
                         background: "linear-gradient(135deg, rgba(239,68,68,0.25), rgba(220,38,38,0.35))",
                         color: "#ff6b6b",
@@ -2647,7 +2700,12 @@ export function ResultsGrid({
                         borderRadius: "12px",
                         fontSize: "11px",
                         fontWeight: 700,
-                        cursor: "pointer",
+                        // Killing the worker's process tree is not instant and
+                        // the UI only sees it land on the next 2s poll, so say
+                        // so rather than leaving a live-looking button that a
+                        // frustrated operator clicks five more times.
+                        cursor: stoppingDiscovery ? "progress" : "pointer",
+                        opacity: stoppingDiscovery ? 0.6 : 1,
                         display: "inline-flex",
                         alignItems: "center",
                         gap: "5px",
@@ -2655,7 +2713,8 @@ export function ResultsGrid({
                       }}
                       title="Abort active discovery sweep"
                     >
-                      <span>⏹</span> Stop Sweep
+                      <StopIcon size={11} color="#ff6b6b" />{" "}
+                      {stoppingDiscovery ? "Stopping..." : "Stop Sweep"}
                     </button>
                   )}
                 </div>
@@ -2678,8 +2737,8 @@ export function ResultsGrid({
                   <div key={plat} style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", background: "var(--bg-surface)", padding: "5px 12px", borderRadius: "16px", border: "1px solid var(--border-color)" }}>
                     <PlatformIcon platform={plat} size={15} />
                     <span style={{ fontWeight: 600, textTransform: "capitalize", color: "var(--text-main)" }}>{plat}:</span>
-                    <span style={{ color: PLATFORM_STATUS_LOOK[prog.status]?.color || "var(--text-main)", fontWeight: 700 }}>
-                      {PLATFORM_STATUS_LOOK[prog.status]?.icon} {prog.processed}/{prog.total}
+                    <span style={{ color: PLATFORM_STATUS_COLOR[prog.status] || "var(--text-main)", fontWeight: 700, display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                      <StatusIcon status={prog.status} /> {prog.processed}/{prog.total}
                     </span>
                     {prog.eta_seconds !== null && prog.status === "running" && (
                       <span style={{ fontSize: "11px", color: "var(--text-dim)", marginLeft: "4px" }}>
@@ -2707,10 +2766,13 @@ export function ResultsGrid({
                           fontSize: "10px",
                           cursor: "pointer",
                           fontWeight: 600,
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "3px",
                         }}
                         title={`Retry discovery for ${plat}`}
                       >
-                        🔄 Retry
+                        <RefreshIcon size={10} /> Retry
                       </button>
                     )}
                   </div>
@@ -2723,7 +2785,7 @@ export function ResultsGrid({
             <div className="dashboard-card-box" style={{ marginTop: "16px", borderLeft: "4px solid var(--purple)", background: "rgba(136, 56, 221, 0.05)" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px", flexWrap: "wrap", gap: "8px" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                  <span style={{ fontSize: "18px" }}>📊</span>
+                  <AnalyseIcon size={18} color="#7c5cff" />
                   <span style={{ fontWeight: 700, color: "var(--text-main)", fontSize: "14px" }}>
                     {analysisRunning ? "Live Analysis Progress" : "Recent Analysis Status"}
                   </span>
@@ -2740,6 +2802,7 @@ export function ResultsGrid({
                     <button
                       type="button"
                       onClick={onStopAnalysis}
+                      disabled={stoppingAnalysis}
                       style={{
                         background: "linear-gradient(135deg, rgba(239,68,68,0.25), rgba(220,38,38,0.35))",
                         color: "#ff6b6b",
@@ -2748,7 +2811,8 @@ export function ResultsGrid({
                         borderRadius: "12px",
                         fontSize: "11px",
                         fontWeight: 700,
-                        cursor: "pointer",
+                        cursor: stoppingAnalysis ? "progress" : "pointer",
+                        opacity: stoppingAnalysis ? 0.6 : 1,
                         display: "inline-flex",
                         alignItems: "center",
                         gap: "5px",
@@ -2756,7 +2820,8 @@ export function ResultsGrid({
                       }}
                       title="Abort active analysis run"
                     >
-                      <span>⏹</span> Stop Analysis
+                      <StopIcon size={11} color="#ff6b6b" />{" "}
+                      {stoppingAnalysis ? "Stopping..." : "Stop Analysis"}
                     </button>
                   )}
                 </div>
@@ -2780,8 +2845,8 @@ export function ResultsGrid({
                   <div key={plat} style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", background: "var(--bg-surface)", padding: "5px 12px", borderRadius: "16px", border: "1px solid var(--border-color)" }}>
                     <PlatformIcon platform={plat} size={15} />
                     <span style={{ fontWeight: 600, textTransform: "capitalize", color: "var(--text-main)" }}>{plat}:</span>
-                    <span style={{ color: PLATFORM_STATUS_LOOK[prog.status]?.color || "var(--text-main)", fontWeight: 700 }}>
-                      {PLATFORM_STATUS_LOOK[prog.status]?.icon} {prog.processed}/{prog.total}
+                    <span style={{ color: PLATFORM_STATUS_COLOR[prog.status] || "var(--text-main)", fontWeight: 700, display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                      <StatusIcon status={prog.status} /> {prog.processed}/{prog.total}
                     </span>
                     {prog.eta_seconds !== null && prog.status === "running" && (
                       <span style={{ fontSize: "11px", color: "var(--text-dim)", marginLeft: "4px" }}>
@@ -2809,10 +2874,13 @@ export function ResultsGrid({
                           fontSize: "10px",
                           cursor: "pointer",
                           fontWeight: 600,
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "3px",
                         }}
                         title={`Retry analysis for ${plat}`}
                       >
-                        🔄 Retry
+                        <RefreshIcon size={10} /> Retry
                       </button>
                     )}
                   </div>
@@ -2940,7 +3008,7 @@ export function ResultsGrid({
                 disabled={bulkBusy}
                 onClick={() => bulkDecide("approved")}
               >
-                {bulkBusy ? "…" : `✅ Validate ${selectedIds.size}`}
+                {bulkBusy ? "…" : `Validate ${selectedIds.size}`}
               </button>
               <button
                 className="btn-cyber-primary"
@@ -2948,16 +3016,17 @@ export function ResultsGrid({
                 disabled={bulkBusy}
                 onClick={() => bulkDecide("rejected")}
               >
-                {bulkBusy ? "…" : `✕ Reject ${selectedIds.size}`}
+                {bulkBusy ? "…" : `Reject ${selectedIds.size}`}
               </button>
               {isFacebook && (
                 <button
-                  style={{ width: "auto", padding: "6px 12px", fontSize: "11px", marginTop: 0, background: "rgba(0,229,255,0.1)", color: "var(--cyan)", border: "1px solid var(--cyan)", borderRadius: "8px", cursor: resweepBusy ? "wait" : "pointer" }}
+                  style={{ width: "auto", padding: "6px 12px", fontSize: "11px", marginTop: 0, background: "rgba(0,229,255,0.1)", color: "var(--cyan)", border: "1px solid var(--cyan)", borderRadius: "8px", cursor: resweepBusy ? "wait" : "pointer", display: "inline-flex", alignItems: "center", gap: "4px" }}
                   disabled={resweepBusy || bulkBusy}
                   onClick={() => resweepSelected()}
                   title="Re-visits just these profiles to fetch a real name/photo -- fixes a card stuck showing a bare numeric id, without a full keyword re-sweep"
                 >
-                  {resweepBusy ? "🔄 Re-resolving…" : `🔄 Re-sweep ${selectedIds.size}`}
+                  <RefreshIcon size={12} />
+                  <span>{resweepBusy ? "Re-resolving…" : `Re-sweep ${selectedIds.size}`}</span>
                 </button>
               )}
               <button
@@ -3025,15 +3094,6 @@ export function ResultsGrid({
 
           {/* Filter toolbar */}
           <div className="filter-toolbar" style={{ marginTop: "12px" }}>
-            {/* Same exact-match dropdown in both views now, this used to be
-                freetext in analysis view because the server-side filter
-                wasn't being sent there (see load()), so it only ever
-                filtered whatever page happened to already be loaded: typing
-                a real keyword could show "no results" simply because the
-                matches were on a different page. Scoping the query
-                server-side (like discovery always did) fixes that, and a
-                dropdown of the client's actual keywords is also just a
-                better match for "exact keyword" than freetext ever was. */}
             <select
               value={keywordFilter}
               onChange={(e) => setKeywordFilter(e.target.value)}
@@ -3045,7 +3105,7 @@ export function ResultsGrid({
                 .sort((a, b) => b[1] - a[1])
                 .map(([kw, n]) => (
                   <option key={kw} value={kw}>
-                    🔑 {kw} ({n})
+                    {kw} ({n})
                   </option>
                 ))}
             </select>
@@ -3056,8 +3116,8 @@ export function ResultsGrid({
               title="Filter to profiles matched via an Individual Name keyword vs a Domain keyword, per this client's configured keyword lists"
             >
               <option value="">Individual + Domain</option>
-              <option value="individual">👤 Individual Match Only</option>
-              <option value="domain">🏷️ Domain Match Only</option>
+              <option value="individual">Individual Match Only</option>
+              <option value="domain">Domain Match Only</option>
             </select>
             {!isAnalysisView && (
               <select
@@ -3067,9 +3127,9 @@ export function ResultsGrid({
                 title="How closely the scraped name matches the keyword that found it"
               >
                 <option value="">All Match Levels</option>
-                <option value="high">🎯 High Match</option>
-                <option value="medium">🎯 Medium Match</option>
-                <option value="low">🎯 Low Match</option>
+                <option value="high">High Match</option>
+                <option value="medium">Medium Match</option>
+                <option value="low">Low Match</option>
               </select>
             )}
             {isFacebookPlatform && (
@@ -3080,9 +3140,9 @@ export function ResultsGrid({
                 title="Facebook discovery distinguishes people, Pages, and Groups -- filter to just one"
               >
                 <option value="">People + Pages + Groups</option>
-                <option value="profile">👤 People Only</option>
-                <option value="page">📄 Pages Only</option>
-                <option value="group">👥 Groups Only</option>
+                <option value="profile">People Only</option>
+                <option value="page">Pages Only</option>
+                <option value="group">Groups Only</option>
               </select>
             )}
             {isAnalysisView && (
@@ -3099,19 +3159,16 @@ export function ResultsGrid({
                 </select>
               </>
             )}
-            <input
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="🔎 Search name / handle…"
-              className="input-filter"
-              style={{ flex: 1, minWidth: "160px" }}
-            />
-            {/* Card view is discovery-only, an analysis card is the full
-                incident-edit panel (~15 fields) permanently expanded, which
-                makes a card grid unwieldy compared to the table's one-row-
-                per-profile density. Analysis always renders as a table;
-                the toggle itself is hidden there since there's nothing to
-                toggle to. */}
+            <div style={{ position: "relative", flex: 1, minWidth: "160px", display: "flex", alignItems: "center" }}>
+              <SearchIcon size={13} color="var(--text-muted, #98a2b3)" style={{ position: "absolute", left: "10px", pointerEvents: "none" }} />
+              <input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search name / handle…"
+                className="input-filter"
+                style={{ width: "100%", paddingLeft: "30px", boxSizing: "border-box" }}
+              />
+            </div>
             {!isAnalysisView && (
               <div style={{ display: "flex", gap: "6px" }}>
                 <button
@@ -3124,9 +3181,14 @@ export function ResultsGrid({
                     borderRadius: "8px",
                     padding: "7px 10px",
                     cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "5px",
+                    fontSize: "12px",
                   }}
                 >
-                  📱 Cards
+                  <LayersIcon size={12} />
+                  <span>Cards</span>
                 </button>
                 <button
                   onClick={() => setViewMode("table")}
@@ -3138,9 +3200,14 @@ export function ResultsGrid({
                     borderRadius: "8px",
                     padding: "7px 10px",
                     cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "5px",
+                    fontSize: "12px",
                   }}
                 >
-                  📋 Table
+                  <CloneIcon size={12} />
+                  <span>Table</span>
                 </button>
               </div>
             )}
@@ -3163,9 +3230,10 @@ export function ResultsGrid({
                 transition: "all 0.2s ease",
               }}
             >
-              <span>🖥️</span> {splitViewOpen ? "Split View (ON)" : "Split View"}
+              <LayersIcon size={13} color={splitViewOpen ? "var(--cyan)" : "currentColor"} />
+              <span>{splitViewOpen ? "Split View (ON)" : "Split View"}</span>
             </button>
-            {/* 📋 Unified Copy Dropdown */}
+            {/* Unified Copy Dropdown */}
             <div className="action-dropdown-container" ref={copyMenuRef}>
               <button
                 className="btn-cyber-primary"
@@ -3192,14 +3260,15 @@ export function ResultsGrid({
                 }}
                 title="Copy profile URLs or formatted table rows to clipboard"
               >
+                <CloneIcon size={12} />
                 {copyUrlState === "copied" ? (
                   "✓ Copied"
                 ) : copyUrlState === "failed" ? (
                   "✕ Failed"
                 ) : selectedIds.size > 0 ? (
-                  `📋 Copy (${selectedIds.size}) ▾`
+                  `Copy (${selectedIds.size}) ▾`
                 ) : (
-                  "📋 Copy ▾"
+                  "Copy ▾"
                 )}
               </button>
 
@@ -3208,11 +3277,13 @@ export function ResultsGrid({
                   <div className="action-dropdown-header">Copy Options</div>
                   {selectedIds.size > 0 ? (
                     <div className="action-dropdown-scope-badge">
-                      <span>🎯</span> {selectedIds.size} Selected Row{selectedIds.size > 1 ? "s" : ""}
+                      <TargetIcon size={12} color="var(--cyan)" />
+                      <span>{selectedIds.size} Selected Row{selectedIds.size > 1 ? "s" : ""}</span>
                     </div>
                   ) : (
                     <div className="action-dropdown-scope-badge" style={{ background: "rgba(148, 163, 184, 0.12)", color: "var(--text-dim)" }}>
-                      <span>🌐</span> All Filtered ({displayed.length})
+                      <GlobeIcon size={12} color="var(--text-dim)" />
+                      <span>All Filtered ({displayed.length})</span>
                     </div>
                   )}
 
@@ -3376,22 +3447,24 @@ export function ResultsGrid({
             {!isAnalysisView && (
               <button
                 className="btn-cyber-primary"
-                style={{ padding: "7px 11px", fontSize: "11px", marginTop: 0, width: "auto", background: "rgba(221, 56, 59, 0.15)", color: "var(--danger, #DD383B)", border: "1px solid var(--danger, #DD383B)" }}
+                style={{ padding: "7px 11px", fontSize: "11px", marginTop: 0, width: "auto", background: "rgba(221, 56, 59, 0.15)", color: "var(--danger, #DD383B)", border: "1px solid var(--danger, #DD383B)", display: "inline-flex", alignItems: "center", gap: "5px" }}
                 onClick={handleDeletePlatformData}
                 disabled={deletingPlatformData || !clientId || !platform}
                 title="Permanently delete every Discovery and Analysis profile, screenshot, and published incident for this platform and client"
               >
-                {deletingPlatformData ? "Deleting…" : "🗑 Delete Platform Data"}
+                <TrashIcon size={12} />
+                <span>{deletingPlatformData ? "Deleting…" : "Delete Platform Data"}</span>
               </button>
             )}
             {isAnalysisView && (
               <>
                 <button
                   className="btn-cyber-primary"
-                  style={{ padding: "7px 11px", fontSize: "11px", marginTop: 0, width: "auto", background: "rgba(0, 229, 255, 0.15)", color: "var(--cyan)", border: "1px solid var(--cyan)" }}
+                  style={{ padding: "7px 11px", fontSize: "11px", marginTop: 0, width: "auto", background: "rgba(0, 229, 255, 0.15)", color: "var(--cyan)", border: "1px solid var(--cyan)", display: "inline-flex", alignItems: "center", gap: "5px" }}
                   onClick={() => setManualUrlsOpen(true)}
                 >
-                  🔗 Add URLs
+                  <PlusIcon size={12} />
+                  <span>Add URLs</span>
                 </button>
                 <select
                   value={publishScope}
@@ -3414,25 +3487,31 @@ export function ResultsGrid({
                   disabled={publishingAll || !clientId}
                   title="Publish held analysis results matching the current platform view and selected scope"
                 >
-                  {publishingAll ? "Publishing…" : `📢 Publish ${publishScope === "all" ? "All" : PUBLISH_SCOPE_LABELS[publishScope]}`}
+                  {publishingAll ? "Publishing…" : `Publish ${publishScope === "all" ? "All" : PUBLISH_SCOPE_LABELS[publishScope]}`}
                 </button>
                 <button
                   className="btn-cyber-primary"
-                  style={{ padding: "7px 11px", fontSize: "11px", marginTop: 0, width: "auto", background: "rgba(221, 56, 59, 0.15)", color: "var(--danger, #DD383B)", border: "1px solid var(--danger, #DD383B)" }}
+                  style={{ padding: "7px 11px", fontSize: "11px", marginTop: 0, width: "auto", background: "rgba(221, 56, 59, 0.15)", color: "var(--danger, #DD383B)", border: "1px solid var(--danger, #DD383B)", display: "inline-flex", alignItems: "center", gap: "5px" }}
                   onClick={handleDeletePlatformData}
                   disabled={deletingPlatformData || !clientId || !platform}
                   title="Permanently delete every Discovery and Analysis profile, screenshot, and published incident for this platform and client"
                 >
-                  {deletingPlatformData ? "Deleting…" : "🗑 Delete Platform Data"}
+                  <TrashIcon size={12} />
+                  <span>{deletingPlatformData ? "Deleting…" : "Delete Platform Data"}</span>
                 </button>
               </>
             )}
           </div>
 
           {isAnalysisView && coverage && !coverage.complete && (
-            <div className={`coverage-banner${coverage.analysis_failed ? " coverage-blocked" : ""}`}>
+            <div className={`coverage-banner${coverage.analysis_failed ? " coverage-blocked" : ""}`} style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              {coverage.analysis_failed > 0 ? (
+                <AlertTriangleIcon size={14} color="var(--danger)" />
+              ) : (
+                <span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--warn-yellow)", display: "inline-block" }} />
+              )}
               <span>
-                {coverage.analysis_failed > 0 ? "⛔" : "⏳"} Coverage incomplete —{" "}
+                Coverage incomplete —{" "}
                 <strong>{coverage.analysed}</strong> of <strong>{coverage.approved}</strong> validated
                 profiles analysed
               </span>
@@ -3675,8 +3754,8 @@ export function ResultsGrid({
                         >
                           {isAnalysisView && inc ? inc.title : r.profile_name || r.username || r.url}
                         </a>
-                        {r.verified && <span className="verified-check" title="Verified account on this platform"> ✓</span>}
-                        {r.has_logo && <span title="Uses a logo/brand photo"> 🏷️</span>}
+                        {r.verified && <VerifiedBadgeIcon size={14} style={{ marginLeft: "4px" }} />}
+                        {r.has_logo && <TagIcon size={12} color="var(--cyan)" style={{ marginLeft: "4px" }} />}
                         <div className="row-quick-actions">
                           <button
                             type="button"
@@ -3835,29 +3914,31 @@ export function ResultsGrid({
                       )}
                       {isAnalysisView && (
                         <td>
-                          {/* Three states, not two. `null` means no last-post
-                              date was available to judge by (Telegram never
-                              exposes one; Instagram often doesn't; a
-                              cut-short run never got one), rendering that
-                              as "inactive" states a fact about a profile
-                              nobody checked. */}
-                          {inc?.socialProfileInfo.isActive === null ||
-                          inc?.socialProfileInfo.isActive === undefined ? (
-                            <span
-                              style={{ color: "#ffffff", opacity: 0.8, fontStyle: "italic" }}
-                              title={
-                                analysisWasBlocked(r)
-                                  ? "Analysis could not read this profile, so activity is unknown"
-                                  : "No last-post date available for this profile, so activity is unknown"
-                              }
-                            >
-                              ? unknown
-                            </span>
-                          ) : (
-                            <span style={{ color: inc.socialProfileInfo.isActive ? "var(--success)" : "#ffffff" }}>
-                              {inc.socialProfileInfo.isActive ? "● active" : "○ inactive"}
-                            </span>
-                          )}
+                          {/* Two states only, by explicit product decision
+                              (see incident_publisher.py::_is_recent).
+                              Anything not shown to have posted inside the
+                              window reads "inactive", including a row
+                              stored under the old tri-state rule, whose
+                              isActive is still null. The Last Post column
+                              is where "no date at all" remains visible. */}
+                          {(() => {
+                            const active = inc?.socialProfileInfo.isActive === true;
+                            const undated = !inc?.socialProfileInfo.lastPostDate;
+                            return (
+                              <span
+                                style={{ color: active ? "var(--success)" : "#ffffff" }}
+                                title={
+                                  active
+                                    ? "Posted within the last 6 months"
+                                    : undated
+                                    ? "No last-post date was found, so this is not counted as active"
+                                    : "Last post is older than 6 months"
+                                }
+                              >
+                                {active ? "● active" : "○ inactive"}
+                              </span>
+                            );
+                          })()}
                         </td>
                       )}
                       {isAnalysisView && (
@@ -4228,8 +4309,9 @@ export function ResultsGrid({
             borderRadius: "12px", width: "100%", maxWidth: "620px", padding: "24px"
           }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-              <h3 style={{ margin: 0, fontSize: "17px", fontWeight: 700, color: "var(--text-primary)" }}>
-                🔗 Add profile URL(s) manually
+              <h3 style={{ margin: 0, fontSize: "17px", fontWeight: 700, color: "var(--text-primary)", display: "flex", alignItems: "center", gap: "8px" }}>
+                <PlusIcon size={18} color="var(--cyan)" />
+                <span>Add profile URL(s) manually</span>
               </h3>
               <button onClick={() => setManualUrlsOpen(false)} style={{ background: "transparent", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: "16px", fontWeight: 700 }}>✕</button>
             </div>
@@ -4241,15 +4323,19 @@ export function ResultsGrid({
                 type="button"
                 className={`manual-url-tab-btn ${manualUrlTab === "individual" ? "active" : ""}`}
                 onClick={() => setManualUrlTab("individual")}
+                style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "6px" }}
               >
-                👤 Executive URLs {splitUrls(manualIndividualUrlsText).length > 0 && `(${splitUrls(manualIndividualUrlsText).length})`}
+                <UserIcon size={13} />
+                <span>Executive URLs {splitUrls(manualIndividualUrlsText).length > 0 && `(${splitUrls(manualIndividualUrlsText).length})`}</span>
               </button>
               <button
                 type="button"
                 className={`manual-url-tab-btn ${manualUrlTab === "domain" ? "active" : ""}`}
                 onClick={() => setManualUrlTab("domain")}
+                style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "6px" }}
               >
-                🏷️ Domain URLs {splitUrls(manualDomainUrlsText).length > 0 && `(${splitUrls(manualDomainUrlsText).length})`}
+                <TagIcon size={13} />
+                <span>Domain URLs {splitUrls(manualDomainUrlsText).length > 0 && `(${splitUrls(manualDomainUrlsText).length})`}</span>
               </button>
             </div>
 
@@ -4285,7 +4371,7 @@ export function ResultsGrid({
               </span>
               <button
                 className="btn-cyber-primary"
-                style={{ width: "auto", padding: "9px 20px", fontSize: "13px" }}
+                style={{ width: "auto", padding: "9px 20px", fontSize: "13px", display: "inline-flex", alignItems: "center", gap: "6px" }}
                 onClick={submitManualUrls}
                 disabled={
                   manualUrlsBusy ||
@@ -4293,7 +4379,8 @@ export function ResultsGrid({
                   !clientId
                 }
               >
-                {manualUrlsBusy ? "Adding…" : `➕ Add & Analyse (${splitUrls(manualIndividualUrlsText).length + splitUrls(manualDomainUrlsText).length})`}
+                <PlusIcon size={14} />
+                <span>{manualUrlsBusy ? "Adding…" : `Add & Analyse (${splitUrls(manualIndividualUrlsText).length + splitUrls(manualDomainUrlsText).length})`}</span>
               </button>
             </div>
           </div>

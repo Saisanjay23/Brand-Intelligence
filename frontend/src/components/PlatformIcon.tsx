@@ -102,6 +102,13 @@ export function PlatformIcon({ platform, size = 20, color }: Props) {
         </svg>
       );
     default:
-      return <span>🌐</span>;
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="12" r="10" stroke={color || "var(--text-dim)"} strokeWidth="1.5" />
+          <ellipse cx="12" cy="12" rx="4.5" ry="10" stroke={color || "var(--text-dim)"} strokeWidth="1.2" />
+          <line x1="2" y1="12" x2="22" y2="12" stroke={color || "var(--text-dim)"} strokeWidth="1.2" />
+        </svg>
+      );
   }
 }
+

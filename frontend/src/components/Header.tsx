@@ -7,6 +7,7 @@ import {
   LiveResultsNavIcon,
   AdminNavIcon,
   BellAlertIcon,
+  SearchIcon,
 } from "./AppIcons";
 
 export type ViewPage = "home" | "results" | "admin";
@@ -151,21 +152,23 @@ export function Header({
 
               {/* Search Bar */}
               {mergedClients.length > 3 && (
-                <div style={{ marginBottom: "8px" }}>
+                <div style={{ marginBottom: "8px", position: "relative", display: "flex", alignItems: "center" }}>
+                  <SearchIcon size={12} color="var(--text-muted, #98a2b3)" style={{ position: "absolute", left: "8px", pointerEvents: "none" }} />
                   <input
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="🔎 Search clients…"
+                    placeholder="Search clients…"
                     style={{
                       width: "100%",
-                      padding: "6px 10px",
+                      padding: "6px 10px 6px 26px",
                       fontSize: "12px",
                       background: "var(--bg-surface-3, #1D2939)",
                       border: "1px solid var(--border-color, #344054)",
                       borderRadius: "6px",
                       color: "var(--text-main, #fff)",
                       outline: "none",
+                      boxSizing: "border-box",
                     }}
                     autoFocus
                   />

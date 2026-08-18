@@ -137,7 +137,9 @@ def _tab_type_cap(tab_limits: dict, tab: str, kw_type: str) -> int:
     return int(v or 0)
 
 
-async def _platform_readiness(only: Optional[str] = None) -> tuple[list[str], dict[str, str]]:
+async def _platform_readiness(
+    only: "Optional[str] | list[str]" = None,
+) -> tuple[list[str], dict[str, str]]:
     """(ready platform ids, {skipped platform id: why}); every enabled,
     discovery-capable platform is accounted for one way or the other, so a
     sweep can never silently drop one with zero explanation. `session_state`
@@ -163,7 +165,8 @@ async def _platform_readiness(only: Optional[str] = None) -> tuple[list[str], di
     ready: list[str] = []
     skipped: dict[str, str] = {}
     if only is not None:
-        items = [(only, registry.PLATFORMS[only])] if only in registry.PLATFORMS else []
+        wanted = [only] if isinstance(only, str) else list(only)
+        items = [(pid, registry.PLATFORMS[pid]) for pid in wanted if pid in registry.PLATFORMS]
     else:
         items = list(registry.PLATFORMS.items())
     for platform_id, plat in items:
@@ -171,6 +174,13 @@ async def _platform_readiness(only: Optional[str] = None) -> tuple[list[str], di
             continue
         state = await registry.session_state(plat)
         if state == "ready":
+            ready.append(platform_id)
+        elif plat.can_run_anonymously:
+            # This platform's useful surface needs no login (see
+            # Platform.anonymous_context_path). A missing or expired
+            # session costs it one field, not the whole platform, so it
+            # sweeps rather than being skipped entirely.
+            log.info(f"{platform_id}: session {state} -- sweeping anonymously instead")
             ready.append(platform_id)
         else:
             skipped[platform_id] = state
@@ -197,7 +207,9 @@ async def run_discovery(job: Job) -> None:
     # Sweep button's selector rather than "All Platforms". Scope readiness
     # to just that platform so a single-platform sweep never also visits
     # every OTHER ready platform.
-    ready, skipped = await _platform_readiness(job.platform)
+    # params["platforms"] is the multi-select (see discovery_controller
+    # ::_resolve_platforms); job.platform is the single-platform case.
+    ready, skipped = await _platform_readiness(p.get("platforms") or job.platform)
     if not ready:
         if job.platform:
             reason = skipped.get(job.platform, "not a known discovery-capable platform")
@@ -435,68 +447,123 @@ async def _sweep_platform(
         f"{kw} · {tab}" for pairs in groups.values() for kw, tab in pairs
     ])
 
-    plat_obj, session_item = await sessions_engine.session_for_job(plat.id)
-    if session_item.get("id"):
-        # so the Sessions panel can show "currently running" against the
-        # exact pooled item this sweep picked, see
-        # sessions/manager.py::_session_in_use(). Skipped for Telegram
-        # (env_keys auth, session_for_job returns {}, no pooled id to
-        # highlight), harmless no-op there.
-        await mgr.emit(job, "progress", platform=plat.id, session_id=session_item["id"])
-    if not plat_obj.session_path:
-        # No browser Session here, so nothing else closes whatever
-        # connection the discoverer opens for itself. Telegram's sweep()
-        # opens an MTProto connection lazily and holds the local SQLite
-        # `.session` file locked; the next Telegram operation for this
-        # client fails on it unless this closes. See that module's stop().
-        try:
+    # ── anonymous path ────────────────────────────────────────────────
+    # A platform that can work without credentials takes this whenever the
+    # pool has nothing healthy, instead of failing the sweep outright with
+    # "session exhausted -- cannot sweep". No pooled session is picked, so
+    # none can be burned, and an expired cookie cannot take the platform
+    # offline. Falls through to the same parser-drift canary and return as
+    # every other path; `session_item` stays empty there, which that tail
+    # already handles (every use of it is guarded on .get("id")).
+    # imported locally, like _platform_readiness does, to dodge the same
+    # circular import (engine.jobs -> registry -> engine.sessions)
+    from backend.platforms import registry as _registry
+
+    run_anonymously = (
+        plat.can_run_anonymously
+        and await _registry.session_state(plat) != "ready"
+    )
+    session_item: dict = {}
+
+    async def _sweep_without_credentials() -> None:
+        async with plat.anonymous_context()() as anon_ctx:
             for cap, pairs in groups.items():
-                discoverer = plat_obj.discoverer()(_options_for(cap), None)
-                try:
-                    await _run_incremental(discoverer, pairs, _on_sweep_done, _on_page_hits)
-                finally:
-                    await discoverer.stop()
-        except Exception as e:
-            # A raised failure never produces a Sweep, so the 'blocked'
-            # accounting below cannot see it (YouTube's key rejected
-            # outright, Telegram's FloodWait). Without feeding it back, the
-            # same dead key is handed to the next job forever.
-            reason = classify_failure(e)
-            if reason and session_item.get("id"):
-                await sessions_engine.mark_session_failed(
-                    plat.id, session_item["id"], reason, detail=str(e),
-                )
-            raise
+                discoverer = plat.discoverer()(_options_for(cap), anon_ctx, anonymous=True)
+                await _run_incremental(discoverer, pairs, _on_sweep_done, _on_page_hits)
+
+    if run_anonymously:
+        log.info(f"{plat.id}: no healthy session -- sweeping anonymously")
+        await _sweep_without_credentials()
     else:
-        # Uncapped here on purpose; the real per-(keyword, tab) cap is
-        # applied per discoverer below; this only configures the session
-        # object itself (login/cookies), which never enforces a scroll cap.
-        session = plat_obj.session_cls()(
-            _options_for(0), session_item.get("cookies", []),
-            session_id=session_item.get("id", ""), proxy=session_item.get("proxy"),
-        )
-        await session.start()
-        try:
-            if not await session.check_session():
-                await sessions_engine.mark_session_failed(plat.id, session_item.get("id", ""), "expired")
-                raise RuntimeError(f"session {session_item.get('identifier')} invalid or checkpointed")
+        plat_obj, session_item = await sessions_engine.session_for_job(plat.id)
+        if session_item.get("id"):
+            # so the Sessions panel can show "currently running" against the
+            # exact pooled item this sweep picked, see
+            # sessions/manager.py::_session_in_use(). Skipped for Telegram
+            # (env_keys auth, session_for_job returns {}, no pooled id to
+            # highlight), harmless no-op there.
+            await mgr.emit(job, "progress", platform=plat.id, session_id=session_item["id"])
+        if not plat_obj.session_path:
+            # No browser Session here, so nothing else closes whatever
+            # connection the discoverer opens for itself. Telegram's sweep()
+            # opens an MTProto connection lazily and holds the local SQLite
+            # `.session` file locked; the next Telegram operation for this
+            # client fails on it unless this closes. See that module's stop().
             try:
                 for cap, pairs in groups.items():
-                    discoverer = plat_obj.discoverer()(_options_for(cap), session.ctx)
-                    await _run_incremental(discoverer, pairs, _on_sweep_done, _on_page_hits)
+                    discoverer = plat_obj.discoverer()(_options_for(cap), None)
+                    try:
+                        await _run_incremental(discoverer, pairs, _on_sweep_done, _on_page_hits)
+                    finally:
+                        await discoverer.stop()
             except Exception as e:
-                # Same gap as above: a sweep that raises past the
-                # extraction-fallback chain never reaches the 'blocked'
-                # accounting either, and this is the only other place a
-                # session-shaped failure can be fed back to the pool.
+                # A raised failure never produces a Sweep, so the 'blocked'
+                # accounting below cannot see it (YouTube's key rejected
+                # outright, Telegram's FloodWait). Without feeding it back, the
+                # same dead key is handed to the next job forever.
                 reason = classify_failure(e)
-                if reason:
+                if reason and session_item.get("id"):
                     await sessions_engine.mark_session_failed(
-                        plat.id, session_item.get("id", ""), reason, detail=str(e),
+                        plat.id, session_item["id"], reason, detail=str(e),
                     )
                 raise
-        finally:
-            await session.stop()
+        else:
+            # Uncapped here on purpose; the real per-(keyword, tab) cap is
+            # applied per discoverer below; this only configures the session
+            # object itself (login/cookies), which never enforces a scroll cap.
+            session = plat_obj.session_cls()(
+                _options_for(0), session_item.get("cookies", []),
+                session_id=session_item.get("id", ""), proxy=session_item.get("proxy"),
+            )
+            await session.start()
+            fell_back = False
+            try:
+                if not await session.check_session():
+                    await sessions_engine.mark_session_failed(plat.id, session_item.get("id", ""), "expired")
+                    # `run_anonymously` was decided from the POOL's opinion,
+                    # taken before the session was actually exercised. A
+                    # session that reports ready and then fails its check --
+                    # the common case whenever a quarantine lapses and the
+                    # item goes available again -- would otherwise fail the
+                    # whole platform here, even though it does not need
+                    # credentials at all. Quarantine it (above) and carry on
+                    # without it, rather than losing the sweep to it.
+                    if plat.can_run_anonymously:
+                        log.info(
+                            f"{plat.id}: pooled session failed its check -- "
+                            "falling back to an anonymous sweep"
+                        )
+                        fell_back = True
+                    else:
+                        raise RuntimeError(
+                            f"session {session_item.get('identifier')} invalid or checkpointed")
+                if fell_back:
+                    pass  # handled after the session is torn down, below
+                else:
+                    try:
+                        for cap, pairs in groups.items():
+                            discoverer = plat_obj.discoverer()(_options_for(cap), session.ctx)
+                            await _run_incremental(discoverer, pairs, _on_sweep_done, _on_page_hits)
+                    except Exception as e:
+                        # Same gap as above: a sweep that raises past the
+                        # extraction-fallback chain never reaches the
+                        # 'blocked' accounting either, and this is the only
+                        # other place a session-shaped failure can be fed
+                        # back to the pool.
+                        reason = classify_failure(e)
+                        if reason:
+                            await sessions_engine.mark_session_failed(
+                                plat.id, session_item.get("id", ""), reason, detail=str(e),
+                            )
+                        raise
+            finally:
+                await session.stop()
+
+            # Outside the finally on purpose: the dead session's browser is
+            # closed first, so the anonymous profile never runs alongside it.
+            if fell_back:
+                session_item = {}
+                await _sweep_without_credentials()
 
     # ── parser-drift canary ────────────────────────────────────────────
     # A platform rotating its payload shape (Facebook's GraphQL doc ids do

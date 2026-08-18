@@ -193,6 +193,16 @@ def _kill_process_tree(proc: "multiprocessing.Process") -> None:
         pass
 
 
+def _reap_process(proc: "multiprocessing.Process") -> None:
+    """Wait for a worker to actually be gone, force it if it isn't.
+    Blocking on purpose -- every caller runs this in a thread (see
+    `asyncio.to_thread` below) precisely because it blocks."""
+    proc.join(timeout=5)
+    if proc.is_alive():
+        _kill_process_tree(proc)
+        proc.join(timeout=5)
+
+
 # Set only inside a spawned child process, when set, emit() forwards to
 # this queue instead of touching job.events, because a child process has
 # no access to the parent's Job object at all.
@@ -452,6 +462,26 @@ class JobManager:
                 lock.release()
 
     async def _guard(self, job: Job) -> None:
+        try:
+            await self._run(job)
+        except asyncio.CancelledError:
+            # A job cancelled while still QUEUED is cancelled while parked
+            # on `_hold_locks`, i.e. BEFORE _run's own try/except covers it
+            # -- so nothing marked it terminal and it sat at "queued"
+            # forever. That is the "Stop does nothing" bug an operator sees
+            # whenever anything else already holds the platform locks, which
+            # is exactly the case whenever the round-robin scheduler is
+            # mid-sweep: their manual run queues behind it, Stop leaves it
+            # wedged, and the UI keeps reporting a run that can never end.
+            if job.status not in TERMINAL:
+                job.status = CANCELLED
+                job.finished = job.finished or _now_iso()
+                await self.emit(job, CANCELLED, "cancelled before it started")
+                jobs_finished_total.labels(job.platform or "all", job.kind, CANCELLED).inc()
+                self._dispatch_callback(job)
+            raise
+
+    async def _run(self, job: Job) -> None:
         async with self._hold_locks(job):
             job.status = RUNNING
             job.started = _now_iso()
@@ -517,16 +547,22 @@ class JobManager:
                         platform_pending_seed=item.get("platform_pending_seed"),
                     )
             except asyncio.CancelledError:
-                _kill_process_tree(proc)
+                # to_thread, not a direct call: _kill_process_tree shells out
+                # to `taskkill` on Windows and blocks for the whole of it.
+                # Run inline it froze the ENTIRE event loop mid-abort, so
+                # every other request -- including the 2s job poll the UI
+                # uses to notice the job stopped -- stalled behind it, and
+                # the Stop button looked like it had done nothing.
+                await asyncio.to_thread(_kill_process_tree, proc)
                 job.status = CANCELLED
                 await self.emit(job, CANCELLED, "cancelled")
                 jobs_finished_total.labels(job.platform or "all", job.kind, CANCELLED).inc()
                 raise
             finally:
                 job.finished = _now_iso()
-                proc.join(timeout=5)
-                if proc.is_alive():
-                    _kill_process_tree(proc)
+                # same reason as above: join(timeout=5) is up to five more
+                # seconds of a wedged event loop if called inline
+                await asyncio.to_thread(_reap_process, proc)
                 # An unclosed multiprocessing.Queue leaves its background
                 # feeder thread (and the OS pipe/handle backing it) running
                 # forever, one leaked per job, never freed for the life of
@@ -543,29 +579,41 @@ class JobManager:
                     ipc_queue.join_thread()
                 except Exception:
                     pass
-                if job.status in TERMINAL and job.callback_url:
-                    from backend.services.webhook_service import dispatch
-                    # keep a strong reference: a bare create_task is only
-                    # weakly held by the loop and can be garbage-collected
-                    # mid-flight, silently dropping the callback
-                    task = asyncio.create_task(dispatch(job))
-                    _PENDING_CALLBACKS.add(task)
-                    task.add_done_callback(_PENDING_CALLBACKS.discard)
+                self._dispatch_callback(job)
 
-    async def cancel(self, job_id: str) -> bool:
+    @staticmethod
+    def _dispatch_callback(job: Job) -> None:
+        if job.status not in TERMINAL or not job.callback_url:
+            return
+        from backend.services.webhook_service import dispatch
+        # keep a strong reference: a bare create_task is only weakly held
+        # by the loop and can be garbage-collected mid-flight, silently
+        # dropping the callback
+        task = asyncio.create_task(dispatch(job))
+        _PENDING_CALLBACKS.add(task)
+        task.add_done_callback(_PENDING_CALLBACKS.discard)
+
+    def cancel(self, job_id: str) -> bool:
+        """Request a job stop. Returns False only if there is nothing to
+        stop (unknown id, or already terminal).
+
+        Cancelling the supervising task is the whole mechanism and it is
+        instant: `_guard`'s own CancelledError handler is what kills the
+        worker process tree, marks the job CANCELLED and emits the event.
+        This used to shell out to a blocking `taskkill` here first, before
+        the cancellation had even been requested -- which wedged the event
+        loop for the duration, so the UI's 2s job poll (and every other
+        request) stalled behind it and the Stop button looked inert.
+        """
         job = self.jobs.get(job_id)
         if not job or not job.task or job.status in TERMINAL:
             return False
-        if job.process and job.process.is_alive():
-            _kill_process_tree(job.process)
         job.task.cancel()
         return True
 
-    async def cancel_all(self) -> None:
+    def cancel_all(self) -> None:
         for job in self.jobs.values():
             if job.task and job.status not in TERMINAL:
-                if job.process and job.process.is_alive():
-                    _kill_process_tree(job.process)
                 job.task.cancel()
 
     def get(self, job_id: str) -> Optional[Job]:

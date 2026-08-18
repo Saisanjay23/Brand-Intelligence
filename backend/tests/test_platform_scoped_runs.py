@@ -147,6 +147,12 @@ async def test_analysis_controller_passes_platform_and_force_together(monkeypatc
     assert captured["params"]["force"] is True
 
 
+def registry_get(platform_id):
+    from backend.platforms import registry
+
+    return registry.get(platform_id)
+
+
 # Discovery_service: readiness scoping
 
 @pytest.mark.asyncio
@@ -165,7 +171,14 @@ async def test_platform_readiness_with_no_scope_checks_every_platform(monkeypatc
 
     ready, skipped = await svc._platform_readiness()
     assert "facebook" in ready
-    assert set(skipped) == set(real_registry.PLATFORMS) - {"facebook"}
+    # A platform whose useful surface needs no login (Platform.
+    # anonymous_context_path -- TikTok today) is READY even with no
+    # session, because it can still sweep; it just loses the one field
+    # that needs auth. Everything else with a bad session is skipped.
+    anonymous = {pid for pid, p in real_registry.PLATFORMS.items()
+                 if p.can_run_anonymously}
+    assert anonymous <= set(ready), f"anonymous-capable platforms must be ready: {ready}"
+    assert set(skipped) == set(real_registry.PLATFORMS) - {"facebook"} - anonymous
 
 
 @pytest.mark.asyncio
@@ -250,7 +263,32 @@ async def test_run_discovery_unscoped_run_keeps_the_generic_message(monkeypatch)
     monkeypatch.setattr("backend.platforms.registry.session_state", fake_state)
     monkeypatch.setattr("backend.services.job_service.JobManager", lambda: _Mgr())
 
+    # Stubbed so this stays a unit test: without it the anonymous-capable
+    # platform below would launch a real browser.
+    swept: list[str] = []
+
+    async def fake_sweep(job, mgr, plat, *a, **k):
+        swept.append(plat.id)
+        return 0, 0, ""
+
+    monkeypatch.setattr(svc, "_sweep_platform", fake_sweep)
+
+    # Keep this a unit test: run_discovery now gets far enough to read the
+    # client's per-platform caps, and motor's client is bound to whichever
+    # event loop created it, so a real Mongo call here fails with "Event
+    # loop is closed" depending on what ran before it.
+    async def no_client(_client_id):
+        return None
+
+    monkeypatch.setattr(
+        "backend.database.repositories.client_repository.try_get", no_client)
+
     job = Job(id="j1", kind="discovery", client_id="c1", platform=None,
               params={"keywords": ["acme"]})
-    with pytest.raises(RuntimeError, match="no platform has a ready session"):
-        await svc.run_discovery(job)
+
+    # No session anywhere no longer means "nothing can run": a platform
+    # that works without credentials still sweeps. It is the only one that
+    # does, and every other platform is reported as skipped.
+    await svc.run_discovery(job)
+    assert swept, "an anonymous-capable platform should still have swept"
+    assert all(registry_get(pid).can_run_anonymously for pid in swept), swept

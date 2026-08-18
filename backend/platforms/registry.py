@@ -40,6 +40,19 @@ class Platform:
     # not a failure (that's the incidents module's job), a standing caveat
     # about this platform's own scraping surface. Empty when there is none.
     stability_note: str = ""
+    # "module:function" returning an async context manager that yields a
+    # browser context with NO credentials, for a platform whose useful
+    # surface does not require a login. When set, a sweep may run even
+    # with no healthy pooled session, instead of being skipped entirely.
+    #
+    # Only TikTok sets this today, and it earns it: its account-search
+    # surface (the Users tab -- the impersonation candidates) answers a
+    # logged-out browser perfectly, and analysis reads every field it
+    # normally reads. A session buys exactly one extra field there (the
+    # exact last-post date, which needs the profile's video grid), so
+    # letting the platform sit dark because a cookie expired trades the
+    # whole platform for one field.
+    anonymous_context_path: str = ""
     # True when `analysis_path` exists but doesn't actually extract fields.
     # Analysis_path itself is always set (every platform needs a Scraper class),
     # so it can't be used as the "does analysis actually work" signal, this is
@@ -50,6 +63,18 @@ class Platform:
     @property
     def can_discover(self) -> bool:
         return bool(self.discovery_path)
+
+    @property
+    def can_run_anonymously(self) -> bool:
+        """Whether a sweep is worth attempting with no pooled session."""
+        return bool(self.anonymous_context_path)
+
+    def anonymous_context(self):
+        """-> an async context manager yielding a credential-free browser
+        context. Caller owns nothing; exiting closes the browser."""
+        if not self.anonymous_context_path:
+            raise KeyError(f"{self.id} has no anonymous context")
+        return _load(self.anonymous_context_path)
 
     @property
     def uses_api_key(self) -> bool:
@@ -132,10 +157,12 @@ PLATFORMS: dict[str, Platform] = {
         session_path="backend.platforms.tiktok.discovery_engine:TikTokSession",
         cookie_domain="tiktok",
         required_cookies=("sessionid",),
-        stability_note="TikTok has no free public API; this reads its own embedded page "
-        "JSON (field names reverse-engineered, not confirmed against a live session) "
-        "and falls back to a DOM parse when that's stripped or reshaped -- needs live "
-        "verification before being trusted the way the other platforms already are.",
+        anonymous_context_path="backend.platforms.tiktok.discovery_engine:anonymous_context",
+        stability_note="Search only answers on its Top tab -- TikTok soft-blocks the "
+        "dedicated Users and Videos tabs (HTTP 200, empty body), so results are whatever "
+        "the Top tab carries: its name-matched account block plus incidental video "
+        "authors. Name matches are labelled search:account and ranked first; a keyword "
+        "TikTok returns no account block for yields bystanders only.",
     ),
 }
 

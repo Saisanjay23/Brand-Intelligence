@@ -26,6 +26,32 @@ async def since(ts: datetime) -> list[dict]:
     return await db()[INCIDENTS].find({"ts": {"$gte": ts}}).to_list(length=1000)
 
 
+async def recent(limit: int = 50, severity: str = "", platform: str = "") -> list[dict]:
+    """Newest incidents first, for the Live Activity panel.
+
+    Filterable because the two questions an operator actually asks are
+    different: "what is broken right now" (severity=critical) and "what has
+    this platform been doing" (platform=...).
+    """
+    q: dict = {}
+    if severity:
+        q["severity"] = severity
+    if platform:
+        q["platform"] = platform
+    cursor = db()[INCIDENTS].find(q).sort("ts", -1).limit(max(1, min(limit, 500)))
+    return await cursor.to_list(length=None)
+
+
+async def counts_by_severity() -> dict:
+    """{severity: n} across everything retained, for the panel's header."""
+    out: dict = {}
+    async for d in db()[INCIDENTS].aggregate([
+        {"$group": {"_id": "$severity", "n": {"$sum": 1}}},
+    ]):
+        out[str(d["_id"] or "unknown")] = d["n"]
+    return out
+
+
 async def delete_for_client(client_id: str) -> int:
     """Part of the client-deletion cascade, only ever removes incidents
     scoped to this one client; session-check incidents (scope is the
