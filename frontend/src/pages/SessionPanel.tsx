@@ -247,7 +247,7 @@ export function SessionPanel({ sessions, onChanged }: Props) {
                 </div>
 
                 {/* Add Session Button */}
-                {s.state !== "missing" || s.kind === "api-key" || s.kind === "cookies" ? (
+                {(
                   <button
                     disabled={isAtMax || !!busyPlatform}
                     onClick={() => setModal({ isOpen: true, mode: "create", platform: s })}
@@ -271,7 +271,7 @@ export function SessionPanel({ sessions, onChanged }: Props) {
                     <span style={{ fontSize: "12px", fontWeight: 800 }}>＋</span>
                     <span>Add</span>
                   </button>
-                ) : null}
+                )}
               </div>
 
               {/* Tab Navigation */}
@@ -730,16 +730,26 @@ export function SessionPanel({ sessions, onChanged }: Props) {
 
       {/* MODAL DIALOG: CLEAN & SIMPLE TWO-FIELD FORM */}
       {modal.isOpen && modal.platform && (
-        <SessionEditModal
-          platform={modal.platform}
-          mode={modal.mode}
-          targetSession={modal.targetSession}
-          onClose={() => setModal({ isOpen: false, mode: "create" })}
-          onSuccess={() => {
-            setModal({ isOpen: false, mode: "create" });
-            onChanged();
-          }}
-        />
+        modal.mode === "create" && modal.platform.kind === "mtproto" ? (
+          <TelegramLoginModal
+            onClose={() => setModal({ isOpen: false, mode: "create" })}
+            onSuccess={() => {
+              setModal({ isOpen: false, mode: "create" });
+              onChanged();
+            }}
+          />
+        ) : (
+          <SessionEditModal
+            platform={modal.platform}
+            mode={modal.mode}
+            targetSession={modal.targetSession}
+            onClose={() => setModal({ isOpen: false, mode: "create" })}
+            onSuccess={() => {
+              setModal({ isOpen: false, mode: "create" });
+              onChanged();
+            }}
+          />
+        )
       )}
     </div>
   );
@@ -922,6 +932,196 @@ const SessionEditModal: FC<{
       </div>
     </div>
   );
+};
+
+// Telegram's MTProto login can't reuse the generic cookie/API-key form: it's
+// a three-step handshake (api id/hash + phone -> code -> optional 2FA
+// password) with server-side state held between steps, see
+// backend/services/telegram_login_service.py.
+const TelegramLoginModal: FC<{
+  onClose: () => void;
+  onSuccess: () => void;
+}> = ({ onClose, onSuccess }) => {
+  const [step, setStep] = useState<"phone" | "code" | "password">("phone");
+  const [apiId, setApiId] = useState<string>("");
+  const [apiHash, setApiHash] = useState<string>("");
+  const [phone, setPhone] = useState<string>("");
+  const [code, setCode] = useState<string>("");
+  const [password, setPassword] = useState<string>("");
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [error, setError] = useState<string>("");
+
+  const handleClose = () => {
+    if (step !== "phone") {
+      sessionsApi.telegramLoginCancel().catch(() => {});
+    }
+    onClose();
+  };
+
+  const handleSendCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSubmitting(true);
+    setError("");
+    try {
+      await sessionsApi.telegramLoginStart(Number(apiId.trim()), apiHash.trim(), phone.trim());
+      setStep("code");
+    } catch (err: any) {
+      setError(err?.message || "Failed to request a login code");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleSubmitCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSubmitting(true);
+    setError("");
+    try {
+      const res = await sessionsApi.telegramLoginCode(code.trim());
+      if (res.status === "need_password") {
+        setStep("password");
+      } else {
+        onSuccess();
+      }
+    } catch (err: any) {
+      setError(err?.message || "Code rejected");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleSubmitPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSubmitting(true);
+    setError("");
+    try {
+      await sessionsApi.telegramLoginPassword(password);
+      onSuccess();
+    } catch (err: any) {
+      setError(err?.message || "Wrong password");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div style={{
+      position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+      background: "rgba(0, 0, 0, 0.75)", backdropFilter: "blur(4px)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      zIndex: 1000, padding: "20px"
+    }}>
+      <div style={{
+        background: "var(--bg-surface, #1e2837)",
+        border: "1px solid var(--border-color, #344054)",
+        borderRadius: "12px", padding: "24px", width: "100%", maxWidth: "440px",
+        boxShadow: "0 10px 25px rgba(0, 0, 0, 0.5)", maxHeight: "90vh", overflowY: "auto"
+      }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
+          <h3 style={{ margin: 0, fontSize: "17px", fontWeight: 700, color: "var(--text-primary, #fff)" }}>
+            Add Session — Telegram
+          </h3>
+          <button
+            onClick={handleClose}
+            style={{ background: "transparent", border: "none", color: "var(--text-muted, #98a2b3)", cursor: "pointer", fontSize: "16px", fontWeight: 700 }}
+          >
+            ✕
+          </button>
+        </div>
+
+        {error && (
+          <div style={{
+            marginBottom: "14px", padding: "10px 12px", borderRadius: "8px",
+            background: "rgba(240, 68, 56, 0.1)", border: "1px solid rgba(240, 68, 56, 0.3)",
+            color: "var(--red, #f04438)", fontSize: "12px"
+          }}>
+            {error}
+          </div>
+        )}
+
+        {step === "phone" && (
+          <form onSubmit={handleSendCode} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+            <div>
+              <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "var(--text-body, #f2f4f7)", marginBottom: "6px" }}>
+                API ID
+              </label>
+              <input value={apiId} onChange={(e) => setApiId(e.target.value)} placeholder="12345678" style={modalInputStyle} required />
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "var(--text-body, #f2f4f7)", marginBottom: "6px" }}>
+                API Hash
+              </label>
+              <input value={apiHash} onChange={(e) => setApiHash(e.target.value)} placeholder="from my.telegram.org" style={modalInputStyle} required />
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "var(--text-body, #f2f4f7)", marginBottom: "6px" }}>
+                Phone Number
+              </label>
+              <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+15551234567" style={modalInputStyle} required />
+            </div>
+            <div style={{ display: "flex", gap: "10px", marginTop: "8px", justifyContent: "flex-end" }}>
+              <button type="button" onClick={handleClose} className="action-btn" style={modalCancelBtnStyle}>Cancel</button>
+              <button type="submit" disabled={isSubmitting} className="action-btn" style={modalSubmitBtnStyle}>
+                {isSubmitting ? "Sending..." : "Send Code"}
+              </button>
+            </div>
+          </form>
+        )}
+
+        {step === "code" && (
+          <form onSubmit={handleSubmitCode} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+            <div style={{ fontSize: "12px", color: "var(--text-muted, #98a2b3)" }}>
+              A login code was sent to {phone.trim()} via Telegram.
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "var(--text-body, #f2f4f7)", marginBottom: "6px" }}>
+                Login Code
+              </label>
+              <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="12345" style={modalInputStyle} required autoFocus />
+            </div>
+            <div style={{ display: "flex", gap: "10px", marginTop: "8px", justifyContent: "flex-end" }}>
+              <button type="button" onClick={handleClose} className="action-btn" style={modalCancelBtnStyle}>Cancel</button>
+              <button type="submit" disabled={isSubmitting} className="action-btn" style={modalSubmitBtnStyle}>
+                {isSubmitting ? "Verifying..." : "Verify Code"}
+              </button>
+            </div>
+          </form>
+        )}
+
+        {step === "password" && (
+          <form onSubmit={handleSubmitPassword} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+            <div style={{ fontSize: "12px", color: "var(--text-muted, #98a2b3)" }}>
+              This account has two-factor authentication enabled.
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "var(--text-body, #f2f4f7)", marginBottom: "6px" }}>
+                2FA Password
+              </label>
+              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} style={modalInputStyle} required autoFocus />
+            </div>
+            <div style={{ display: "flex", gap: "10px", marginTop: "8px", justifyContent: "flex-end" }}>
+              <button type="button" onClick={handleClose} className="action-btn" style={modalCancelBtnStyle}>Cancel</button>
+              <button type="submit" disabled={isSubmitting} className="action-btn" style={modalSubmitBtnStyle}>
+                {isSubmitting ? "Verifying..." : "Unlock"}
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const modalCancelBtnStyle: CSSProperties = {
+  padding: "9px 16px", borderRadius: "8px", background: "var(--bg-surface-3, #344054)",
+  border: "1px solid var(--border-color, #344054)", color: "var(--text-primary, #fff)",
+  fontSize: "13px", fontWeight: 600, cursor: "pointer"
+};
+
+const modalSubmitBtnStyle: CSSProperties = {
+  padding: "9px 20px", borderRadius: "8px", background: "var(--primary, #8838dd)",
+  border: "1px solid var(--border-subtle, rgba(255,255,255,0.1))", color: "var(--text-primary, #fff)",
+  fontSize: "13px", fontWeight: 600, cursor: "pointer"
 };
 
 const modalInputStyle: CSSProperties = {
