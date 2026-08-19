@@ -145,17 +145,6 @@ class Settings(BaseSettings):
     # takes unnecessarily long.
     round_robin_slots: int = 4
 
-    # Whether the round-robin engine (the "scheduler" toggle in the UI's
-    # Scheduler tab) starts by itself the moment this process boots, or
-    # stays paused until someone clicks Start. Defaults True to match the
-    # tool's behaviour before this setting existed, a bare restart must
-    # not silently stop all discovery/analysis until someone notices. The
-    # manual Start/Stop control (POST /scheduler/start|stop) always works
-    # regardless of this setting; it only governs what happens automatically
-    # on startup. Persisted the same way as the mail settings (write_env),
-    # see services/settings_service.py.
-    scheduler_autostart: bool = True
-
     @field_validator("alert_emails", "webhook_allowed_hosts", "cors_allow_origins", mode="before")
     @classmethod
     def _split_csv(cls, v):

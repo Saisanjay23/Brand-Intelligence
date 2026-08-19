@@ -39,6 +39,9 @@ export interface Client {
   // cell's own cap and the sweep's flat keyword-type cap above applies when
   // both are set; uncapped ("scrape everything found") when neither is.
   platform_tab_limits: Record<string, Record<string, Record<string, number>>>;
+  // The round-robin engine's rotation position and the Scheduler tab's own
+  // list order, ascending. See clientsApi.reorderClients.
+  order?: number;
   cron?: string | null;
   created_at?: string;
 }

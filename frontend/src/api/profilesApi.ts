@@ -90,12 +90,24 @@ export const profilesApi = {
     post("/profiles/bulk-delete", { profile_ids: profileIds }).then(
       json<{ deleted: number; requested: number }>,
     ),
-  // Hard delete of every profile, evidence screenshot, and published
-  // incident for one client + platform (both Discovery and Analysis phase
-  // rows), irreversible. See
+  // Hard delete of profiles, evidence screenshots, and published incidents
+  // for one client + platform, irreversible. See
   // backend/services/profile_service.py::delete_for_client_platform.
-  deletePlatformData: (clientId: string, platform: string) =>
-    post("/profiles/delete-platform-data", { client_id: clientId, platform }).then(
+  //
+  // `phase`/`status`/`published` all omitted deletes EVERYTHING for this
+  // client+platform (every phase, every status). The Discovery/Analysis
+  // "Delete Platform Data" button always passes the exact phase/status/
+  // published combination currently selected, so it only ever removes
+  // what's on screen -- Discovery+Pending is independent of Discovery+
+  // Validated, Discovery+Rejected, and every Analysis-phase row.
+  deletePlatformData: (
+    clientId: string, platform: string,
+    scope?: { phase?: string; status?: string; published?: boolean },
+  ) =>
+    post("/profiles/delete-platform-data", {
+      client_id: clientId, platform,
+      phase: scope?.phase ?? null, status: scope?.status ?? null, published: scope?.published ?? null,
+    }).then(
       json<{ deleted_profiles: number; deleted_evidence: number; deleted_published_incidents: number }>,
     ),
   exportXlsx: (filename: string, rows: Record<string, unknown>[]) =>
@@ -111,12 +123,23 @@ export const profilesApi = {
   // instead of silently publishing as Brand Infringement (see the backend
   // docstring). `urls` is the untyped legacy path (best-effort keyword
   // match); all three may be sent together.
-  addManualUrls: (client_id: string, opts: { urls?: string[]; individualUrls?: string[]; domainUrls?: string[] }) =>
+  //
+  // `individualKeyword`/`domainKeyword` are optional: type one alongside
+  // the URLs to tag every URL in that bucket with it directly (skips fuzzy
+  // matching) AND add it to the client's own name_keywords/domain_keywords
+  // list, so it shows up in the client's Settings tab too and future
+  // discovery sweeps pick it up, not just this batch.
+  addManualUrls: (
+    client_id: string,
+    opts: { urls?: string[]; individualUrls?: string[]; domainUrls?: string[]; individualKeyword?: string; domainKeyword?: string },
+  ) =>
     post("/profiles/add-urls", {
       client_id,
       urls: opts.urls ?? [],
       individual_urls: opts.individualUrls ?? [],
       domain_urls: opts.domainUrls ?? [],
+      individual_keyword: opts.individualKeyword ?? "",
+      domain_keyword: opts.domainKeyword ?? "",
     }).then(
       json<{ added: number; by_platform: Record<string, number>; skipped: string[] }>,
     ),

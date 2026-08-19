@@ -69,10 +69,13 @@ async def lifespan(app: FastAPI):
             await registry.session_state(p)
         sessions_engine.start_monitor()
         scheduler.start()
-        if settings.scheduler_autostart:
-            round_robin.start()
-        else:
-            log.info("startup: scheduler_autostart is off -- round-robin engine stays paused until POST /scheduler/start")
+        # The round-robin engine never starts itself, on this boot or any
+        # other -- by explicit product decision, discovery only ever runs
+        # because an analyst was in the Scheduler tab and clicked Start
+        # (POST /scheduler/start), never as a side effect of a process
+        # restart nobody was watching. See round_robin_service.py's module
+        # docstring.
+        log.info("startup: round-robin engine stays paused until an analyst clicks Start in the Scheduler tab")
     else:
         log.warning("startup: mongo unreachable -- /health/ready will report degraded")
     yield

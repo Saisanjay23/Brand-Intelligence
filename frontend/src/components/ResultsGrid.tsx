@@ -1197,6 +1197,13 @@ export function ResultsGrid({
   const [manualUrlTab, setManualUrlTab] = useState<"individual" | "domain">("individual");
   const [manualIndividualUrlsText, setManualIndividualUrlsText] = useState("");
   const [manualDomainUrlsText, setManualDomainUrlsText] = useState("");
+  // Optional: an analyst can type the keyword these URLs belong to right
+  // here instead of pre-configuring it on the client first. Submitting
+  // tags every URL in that box with it directly and adds it to the
+  // client's own name_keywords/domain_keywords list (profilesApi.addManualUrls),
+  // so it also appears in Settings and future sweeps pick it up.
+  const [manualIndividualKeyword, setManualIndividualKeyword] = useState("");
+  const [manualDomainKeyword, setManualDomainKeyword] = useState("");
   const [manualUrlsBusy, setManualUrlsBusy] = useState(false);
 
 
@@ -1735,28 +1742,41 @@ export function ResultsGrid({
   const [publishScope, setPublishScope] = useState<"all" | "recent" | "2days" | "week">("all");
   const [deletingPlatformData, setDeletingPlatformData] = useState(false);
 
-  // Irreversible hard delete of every profile (both Discovery and Analysis
-  // phase), evidence screenshot, and published incident for the currently
-  // selected client + platform, see
+  // Irreversible hard delete of evidence screenshot, and published
+  // incident for the currently selected client + platform, see
   // backend/services/profile_service.py::delete_for_client_platform.
   // Neither view ever has an ambiguous "all platforms" state (see the
   // platform-selection effect above), so `platform` is always a single,
   // unambiguous target at the moment this is called.
+  //
+  // Scoped to exactly the phase/status/published bucket the analyst
+  // currently has selected, independent of every other bucket: Discovery's
+  // Pending/Validated/Rejected chips and Analysis's Published/Unpublished
+  // toggle each delete only their own rows, never each other's and never
+  // the other phase's. Discovery with no status chip active (status === "")
+  // deletes every Discovery-view row regardless of status, still scoped to
+  // phase="discovery" so it can never reach an Analysis-phase row.
   const handleDeletePlatformData = async () => {
     if (!clientId || !platform) return;
     const platformName = platforms.find((p) => p.platform === platform)?.name || platform;
+    const scope = isAnalysisView
+      ? { phase: "analysis", published: publishedFilter === "published" }
+      : { phase: "discovery", status: status || undefined };
+    const scopeLabel = isAnalysisView
+      ? `Analysis → ${publishedFilter === "published" ? "Published" : "Unpublished"}`
+      : `Discovery${status ? ` → ${status[0].toUpperCase()}${status.slice(1)}` : " (all statuses)"}`;
     const ok = await confirmAction(
-      `Permanently delete ALL ${platformName} data for client "${clientId}"? This removes every ` +
-      `Discovery and Analysis profile, evidence screenshot, and published incident for this platform ` +
-      `from the database. This cannot be undone.`,
+      `Permanently delete ${platformName} data for client "${clientId}" in ${scopeLabel}? This removes ` +
+      `only the profiles, evidence screenshots, and published incidents in that exact view -- every other ` +
+      `Discovery/Analysis bucket for this platform is untouched. This cannot be undone.`,
     );
     if (!ok) return;
     setDeletingPlatformData(true);
     try {
-      const res = await profilesApi.deletePlatformData(clientId, platform);
+      const res = await profilesApi.deletePlatformData(clientId, platform, scope);
       toast.success(
         `Deleted ${res.deleted_profiles} profile(s), ${res.deleted_evidence} screenshot(s), ` +
-        `${res.deleted_published_incidents} published incident(s) for ${platformName}`,
+        `${res.deleted_published_incidents} published incident(s) for ${platformName} (${scopeLabel})`,
         { icon: "🗑" },
       );
       await load(false);
@@ -2306,11 +2326,28 @@ export function ResultsGrid({
     if (!individualUrls.length && !domainUrls.length) return;
     setManualUrlsBusy(true);
     try {
-      const res = await profilesApi.addManualUrls(clientId, { individualUrls, domainUrls });
+      const res = await profilesApi.addManualUrls(clientId, {
+        individualUrls, domainUrls,
+        individualKeyword: manualIndividualKeyword.trim(),
+        domainKeyword: manualDomainKeyword.trim(),
+      });
       setManualIndividualUrlsText("");
       setManualDomainUrlsText("");
+      setManualIndividualKeyword("");
+      setManualDomainKeyword("");
       if (res.skipped.length) {
         onError?.(`${res.added} added. ${res.skipped.length} skipped (unrecognized platform): ${res.skipped.join(", ")}`);
+      }
+      // A typed keyword was just $addToSet'd onto the client server-side;
+      // reflect it here too so it shows up immediately without a refetch
+      // (e.g. re-opening this same modal, or the Asset Name dropdown).
+      if (individualUrls.length && manualIndividualKeyword.trim()) {
+        const kw = manualIndividualKeyword.trim();
+        setClientNameKeywords((prev) => (prev.includes(kw) ? prev : [...prev, kw]));
+      }
+      if (domainUrls.length && manualDomainKeyword.trim()) {
+        const kw = manualDomainKeyword.trim();
+        setClientDomainKeywords((prev) => (prev.includes(kw) ? prev : [...prev, kw]));
       }
       setManualUrlsOpen(false);
       await load(false);
@@ -3534,7 +3571,11 @@ export function ResultsGrid({
                 style={{ padding: "7px 11px", fontSize: "11px", marginTop: 0, width: "auto", background: "rgba(221, 56, 59, 0.15)", color: "var(--danger, #DD383B)", border: "1px solid var(--danger, #DD383B)", display: "inline-flex", alignItems: "center", gap: "5px" }}
                 onClick={handleDeletePlatformData}
                 disabled={deletingPlatformData || !clientId || !platform}
-                title="Permanently delete every Discovery and Analysis profile, screenshot, and published incident for this platform and client"
+                title={
+                  status
+                    ? `Delete only the ${status} Discovery profiles (and their evidence/published incidents) for this platform -- Analysis and every other status is untouched`
+                    : "Delete every Discovery-phase profile for this platform, regardless of status -- Analysis-phase rows are untouched"
+                }
               >
                 <TrashIcon size={12} />
                 <span>{deletingPlatformData ? "Deleting…" : "Delete Platform Data"}</span>
@@ -3578,7 +3619,7 @@ export function ResultsGrid({
                   style={{ padding: "7px 11px", fontSize: "11px", marginTop: 0, width: "auto", background: "rgba(221, 56, 59, 0.15)", color: "var(--danger, #DD383B)", border: "1px solid var(--danger, #DD383B)", display: "inline-flex", alignItems: "center", gap: "5px" }}
                   onClick={handleDeletePlatformData}
                   disabled={deletingPlatformData || !clientId || !platform}
-                  title="Permanently delete every Discovery and Analysis profile, screenshot, and published incident for this platform and client"
+                  title={`Delete only the ${publishedFilter} Analysis profiles (and their evidence/published incidents) for this platform -- Discovery and the ${publishedFilter === "published" ? "unpublished" : "published"} bucket are untouched`}
                 >
                   <TrashIcon size={12} />
                   <span>{deletingPlatformData ? "Deleting…" : "Delete Platform Data"}</span>
@@ -4430,23 +4471,43 @@ export function ResultsGrid({
             </div>
 
             {manualUrlTab === "individual" ? (
-              <textarea
-                className="input-filter"
-                style={{ width: "100%", minHeight: "160px", fontFamily: "var(--font-mono)", fontSize: "12px" }}
-                placeholder="https://x.com/exec-handle&#10;https://www.instagram.com/exec-handle"
-                value={manualIndividualUrlsText}
-                onChange={(e) => setManualIndividualUrlsText(e.target.value)}
-                disabled={manualUrlsBusy}
-              />
+              <>
+                <input
+                  className="input-filter"
+                  style={{ width: "100%", marginBottom: "8px", fontSize: "12px" }}
+                  placeholder="Keyword for these URLs, e.g. an executive's full name (optional — leave blank to auto-match)"
+                  value={manualIndividualKeyword}
+                  onChange={(e) => setManualIndividualKeyword(e.target.value)}
+                  disabled={manualUrlsBusy}
+                />
+                <textarea
+                  className="input-filter"
+                  style={{ width: "100%", minHeight: "160px", fontFamily: "var(--font-mono)", fontSize: "12px" }}
+                  placeholder="https://x.com/exec-handle&#10;https://www.instagram.com/exec-handle"
+                  value={manualIndividualUrlsText}
+                  onChange={(e) => setManualIndividualUrlsText(e.target.value)}
+                  disabled={manualUrlsBusy}
+                />
+              </>
             ) : (
-              <textarea
-                className="input-filter"
-                style={{ width: "100%", minHeight: "160px", fontFamily: "var(--font-mono)", fontSize: "12px" }}
-                placeholder="https://www.facebook.com/profile.php?id=...&#10;https://www.instagram.com/brand-handle"
-                value={manualDomainUrlsText}
-                onChange={(e) => setManualDomainUrlsText(e.target.value)}
-                disabled={manualUrlsBusy}
-              />
+              <>
+                <input
+                  className="input-filter"
+                  style={{ width: "100%", marginBottom: "8px", fontSize: "12px" }}
+                  placeholder="Keyword for these URLs, e.g. a brand/domain term (optional — leave blank to auto-match)"
+                  value={manualDomainKeyword}
+                  onChange={(e) => setManualDomainKeyword(e.target.value)}
+                  disabled={manualUrlsBusy}
+                />
+                <textarea
+                  className="input-filter"
+                  style={{ width: "100%", minHeight: "160px", fontFamily: "var(--font-mono)", fontSize: "12px" }}
+                  placeholder="https://www.facebook.com/profile.php?id=...&#10;https://www.instagram.com/brand-handle"
+                  value={manualDomainUrlsText}
+                  onChange={(e) => setManualDomainUrlsText(e.target.value)}
+                  disabled={manualUrlsBusy}
+                />
+              </>
             )}
 
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "16px" }}>

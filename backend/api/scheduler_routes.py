@@ -8,10 +8,6 @@ from backend.controllers import scheduler_controller
 router = APIRouter(prefix="/scheduler", tags=["scheduler"])
 
 
-class AutostartIn(BaseModel):
-    enabled: bool
-
-
 class EnqueueIn(BaseModel):
     client_id: str
     # True = "run next" (head of the queue), False = append behind whatever
@@ -40,13 +36,6 @@ async def start_engine() -> dict:
 @router.post("/stop")
 async def stop_engine() -> dict:
     return await scheduler_controller.stop_engine()
-
-
-@router.put("/autostart")
-async def set_autostart(body: AutostartIn) -> dict:
-    """Whether the engine starts itself the next time this process boots
-    does not start/stop it right now, see /scheduler/start|stop for that."""
-    return {"autostart": scheduler_controller.set_autostart(body.enabled)}
 
 
 @router.get("/queue")

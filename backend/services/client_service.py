@@ -36,7 +36,18 @@ async def get(client_id: str) -> dict:
     return await clients_db.get(client_id)
 
 
+async def add_keyword(client_id: str, keyword: str, kind: str) -> None:
+    keyword = keyword.strip()
+    if keyword:
+        await clients_db.add_keyword(client_id, keyword, kind)
+
+
 async def list_all() -> list[dict]:
+    return await clients_db.list_all()
+
+
+async def reorder(client_ids: list[str]) -> list[dict]:
+    await clients_db.reorder(client_ids)
     return await clients_db.list_all()
 
 

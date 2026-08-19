@@ -107,7 +107,7 @@ async def delete_for_client(client_id: str) -> int:
 
 async def delete_for_client_platform(client_id: str, platform: str) -> int:
     """Same as `delete_for_client`, scoped to one platform, the
-    per-platform delete buttons in Discovery/Analysis (see
+    unscoped (phase/status = None) "Delete Platform Data" cascade (see
     profile_service.delete_for_client_platform)."""
     if not client_id or not platform:
         return 0
@@ -116,5 +116,19 @@ async def delete_for_client_platform(client_id: str, platform: str) -> int:
     prefix = f"{re.escape(client_id)}/{re.escape(platform)}/"
     async for f in bucket.find({"filename": {"$regex": f"^{prefix}"}}):
         await bucket.delete(f._id)
+        n += 1
+    return n
+
+
+async def delete_many(keys: list[str]) -> int:
+    """Delete exactly these screenshots, the scoped "Delete Platform Data"
+    cascade (see profile_service.delete_for_client_platform): when the
+    delete was narrowed to e.g. Discovery + Pending, only the screenshots
+    those specific deleted profiles owned should go with them, never every
+    screenshot for the whole client+platform (that would also take an
+    unrelated already-published finding's evidence)."""
+    n = 0
+    for key in {k for k in keys if k}:
+        await delete(key)
         n += 1
     return n

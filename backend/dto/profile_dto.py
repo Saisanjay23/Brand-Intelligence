@@ -57,11 +57,23 @@ class BulkDeleteRequest(BaseModel):
 
 
 class DeletePlatformDataRequest(BaseModel):
-    """Hard-deletes every profile (both Discovery and Analysis phase),
-    evidence screenshot, and published incident for one client + platform.
-    Irreversible. See profile_service.delete_for_client_platform."""
+    """Hard-deletes profiles, evidence screenshots, and published incidents
+    for one client + platform. Irreversible. See
+    profile_service.delete_for_client_platform.
+
+    `phase`/`status`/`published` all omitted (None) deletes EVERYTHING for
+    this client+platform, both phases, every status -- the original
+    behavior. The Discovery/Analysis tabs' own "Delete Platform Data"
+    button always sends the phase/status/published combination it currently
+    has selected (Discovery+Pending, Discovery+Validated, Discovery+
+    Rejected, Analysis+Published, Analysis+Unpublished, ...), so the button
+    only ever removes exactly what is on screen, independent of every other
+    phase/status bucket."""
     client_id: str
     platform: str
+    phase: Optional[str] = None
+    status: Optional[str] = None
+    published: Optional[bool] = None
 
 
 class ManualUrlsRequest(BaseModel):
@@ -77,11 +89,21 @@ class ManualUrlsRequest(BaseModel):
     in (the UI's separate Executive/Domain boxes), so incident_publisher's
     person-vs-brand classification doesn't depend on the URL text happening
     to fuzzy-match a configured keyword. All three may be used together in
-    one request."""
+    one request.
+
+    `individual_keyword`/`domain_keyword` are optional: when set, every URL
+    in the matching bucket is tagged with that exact keyword instead of
+    whatever fuzzy match (or fallback) would otherwise apply, AND the
+    keyword is added to the client's own name_keywords/domain_keywords list
+    (see client_service.add_keyword), so the client's configured keywords
+    and this URL's profile.keywords entry stay in sync and both feed the
+    same discovery/analysis keyword filter."""
     client_id: str
     urls: list[str] = []
     individual_urls: list[str] = []
     domain_urls: list[str] = []
+    individual_keyword: str = ""
+    domain_keyword: str = ""
 
 
 class ExportXlsxRequest(BaseModel):

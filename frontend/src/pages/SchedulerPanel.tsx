@@ -7,6 +7,7 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { toast } from "react-hot-toast";
 import { jobsApi } from "../api/jobsApi";
+import { clientsApi } from "../api/clientsApi";
 import type { JobEvent } from "../api/types";
 import {
   schedulerApi,
@@ -440,7 +441,6 @@ export function SchedulerPanel() {
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("");
   const [toggling, setToggling] = useState(false);
-  const [togglingAutostart, setTogglingAutostart] = useState(false);
   const [expanded, setExpanded] = useState<string>("");
   const [busyClient, setBusyClient] = useState("");
 
@@ -471,24 +471,6 @@ export function SchedulerPanel() {
     }
   };
 
-  // Separate from toggleEngine on purpose: this only decides what happens
-  // the NEXT time the server process boots (see main.py's lifespan), it
-  // does not start or stop anything right now, so it must never touch
-  // `status.running` itself, only `status.autostart`.
-  const toggleAutostart = async () => {
-    if (!status) return;
-    setTogglingAutostart(true);
-    setError("");
-    try {
-      const { autostart } = await schedulerApi.setAutostart(!status.autostart);
-      setStatus({ ...status, autostart });
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setTogglingAutostart(false);
-    }
-  };
-
   const now = useNowTick();
 
   const clients = (status?.clients ?? []).filter((c) =>
@@ -502,6 +484,31 @@ export function SchedulerPanel() {
   const clientNames = Object.fromEntries(
     (status?.clients ?? []).map((c) => [c.client_id, c.name]),
   );
+
+  // Moves a client up/down in the FULL (unfiltered) list and persists it,
+  // so the round-robin engine's own rotation picks up the new order on its
+  // very next lap (see client_repository.list_all's sort). Deliberately
+  // computed off `status.clients`, not the filtered `clients` view above --
+  // reordering within a filtered subset would silently scramble the
+  // relative position of every row the search box is currently hiding.
+  const [reordering, setReordering] = useState(false);
+  const moveClient = async (clientId: string, direction: "up" | "down") => {
+    if (!status) return;
+    const ids = status.clients.map((c) => c.client_id);
+    const i = ids.indexOf(clientId);
+    const j = direction === "up" ? i - 1 : i + 1;
+    if (i < 0 || j < 0 || j >= ids.length) return;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    setReordering(true);
+    try {
+      await clientsApi.reorderClients(ids);
+      load();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setReordering(false);
+    }
+  };
 
   const toggleClient = async (clientId: string, enabled: boolean) => {
     setBusyClient(clientId);
@@ -528,39 +535,13 @@ export function SchedulerPanel() {
             🔁 Scheduler
           </h1>
           <p style={{ fontSize: "13px", color: "var(--text-muted, #98a2b3)", margin: "4px 0 0 0" }}>
-            The engine that runs every client automatically all day, in rotation -- discovery, then
-            picking up newly-approved profiles for analysis, before moving on to the next client.
+            Runs discovery for one client, then the next, in the order below -- at most twice a day
+            per client. It never starts itself: click Resume to begin, and it keeps going through
+            the list until you click Pause. Use the ▲▼ arrows on a row to change the order.
           </p>
         </div>
         {status && (
           <div style={{ display: "flex", alignItems: "center", gap: "14px", flexWrap: "wrap" }}>
-            <label
-              title="When ON, this engine starts itself automatically the moment the server process boots. When OFF, it stays paused after a restart until someone clicks Resume below -- it never starts itself in the background."
-              style={{
-                display: "flex", alignItems: "center", gap: "8px", cursor: togglingAutostart ? "wait" : "pointer",
-                fontSize: "13px", color: "var(--text-muted, #98a2b3)", userSelect: "none",
-              }}
-            >
-              <span>Auto-start on boot</span>
-              <span
-                onClick={toggleAutostart}
-                role="switch"
-                aria-checked={status.autostart}
-                style={{
-                  position: "relative", width: "36px", height: "20px", borderRadius: "999px",
-                  background: status.autostart ? "rgba(54,181,160,0.4)" : "rgba(152,162,179,0.3)",
-                  transition: "background 0.2s", opacity: togglingAutostart ? 0.6 : 1,
-                }}
-              >
-                <span
-                  style={{
-                    position: "absolute", top: "2px", left: status.autostart ? "18px" : "2px",
-                    width: "16px", height: "16px", borderRadius: "50%", background: "#fff",
-                    transition: "left 0.2s",
-                  }}
-                />
-              </span>
-            </label>
             <button
               onClick={toggleEngine}
               disabled={toggling}
@@ -690,6 +671,7 @@ export function SchedulerPanel() {
         <table className="core_table">
           <thead>
             <tr>
+              <th title="Rotation order -- what the engine processes this client after/before">Order</th>
               <th>Client</th>
               <th>Status</th>
               <th>Last run</th>
@@ -702,14 +684,17 @@ export function SchedulerPanel() {
           </thead>
           <tbody>
             {!status ? (
-              <tr><td colSpan={8} style={{ textAlign: "center", padding: "24px", color: "var(--text-dim)" }}>Loading…</td></tr>
+              <tr><td colSpan={9} style={{ textAlign: "center", padding: "24px", color: "var(--text-dim)" }}>Loading…</td></tr>
             ) : clients.length === 0 ? (
-              <tr><td colSpan={8} style={{ textAlign: "center", padding: "24px", color: "var(--text-dim)" }}>No clients with keywords set yet.</td></tr>
+              <tr><td colSpan={9} style={{ textAlign: "center", padding: "24px", color: "var(--text-dim)" }}>No clients with keywords set yet.</td></tr>
             ) : (
               clients.map((c) => {
                 const look = c.last_run_status ? STATUS_LOOK[c.last_run_status] : null;
                 const isOpen = expanded === c.client_id;
                 const running = !!c.current_phase;
+                const fullIds = status.clients.map((x) => x.client_id);
+                const fullIndex = fullIds.indexOf(c.client_id);
+                const filtered = !!filter.trim();
                 return (
                   <Fragment key={c.client_id}>
                     <tr
@@ -725,6 +710,24 @@ export function SchedulerPanel() {
                       }}
                       title="Click to see this client's live progress"
                     >
+                      <td onClick={(e) => e.stopPropagation()} style={{ whiteSpace: "nowrap" }}>
+                        <button
+                          style={{ ...QUEUE_BTN, padding: "2px 6px" }}
+                          disabled={reordering || filtered || fullIndex <= 0}
+                          onClick={() => void moveClient(c.client_id, "up")}
+                          title={filtered ? "Clear the filter to reorder" : "Move up in the rotation order"}
+                        >
+                          ▲
+                        </button>
+                        <button
+                          style={{ ...QUEUE_BTN, padding: "2px 6px", marginLeft: "4px" }}
+                          disabled={reordering || filtered || fullIndex < 0 || fullIndex >= fullIds.length - 1}
+                          onClick={() => void moveClient(c.client_id, "down")}
+                          title={filtered ? "Clear the filter to reorder" : "Move down in the rotation order"}
+                        >
+                          ▼
+                        </button>
+                      </td>
                       <td>{isOpen ? "▾" : "▸"} {c.name}</td>
                       <td>
                         {running ? (
@@ -804,7 +807,7 @@ export function SchedulerPanel() {
                     </tr>
                     {isOpen && (
                       <tr>
-                        <td colSpan={8} style={{ padding: "0 0 12px" }}>
+                        <td colSpan={9} style={{ padding: "0 0 12px" }}>
                           <ClientEventLog clientId={c.client_id} />
                         </td>
                       </tr>

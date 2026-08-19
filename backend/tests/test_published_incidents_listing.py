@@ -2,7 +2,7 @@
 missing entirely (only `upsert` existed; no read path). Covers the one
 non-obvious piece of logic: a caller passes a platform id ("twitter"), but
 no raw platform id is stored on a published-incident document -- only the
-display name (`assetType`, e.g. "X / Twitter") `incident_publisher.
+display name (`assetType`, e.g. "Twitter") `incident_publisher.
 build_incident_doc` writes. `list_published` has to resolve one to the
 other before the repository query runs, or a platform-scoped read would
 silently return nothing.

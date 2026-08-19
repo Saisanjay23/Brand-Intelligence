@@ -116,7 +116,7 @@ PLATFORMS: dict[str, Platform] = {
     ),
     "twitter": Platform(
         id="twitter",
-        name="X / Twitter",
+        name="Twitter",
         analysis_path="backend.platforms.twitter.analysis_engine:Scraper",
         discovery_path="backend.platforms.twitter.discovery_engine:Discovery",
         session_path="backend.platforms.twitter.discovery_engine:TwitterSession",

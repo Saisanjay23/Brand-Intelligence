@@ -434,7 +434,7 @@ Use these exact strings anywhere a `platform` field is accepted:
 | id | Name | Notes |
 |---|---|---|
 | `facebook` | Facebook | discovery + analysis |
-| `twitter` | X / Twitter | discovery + analysis |
+| `twitter` | Twitter | discovery + analysis |
 | `instagram` | Instagram | discovery + analysis |
 | `youtube` | YouTube | API-key based, no browser session lock contention with other jobs |
 | `telegram` | Telegram | discovery + analysis |

@@ -80,22 +80,15 @@ export interface SchedulerStatus {
   // transient noise; a large/growing number means something systemic is
   // wrong, not one client's own problem.
   consecutive_failures: number;
-  // whether this process auto-starts the engine on its NEXT boot,
-  // independent of `running` (the engine's state right now). Toggled via
-  // PUT /scheduler/autostart; does not itself start/stop anything.
-  autostart: boolean;
 }
 
 export const schedulerApi = {
   status: () => fetch(url("/scheduler/status")).then(json<SchedulerStatus>),
+  // Never starts itself, not even on server boot (see backend/main.py's
+  // lifespan) -- this is the only thing that ever starts the engine, and
+  // it only happens because an analyst clicked the button.
   start: () => post("/scheduler/start", {}).then(json<SchedulerStatus>),
   stop: () => post("/scheduler/stop", {}).then(json<SchedulerStatus>),
-  setAutostart: (enabled: boolean) =>
-    fetch(url("/scheduler/autostart"), {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enabled }),
-    }).then(json<{ autostart: boolean }>),
 
   // In-memory only, so it is cheap enough to poll on a much tighter
   // interval than status() (which reads every client out of Mongo).

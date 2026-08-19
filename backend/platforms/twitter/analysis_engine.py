@@ -1,4 +1,4 @@
-"""X/Twitter analysis engine: validation and impersonation signal extraction
+"""Twitter analysis engine: validation and impersonation signal extraction
 -- profile URL -> scored Row.
 
 Session/login-checking and payload parsing (TwitterUser + friends) live in

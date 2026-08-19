@@ -371,20 +371,20 @@ async def get_by_urls(client_id: str, platform: str, urls: list[str]) -> list[di
     })]
 
 
-async def find(
+def _build_query(
     client_id: str, *, platform: Optional[str] = None, status: Optional[str] = None,
-    phase: Optional[str] = None, limit: int = 100, offset: int = 0,
-    include_held: bool = False, keyword: Optional[str] = None,
+    phase: Optional[str] = None, include_held: bool = False, keyword: Optional[str] = None,
     entity_type: Optional[str] = None, priority: Optional[str] = None,
     match_level: Optional[str] = None, keyword_match_type: Optional[str] = None,
     search: Optional[str] = None, client_keywords: Optional[dict] = None,
     published: Optional[bool] = None,
-) -> tuple[list[dict], int, dict]:
-    """`include_held=False` (the default, used by any caller that doesn't
-    explicitly ask otherwise, i.e. the SaaS backend's normal poll) hides a
-    freshly analysed row until its publish hold clears, see ADR 0007. The
-    analyst-facing frontend always passes `include_held=True` so analysts
-    see held rows immediately, flagged with a countdown.
+) -> dict[str, Any]:
+    """The filter `find()` queries with, factored out so `delete_matching()`
+    (the "Delete Platform Data" button) can delete EXACTLY the set of
+    profiles a given phase/status/published combination currently displays,
+    no more and no less, by building the identical query rather than
+    re-deriving similar-looking logic that could quietly drift out of sync
+    with what the analyst is actually looking at.
 
     `published` is the analyst's Published/Unpublished tab (analysis phase
     only), a separate concern from `include_held`, which only decides
@@ -399,14 +399,6 @@ async def find(
     (a scalar-vs-array Mongo query already does "array contains" for free),
     an analyst picks one of the client's actual searched keywords from a
     list, not a free-text substring.
-
-    EVERY filter here is applied server-side, before `limit`/`offset`.
-    `priority`, `match_level`, `keyword_match_type` and `search` used to be
-    applied in the browser over whatever page happened to be loaded, while
-    `total` and the pager still came from the unfiltered server query, so
-    filtering "High priority" across 500 rows showed only the High rows
-    within page 1 and still claimed 500 results. A filter that doesn't
-    survive pagination isn't a filter.
 
     Clauses accumulate in `$and` rather than as top-level keys: several of
     them (phase, publish hold, keyword-category, free-text search) are each
@@ -482,6 +474,38 @@ async def find(
                 ]})
     if clauses:
         q["$and"] = clauses
+    return q
+
+
+async def find(
+    client_id: str, *, platform: Optional[str] = None, status: Optional[str] = None,
+    phase: Optional[str] = None, limit: int = 100, offset: int = 0,
+    include_held: bool = False, keyword: Optional[str] = None,
+    entity_type: Optional[str] = None, priority: Optional[str] = None,
+    match_level: Optional[str] = None, keyword_match_type: Optional[str] = None,
+    search: Optional[str] = None, client_keywords: Optional[dict] = None,
+    published: Optional[bool] = None,
+) -> tuple[list[dict], int, dict]:
+    """`include_held=False` (the default, used by any caller that doesn't
+    explicitly ask otherwise, i.e. the SaaS backend's normal poll) hides a
+    freshly analysed row until its publish hold clears, see ADR 0007. The
+    analyst-facing frontend always passes `include_held=True` so analysts
+    see held rows immediately, flagged with a countdown.
+
+    EVERY filter here is applied server-side, before `limit`/`offset`.
+    `priority`, `match_level`, `keyword_match_type` and `search` used to be
+    applied in the browser over whatever page happened to be loaded, while
+    `total` and the pager still came from the unfiltered server query, so
+    filtering "High priority" across 500 rows showed only the High rows
+    within page 1 and still claimed 500 results. A filter that doesn't
+    survive pagination isn't a filter.
+    """
+    q = _build_query(
+        client_id, platform=platform, status=status, phase=phase, include_held=include_held,
+        keyword=keyword, entity_type=entity_type, priority=priority, match_level=match_level,
+        keyword_match_type=keyword_match_type, search=search, client_keywords=client_keywords,
+        published=published,
+    )
 
     coll = db()[PROFILES]
     total = await coll.count_documents(q)
@@ -870,14 +894,41 @@ async def delete_for_client(client_id: str) -> int:
     return res.deleted_count
 
 
-async def delete_for_client_platform(client_id: str, platform: str) -> int:
-    """Same as `delete_for_client`, scoped to one platform, the
-    per-platform delete buttons in Discovery/Analysis (see
-    profile_service.delete_for_client_platform). Covers both Discovery and
-    Analysis rows for that platform in one query, since they're the same
-    collection distinguished only by `phase`."""
-    res = await db()[PROFILES].delete_many({"client_id": client_id, "platform": platform})
-    return res.deleted_count
+async def delete_matching(
+    client_id: str, platform: str, *, phase: Optional[str] = None,
+    status: Optional[str] = None, published: Optional[bool] = None,
+) -> dict:
+    """The "Delete Platform Data" button (see
+    profile_service.delete_for_client_platform), scoped to EXACTLY the
+    phase/status/published combination the analyst currently has selected
+    -- e.g. Discovery + Pending deletes only pending discovery-phase rows,
+    leaving Validated/Rejected and every Analysis-phase row untouched. Uses
+    the identical `_build_query` `find()` queries with, so "delete what I'm
+    looking at" can never quietly drift from what IS actually displayed.
+
+    `phase`/`status`/`published` all None (the pre-existing "Delete
+    Platform Data" behavior, still used by client_service.delete's own
+    cascade) means every row for this client+platform, unscoped, same as
+    before this function had filters at all.
+
+    Returns the deleted urls and screenshot keys too, not just a count:
+    evidence screenshots and published incidents are cascaded from THIS
+    exact set (see profile_service.delete_for_client_platform), never a
+    separate blanket per-platform query, so deleting only a Pending sliver
+    can never take an unrelated already-published finding's screenshot
+    with it.
+    """
+    q = _build_query(client_id, platform=platform, phase=phase, status=status, published=published)
+    coll = db()[PROFILES]
+    urls: list[str] = []
+    screenshot_keys: list[str] = []
+    async for doc in coll.find(q, {"url": 1, "screenshot": 1}):
+        if doc.get("url"):
+            urls.append(doc["url"])
+        if doc.get("screenshot"):
+            screenshot_keys.append(doc["screenshot"])
+    res = await coll.delete_many(q)
+    return {"deleted": res.deleted_count, "urls": urls, "screenshot_keys": screenshot_keys}
 
 
 async def delete_by_ids(ids: list[str]) -> int:

@@ -7,6 +7,14 @@ from typing import Optional
 from pydantic import BaseModel
 
 
+class ReorderIn(BaseModel):
+    """The full desired client order, front to back, see
+    client_service.reorder / client_repository.reorder. Drives both the
+    Scheduler tab's own listing and the round-robin engine's rotation
+    sequence, both of which sort by the same persisted `order` field."""
+    client_ids: list[str]
+
+
 class ClientIn(BaseModel):
     client_id: str  # the org id
     name: str  # the org/client display name

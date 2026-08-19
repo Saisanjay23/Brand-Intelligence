@@ -6,6 +6,15 @@ import type { Client } from "./types";
 
 export const clientsApi = {
   listClients: () => fetch(url("/clients")).then(json<{ items: Client[] }>),
+  // The full desired order, front to back. Drives both the Scheduler tab's
+  // own listing and the round-robin engine's rotation sequence (both sort
+  // by the same persisted `order` field server-side).
+  reorderClients: (clientIds: string[]) =>
+    fetch(url("/clients/reorder"), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ client_ids: clientIds }),
+    }).then(json<{ items: Client[] }>),
   upsertClient: (body: {
     client_id: string;
     name: string;

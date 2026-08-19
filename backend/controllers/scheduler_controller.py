@@ -37,10 +37,6 @@ async def stop_engine() -> dict:
     return round_robin_service.status()
 
 
-def set_autostart(enabled: bool) -> bool:
-    return round_robin_service.set_autostart(enabled)
-
-
 async def _client_names() -> dict[str, str]:
     return {c["client_id"]: c.get("name") or c["client_id"] for c in await clients_db.list_all()}
 

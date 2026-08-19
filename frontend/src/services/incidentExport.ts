@@ -53,7 +53,10 @@ export function toIncidentExportRow(r: Profile): IncidentExportRow | null {
     Source: inc.source,
     RiskScore: inc.riskRating != null && Number.isFinite(Number(inc.riskRating)) ? Number(inc.riskRating) : (inc.riskRating ?? ""),
     "ThirdParty YES/NO": inc.thirdParty ? "YES" : "NO",
-    "Date (DD-MM-YYYY) (Optional)": toDDMMYYYY(inc.date),
+    // Deliberately always blank, per analyst request: unlike Last Post
+    // below, this field is filled in by the client reviewing the export,
+    // not derived from anything this engine observed.
+    "Date (DD-MM-YYYY) (Optional)": "",
     Title: inc.title,
     Description: inc.description,
     "Active (Yes/No)": yesNo(s.isActive),

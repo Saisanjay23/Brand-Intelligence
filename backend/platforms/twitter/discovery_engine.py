@@ -1,4 +1,4 @@
-"""X/Twitter discovery engine: search, crawling, pagination, and profile
+"""Twitter discovery engine: search, crawling, pagination, and profile
 extraction, keywords in, candidate accounts out.
 
 Also owns the browser session (login/checkpoint detection) and the payload
@@ -68,7 +68,7 @@ class TwitterSession(Session):
 
 
 # Payload parsing (profile extraction)
-# Reading X/Twitter's own API payloads.
+# Reading Twitter's own API payloads.
 #
 # `legacy` USED TO carry everything the report needs, but X has been migrating
 # fields out of it one at a time, and a real capture (2026) showed a

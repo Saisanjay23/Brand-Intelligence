@@ -324,6 +324,8 @@ async def add_manual_urls(
     urls: Optional[list[str]] = None,
     individual_urls: Optional[list[str]] = None,
     domain_urls: Optional[list[str]] = None,
+    individual_keyword: str = "",
+    domain_keyword: str = "",
 ) -> dict:
     """An analyst who already has a specific profile URL in hand (a tip, a
     report, a link an earlier sweep never turned up) shouldn't have to
@@ -365,17 +367,32 @@ async def add_manual_urls(
     domain_keywords = list(client.get("domain_keywords") or []) + list(client.get("asset_name_domain_keywords") or [])
     all_keywords = individual_keywords + domain_keywords
 
+    # An analyst typing a keyword alongside the URLs (instead of relying on
+    # fuzzy match / the client's first configured keyword) wins outright,
+    # and is persisted onto the client itself via $addToSet (see
+    # client_repository.add_keyword), so the client's own configured
+    # keyword list and this batch's profile.keywords entries stay in sync
+    # and the same keyword filter picks both up from then on.
+    individual_keyword = individual_keyword.strip()
+    domain_keyword = domain_keyword.strip()
+    if individual_keyword and (individual_urls or urls):
+        await client_service.add_keyword(client_id, individual_keyword, "name")
+    if domain_keyword and (domain_urls or urls):
+        await client_service.add_keyword(client_id, domain_keyword, "domain")
+
     added_urls_by_platform: dict[str, list[str]] = {}
     skipped: list[str] = []
 
-    async def _add_one(raw: str, forced_candidates: Optional[list] = None) -> None:
+    async def _add_one(raw: str, forced_candidates: Optional[list] = None, explicit_keyword: str = "") -> None:
         parsed = _parse_manual_url(raw)
         if not parsed or parsed[0] not in registry.PLATFORMS:
             skipped.append(raw)
             return
         platform, url, entity_id = parsed
         haystack = f"{url} {entity_id}"
-        if forced_candidates is not None:
+        if explicit_keyword:
+            matched = explicit_keyword
+        elif forced_candidates is not None:
             # explicit intent: a real fuzzy match against THIS type's own
             # keywords first, else the client's first configured keyword of
             # that type (still classifies correctly even when the URL text
@@ -399,9 +416,9 @@ async def add_manual_urls(
     for raw in (urls or []):
         await _add_one(raw)
     for raw in (individual_urls or []):
-        await _add_one(raw, individual_keywords)
+        await _add_one(raw, individual_keywords, explicit_keyword=individual_keyword)
     for raw in (domain_urls or []):
-        await _add_one(raw, domain_keywords)
+        await _add_one(raw, domain_keywords, explicit_keyword=domain_keyword)
 
     for platform, plat_urls in added_urls_by_platform.items():
         docs = await profiles_db.get_by_urls(client_id, platform, plat_urls)
@@ -479,19 +496,36 @@ async def delete_profiles(profile_ids: list[str]) -> dict:
     return {"deleted": deleted, "requested": len(profile_ids)}
 
 
-async def delete_for_client_platform(client_id: str, platform: str) -> dict:
-    """The Discovery/Analysis "delete this platform's data" button
-    scoped to exactly one client + platform, covering both phases (same
-    collection, distinguished only by `phase`) plus the GridFS evidence
-    screenshots and published incidents that reference those profiles, so
-    nothing is left dangling behind. Mirrors client_service.delete's
-    cascade, just narrowed to one platform instead of every platform."""
-    deleted_profiles = await profiles_db.delete_for_client_platform(client_id, platform)
-    deleted_evidence = await evidence_db.delete_for_client_platform(client_id, platform)
-    asset_type = incident_publisher._asset_type(platform)
-    deleted_published = await published_incidents_db.delete_for_client_platform(client_id, asset_type)
+async def delete_for_client_platform(
+    client_id: str, platform: str, *, phase: Optional[str] = None,
+    status: Optional[str] = None, published: Optional[bool] = None,
+) -> dict:
+    """The Discovery/Analysis "delete this platform's data" button, scoped
+    to exactly one client + platform AND, when given, one exact
+    phase/status/published combination -- the same one `find()` would use
+    to render whatever the analyst currently has on screen (Discovery +
+    Pending, Discovery + Validated, Discovery + Rejected, Analysis +
+    Published, Analysis + Unpublished, ...), each independent of the
+    others: deleting one never touches profiles that belong to a different
+    phase or a different status.
+
+    All three left None restores the original unscoped behavior -- every
+    profile, evidence screenshot, and published incident for this
+    client+platform, regardless of phase/status (client_service.delete's
+    own whole-client cascade is separate, see delete_for_client).
+
+    Evidence and published-incident cascade come from the EXACT profiles
+    just deleted (their urls/screenshot keys, see
+    profile_repository.delete_matching), not a separate blanket per-platform
+    query, so a scoped delete can never reach into a profile it wasn't
+    asked to touch."""
+    result = await profiles_db.delete_matching(
+        client_id, platform, phase=phase, status=status, published=published,
+    )
+    deleted_evidence = await evidence_db.delete_many(result["screenshot_keys"])
+    deleted_published = await published_incidents_db.delete_for_sources(client_id, result["urls"])
     return {
-        "deleted_profiles": deleted_profiles, "deleted_evidence": deleted_evidence,
+        "deleted_profiles": result["deleted"], "deleted_evidence": deleted_evidence,
         "deleted_published_incidents": deleted_published,
     }
 

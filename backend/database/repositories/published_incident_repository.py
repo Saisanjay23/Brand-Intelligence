@@ -87,12 +87,25 @@ async def delete_for_client(client_id: str) -> int:
 
 
 async def delete_for_client_platform(client_id: str, asset_type: str) -> int:
-    """Part of the per-platform delete cascade, see
-    profile_service.delete_for_client_platform. `asset_type` is the
-    platform's DISPLAY name (e.g. "Facebook"), not its raw id, the same
+    """Part of the UNSCOPED per-platform delete cascade (phase/status =
+    None), see profile_service.delete_for_client_platform. `asset_type` is
+    the platform's DISPLAY name (e.g. "Facebook"), not its raw id, the same
     resolution `find`'s own `platform` param above requires, since that's
     what's actually stored on a published-incident document."""
     res = await db()[PUBLISHED_INCIDENTS].delete_many({"orgId": client_id, "assetType": asset_type})
+    return res.deleted_count
+
+
+async def delete_for_sources(client_id: str, sources: list[str]) -> int:
+    """The SCOPED per-platform delete cascade: only the published incidents
+    for these exact profile URLs, see
+    profile_service.delete_for_client_platform. A Discovery-phase delete's
+    urls will simply match nothing here (a profile that was never approved
+    and analysed was never published either), so this is safe to call
+    unconditionally rather than needing its own phase check."""
+    if not sources:
+        return 0
+    res = await db()[PUBLISHED_INCIDENTS].delete_many({"orgId": client_id, "source": {"$in": sources}})
     return res.deleted_count
 
 

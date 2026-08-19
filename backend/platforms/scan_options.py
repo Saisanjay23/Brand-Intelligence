@@ -22,7 +22,6 @@ class ScanOptions:
     settle: float = 6.0  # cap on waiting for the profile payload
     delay: float = 2.5  # between profiles, jittered
     scrolls: int = 0  # newest post is in the first render
-    about: bool = False  # two extra page loads, no join date
     concurrency: int = 1  # >1 is faster and more conspicuous
     keep_going: bool = False  # continue past a checkpoint
 

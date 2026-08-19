@@ -1,15 +1,15 @@
 """Facebook's per-field readers (backend/platforms/facebook/analysis_engine.py):
-read_name, take_chip, read_counts, read_created. Each is a pure function of
-(Row, Harvest) per the module's own comment ("no browser, no network --
-that is what makes them testable against a saved payload"), yet none had a
-test. These are the multi-tier graphql -> dom -> text-regex fallback chains
-that decide what actually lands in the Name/Followers/Created-Date columns.
+read_name, take_chip, read_counts. Each is a pure function of (Row, Harvest)
+per the module's own comment ("no browser, no network -- that is what makes
+them testable against a saved payload"), yet none had a test. These are the
+multi-tier graphql -> dom -> text-regex fallback chains that decide what
+actually lands in the Name/Followers columns.
 """
 
 from __future__ import annotations
 
 from backend.platforms.facebook.analysis_engine import (
-    Harvest, read_counts, read_created, read_name, take_chip)
+    Harvest, read_counts, read_name, take_chip)
 from backend.shared.models.row import Row
 
 
@@ -218,33 +218,3 @@ class TestReadCounts:
         row, h = _row(), _harvest()
         read_counts(row, h)
         assert row.followers is None
-
-
-class TestReadCreated:
-    def test_ent_strs_joined_date_is_parsed(self):
-        ents = [{"id": "1", "joined_date": "June 2020"}]
-        row, h = _row(), _harvest(ents=ents)
-        read_created(row, h)
-        assert row.created_iso == "2020-06"
-
-    def test_falls_back_to_epoch_int_when_no_string_form(self):
-        ents = [{"id": "1", "profile_creation_time": 1590000000}]
-        row, h = _row(), _harvest(ents=ents)
-        read_created(row, h)
-        assert row.created_iso  # a real ISO date was produced
-        assert row.created_iso.startswith("2020-")
-
-    def test_unparseable_string_falls_through_to_the_int_tier(self):
-        ents = [{
-            "id": "1",
-            "joined_date": "not a real date",
-            "profile_creation_time": 1590000000,
-        }]
-        row, h = _row(), _harvest(ents=ents)
-        read_created(row, h)
-        assert row.created_iso.startswith("2020-")
-
-    def test_no_joined_field_anywhere_leaves_created_iso_blank(self):
-        row, h = _row(), _harvest()
-        read_created(row, h)
-        assert row.created_iso == ""

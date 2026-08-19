@@ -1,1 +1,1 @@
-"""X / Twitter scanner."""
+"""Twitter scanner."""

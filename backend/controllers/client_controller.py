@@ -29,6 +29,10 @@ async def list_clients() -> dict:
     return {"items": await client_service.list_all()}
 
 
+async def reorder_clients(client_ids: list[str]) -> list[dict]:
+    return await client_service.reorder(client_ids)
+
+
 async def delete_client(client_id: str) -> dict:
     out = await client_service.delete(client_id)
     scheduler.sync()

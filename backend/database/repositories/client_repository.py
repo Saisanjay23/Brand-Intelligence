@@ -56,6 +56,13 @@ def _to_out(doc: dict) -> dict:
         # split by keyword type may still carry the legacy flat {tab: cap}
         # shape, discovery_service.py's cap lookup understands both.
         "platform_tab_limits": doc.get("platform_tab_limits", {}),
+        # the round-robin engine's rotation order and the Scheduler tab's
+        # list order are both just this field, ascending. Set once at
+        # creation (epoch-ms of insert, so a brand-new client always sorts
+        # after every existing one) and never touched again by `upsert`,
+        # only `reorder` changes it after that, an analyst dragging the
+        # Scheduler tab's list is the only thing that should move a client.
+        "order": doc.get("order", 0),
         "cron": doc.get("cron"),
         "created_at": _utc(doc.get("created_at")),
         # set by the round-robin engine after each of its turns for this
@@ -117,12 +124,49 @@ async def upsert(
             # fallback only ever needs to cover a document nobody has
             # resaved since the split, never one that just went through here.
             "$unset": {"platform_limits": ""},
-            "$setOnInsert": {"_id": client_id, "created_at": now},
+            # epoch-ms at insert time: monotonically increasing, so a new
+            # client is always created at the END of the rotation/list order
+            # by default, never touched again by a later edit-and-resave
+            # through this same upsert (see `reorder` for the only thing
+            # that changes it afterward).
+            "$setOnInsert": {"_id": client_id, "created_at": now, "order": int(now.timestamp() * 1000)},
         },
         upsert=True,
     )
     doc = await db()[CLIENTS].find_one({"_id": client_id})
     return _to_out(doc)
+
+
+async def reorder(client_ids: list[str]) -> None:
+    """Persists an analyst's drag-to-reorder of the Scheduler tab's client
+    list: `client_ids` is the FULL desired order, front to back. Each gets
+    `order` set to its index, so the round-robin engine's rotation (built
+    from `list_all()`, sorted by this same field) and the Scheduler tab's
+    own listing both reflect the new order on their very next read, no
+    restart needed. A client id this list omits (deleted mid-drag, e.g.)
+    is silently skipped rather than erroring the whole batch."""
+    from pymongo import UpdateOne
+
+    ops = [
+        UpdateOne({"_id": cid}, {"$set": {"order": i}})
+        for i, cid in enumerate(client_ids)
+    ]
+    if ops:
+        await db()[CLIENTS].bulk_write(ops, ordered=False)
+
+
+async def add_keyword(client_id: str, keyword: str, kind: str) -> None:
+    """Appends `keyword` to a client's name_keywords (kind="name") or
+    domain_keywords (kind="domain") without touching the rest of the
+    document, unlike `upsert` this never replaces the array wholesale, so
+    it's safe to call from a flow (e.g. add_manual_urls) that only knows
+    about the one new keyword, not the client's full configured set.
+    `$addToSet` makes it idempotent: adding the same keyword twice is a
+    no-op, not a duplicate entry."""
+    field = "name_keywords" if kind == "name" else "domain_keywords"
+    await db()[CLIENTS].update_one(
+        {"_id": client_id}, {"$addToSet": {field: keyword}},
+    )
 
 
 async def get(client_id: str) -> dict:
@@ -141,8 +185,13 @@ async def try_get(client_id: str) -> Optional[dict]:
 
 async def list_all() -> list[dict]:
     """Every client, used by the scheduler's cron sync and the analysis
-    catch-up sweep, which operate across all of them."""
-    return [_to_out(d) async for d in db()[CLIENTS].find({})]
+    catch-up sweep, which operate across all of them, AND by the
+    round-robin engine to build its rotation -- sorted by `order` (then
+    `_id` as a stable tiebreaker for the handful of pre-existing documents
+    that predate the field and share order=0), which is exactly what makes
+    an analyst's Scheduler-tab reorder change the engine's actual rotation
+    sequence, not just the tab's own display order."""
+    return [_to_out(d) async for d in db()[CLIENTS].find({}).sort([("order", 1), ("_id", 1)])]
 
 
 async def record_run_result(

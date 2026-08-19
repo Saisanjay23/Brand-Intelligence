@@ -1,6 +1,10 @@
-"""The always-on engine: continuously cycles through every client that has
-keywords set, running a DISCOVERY sweep for each (analysis is not this
-engine's job -- see _process_client),
+"""The round-robin engine: once an analyst starts it (POST /scheduler/start,
+the Scheduler tab's Start button -- it never starts itself, not even on a
+process boot, see main.py's lifespan), it continuously cycles through every
+client that has keywords set, running a DISCOVERY sweep for each (analysis
+is not this engine's job -- see _process_client), in the persisted client
+`order` field's sequence (see client_repository.list_all/reorder -- an
+analyst's drag-to-reorder on the Scheduler tab IS the rotation order),
 bounded to a handful of concurrent slots (`settings.round_robin_slots`) so
 400 clients never all fire in the same instant. This is what replaced
 per-client `cron` scheduling (see scheduler_service.py's module docstring).
@@ -591,24 +595,7 @@ def status() -> dict:
         "rotation_size": len(_rotation) or None,
         "current": list(_slot_state.values()),
         "consecutive_failures": _consecutive_failures,
-        # whether THIS process auto-started the engine on boot (see
-        # main.py's lifespan), distinct from `running`, which is the
-        # engine's state right now regardless of how it got there. Lets the
-        # Scheduler tab's toggle show "will auto-start next boot" even
-        # while an admin has it manually paused/resumed in the meantime.
-        "autostart": settings.scheduler_autostart,
     }
-
-
-def set_autostart(enabled: bool) -> bool:
-    """Persists whether the engine should start itself on the NEXT process
-    boot (see main.py's lifespan), does not itself start or stop the
-    engine right now; use POST /scheduler/start|stop for that."""
-    from backend.config.settings import write_env
-
-    write_env("SCHEDULER_AUTOSTART", "true" if enabled else "false")
-    settings.scheduler_autostart = enabled
-    return settings.scheduler_autostart
 
 
 async def client_statuses() -> list[dict]:

@@ -56,6 +56,7 @@ async def patch_profile(profile_id: str, body: ProfilePatch) -> dict:
 async def add_manual_urls(body: ManualUrlsRequest) -> dict:
     return await profile_service.add_manual_urls(
         body.client_id, body.urls, body.individual_urls, body.domain_urls,
+        individual_keyword=body.individual_keyword, domain_keyword=body.domain_keyword,
     )
 
 
@@ -70,7 +71,9 @@ async def delete_profiles(body: BulkDeleteRequest) -> dict:
 
 
 async def delete_platform_data(body: DeletePlatformDataRequest) -> dict:
-    return await profile_service.delete_for_client_platform(body.client_id, body.platform)
+    return await profile_service.delete_for_client_platform(
+        body.client_id, body.platform, phase=body.phase, status=body.status, published=body.published,
+    )
 
 
 async def publish_profile(profile_id: str) -> dict:

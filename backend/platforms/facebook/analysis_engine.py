@@ -19,7 +19,7 @@ from typing import Any, Iterator, Optional
 from backend.shared.models.row import Row
 from backend.shared.text import (MONTHS, epoch_to_dt, find_ints,
                                is_place, iter_dicts, iter_kv, name_score,
-                               parse_count, parse_joined)
+                               parse_count)
 from backend.platforms.facebook.discovery_engine import (RE_CHECKPOINT,
                                                           RE_DEFAULT_PIC,
                                                           RE_GONE, RE_LOGIN,
@@ -44,15 +44,6 @@ K_FOLLOWERS = (
     "subscriber_count",
     "follower_count_int",
 )
-K_JOINED = (
-    "joined_date",
-    "profile_creation_time",
-    "account_creation_time",
-    "date_joined",
-    "creation_date",
-    "page_creation_date",
-    "profile_created_time",
-)
 # "created_time" deliberately excluded. Confirmed live, in the raw payload:
 # it belongs to COMMENT objects specifically:
 # `"comment":{"created_time":...}` under an `XFBCommentTimestampBadge`
@@ -75,11 +66,6 @@ K_LOCATION = (
 K_NAME = ("profile_name", "page_name", "name_for_display")
 K_PIC = ("profile_picture", "profile_pic_url", "uri", "photo_image")
 
-RE_JOINED = re.compile(
-    r"(?:Joined Facebook|Joined|Date joined)\s*[-–—:•]?\s*"
-    r"([A-Z][a-z]{2,9}\s+\d{4}|[A-Z][a-z]{2,9}\s+\d{1,2},?\s+\d{4})",
-    re.I,
-)
 RE_FOLLOWERS = re.compile(
     r"([\d][\d.,\s]{0,15}[KMB]?)\s*(?:followers|people follow this)", re.I
 )
@@ -458,32 +444,6 @@ def read_counts(row: Row, h: Harvest) -> None:
     followers_from_friends(row, chips)
 
 
-def read_created(row: Row, h: Harvest) -> None:
-    for v in h.ent_strs(K_JOINED):
-        if iso := parse_joined(v):
-            row.created_iso = iso
-            return
-    for n in h.ent_ints(K_JOINED):
-        if dt := epoch_to_dt(n):
-            row.created_iso = dt.date().isoformat()
-            return
-    if m := RE_JOINED.search(h.all_text()):
-        if iso := parse_joined(m.group(1)):
-            row.created_iso = iso
-            return
-    for v in h.gql_strs(K_JOINED):
-        if iso := parse_joined(v):
-            row.created_iso = iso
-            return
-        if re.match(r"^\d{4}-\d{2}", v):
-            row.created_iso = v[:10] if len(v) >= 10 else v[:7]
-            return
-    for n in h.gql_ints(K_JOINED) + find_ints(h.all_html(), K_JOINED):
-        if dt := epoch_to_dt(n):
-            row.created_iso = dt.date().isoformat()
-            return
-
-
 def _post_stamps(roots) -> list[int]:
     """K_POST_TIME values that belong to a genuine post object, not just
     any nested dict that happens to reuse the key name.
@@ -559,9 +519,6 @@ def read_last_post(row: Row, h: Harvest) -> None:
         tag = "payload-regex-ungated"
     dts = [epoch_to_dt(t) for t in stamps]
     dts = [d for d in dts if d]
-    # a join/creation date can surface under creation_time, drop it
-    if row.created_iso:
-        dts = [d for d in dts if not d.date().isoformat().startswith(row.created_iso)]
     if dts:
         row.last_post_iso = max(dts).date().isoformat()
         row.posts_seen = "yes"
@@ -1057,15 +1014,14 @@ class Scraper:
             # a human sees.
             #
             # Deliberately BEFORE the About-tab visits below, not after:
-            # confirmed live this used to be dead code in production
-            # (ScanOptions.about defaults False, but the two About-tab page
-            # visits happen unconditionally regardless, only the FIELD
-            # READ off them is opt-in). By the time this used to run at the
-            # end of process(), page.url had already moved to
-            # ".../about", a page with no post permalinks at all, so this
-            # fallback always found nothing and never actually fell back to
-            # anything. Running it here, while the page is still the
-            # timeline that was just visited, is what makes it work.
+            # confirmed live this used to be dead code in production, the
+            # two About-tab page visits happen unconditionally, and by the
+            # time this used to run at the end of process(), page.url had
+            # already moved to ".../about", a page with no post permalinks
+            # at all, so this fallback always found nothing and never
+            # actually fell back to anything. Running it here, while the
+            # page is still the timeline that was just visited, is what
+            # makes it work.
             if not row.last_post_iso and row.posts_seen != "no":
                 iso = await dom_last_post(page)
                 if iso:
@@ -1076,23 +1032,16 @@ class Scraper:
             # The main profile page rarely carries a location. Facebook Pages
             # put their city/country on the About tab instead, so this visit
             # happens unconditionally: accuracy on a field the report actually
-            # promises beats saving one page load. Join date is a different
-            # story. Facebook does not expose it to an ordinary session at
-            # all, not in the rendered tab and not in any payload, so that
-            # attempt alone stays opt-in via --about since it essentially
-            # never succeeds and isn't worth chasing by default.
+            # promises beats saving one page load. Join/creation date is
+            # deliberately NOT read here (or anywhere in this engine, see
+            # ADR/product decision): Facebook does not expose it to an
+            # ordinary session at all, not in the rendered tab and not in
+            # any payload, so attempting it never succeeded and wasn't
+            # worth the two extra page loads either way.
             await self.pause(0.4)
             for sk in ("about_profile_transparency", "about"):
                 await self.visit(page, tab_url(url, sk), h, sk)
-                if self.a.about:
-                    read_created(row, h.scoped(pid))
-                    if row.created_iso:
-                        break
                 await self.pause(0.3)
-            if self.a.about and not row.created_iso:
-                row.note("join date not visible on About this account")
-            elif not self.a.about:
-                row.note("join date not attempted (pass --about)")
 
             read_location(row, h.scoped(pid))
 
