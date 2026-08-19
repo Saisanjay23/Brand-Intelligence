@@ -25,6 +25,7 @@ from backend.services import health_service as health_engine
 from backend.services import incident_service as incidents_engine
 from backend.sessions import manager as sessions_engine
 from backend.services.job_service import Job
+from backend.shared.completeness import missing_fields
 from backend.shared.extraction import locate
 from backend.shared.models.row import Row
 from backend.shared.resilience import classify_failure, is_transient, retry_async
@@ -33,6 +34,16 @@ from backend.config.settings import settings
 from backend.shared.logging import get_logger
 
 log = get_logger("services.analysis")
+
+
+# How many extra passes a run makes over the profiles that came back
+# missing a field the platform does publish. Two is deliberate: one is
+# enough for the ordinary case (a payload or a render that lost its race
+# on a loaded machine), and the cross-run catch-up sweep picks up anything
+# still short afterwards, bounded by MAX_ANALYSIS_ATTEMPTS. Making this
+# large would spend a live session re-reading genuinely unreadable
+# profiles instead.
+_COMPLETENESS_PASSES = 2
 
 
 def _tri(flag: str) -> Optional[bool]:
@@ -49,9 +60,16 @@ def _tri(flag: str) -> Optional[bool]:
     return True if flag == "Yes" else False if flag == "No" else None
 
 
-def _row_to_fields(row: Row) -> dict:
+def _row_to_fields(
+    row: Row, *, platform_id: str = "", want_screenshot: bool = False,
+) -> dict:
     """An analysis Row -> the plain field dict `profile_repository.save` expects,
-    carrying the scoring across."""
+    carrying the scoring across.
+
+    `analysis_complete` is what keeps a half-read profile in the queue:
+    see shared/completeness.py for what counts as read, and
+    profile_repository.urls_for for what the flag then does.
+    """
     # `row.screenshot` is already the exact GridFS key a platform's own
     # screenshot() method wrote the capture under (see evidence_repository.py)
     #; nothing left to resolve or validate against a filesystem root here,
@@ -82,6 +100,8 @@ def _row_to_fields(row: Row) -> dict:
     if shot:
         fields["screenshot"] = shot
         fields["screenshot_at"] = datetime.now(timezone.utc)
+    fields["analysis_complete"] = not missing_fields(
+        platform_id, row, want_screenshot=want_screenshot)
     return fields
 
 
@@ -90,6 +110,13 @@ async def run_analysis(job: Job) -> None:
 
     mgr = JobManager()
     p = job.params
+
+    if p.get("profile_ids"):
+        # A hand-picked set of profiles, not a keyword/platform scope --
+        # see _run_selected's own docstring.
+        await _run_selected(job, mgr, p)
+        return
+
     # force=True: re-analyse every currently-approved profile, including
     # ones a previous run already scored, not just the ones still owed
     # (unanalysed, or failed-and-retryable). This is what makes the
@@ -102,6 +129,7 @@ async def run_analysis(job: Job) -> None:
     if job.platform:
         targets = [(job.platform, await profiles_db.urls_for(
             job.client_id, job.platform, "approved", exclude_analysed=exclude_analysed,
+            with_keywords=True,
         ))]
     else:
         from backend.platforms import registry
@@ -117,6 +145,7 @@ async def run_analysis(job: Job) -> None:
                 continue
             urls = await profiles_db.urls_for(
                 job.client_id, platform_id, "approved", exclude_analysed=exclude_analysed,
+                with_keywords=True,
             )
             if urls:
                 targets.append((platform_id, urls))
@@ -137,15 +166,89 @@ async def run_analysis(job: Job) -> None:
         f"{total_urls} url(s) across {len(targets)} platform(s)" + (" (re-analysing all approved)" if force else ""),
         total=total_urls,
     )
+    await _run_targets(job, mgr, targets, p)
 
+
+async def _run_selected(job: Job, mgr, params: dict) -> None:
+    """Re-analyse a hand-picked set of already-discovered profile ids
+    (job.params["profile_ids"]), regardless of their current analysis
+    state -- the direct "run it again on just these" action for the
+    handful of cards an analyst is actually looking at, instead of forcing
+    a re-run across every approved profile on the platform (the existing
+    force=True path).
+
+    Only APPROVED profiles are eligible: analysis has never run against
+    anything else (profiles_db.urls_for's own status filter). A pending
+    or rejected id in the selection is skipped, counted, not erred, same
+    "one bad row never sinks the batch" spirit as discovery's own
+    _resweep_selected.
+    """
+    from backend.platforms import registry
+
+    ids = list(dict.fromkeys(str(i) for i in (params.get("profile_ids") or [])))
+    docs = await profiles_db.get_by_ids(job.client_id, ids)
+
+    by_platform: dict[str, list[tuple[str, list[str]]]] = {}
+    ineligible = 0
+    for d in docs:
+        platform_id = d.get("platform") or ""
+        plat = registry.PLATFORMS.get(platform_id)
+        url = d.get("url") or ""
+        if not plat or not plat.enabled or d.get("status") != "approved" or not url:
+            ineligible += 1
+            continue
+        by_platform.setdefault(platform_id, []).append(
+            (url, [str(k) for k in (d.get("keywords") or [])])
+        )
+    # ids that resolved to no document at all (deleted, or a foreign/typo'd
+    # id -- get_by_ids already scopes to this client, so a stray id from
+    # another client silently drops out here too)
+    missing = len(ids) - len(docs)
+    skipped = ineligible + missing
+
+    targets = list(by_platform.items())
+    total_urls = sum(len(urls) for _, urls in targets)
+    if total_urls == 0:
+        job.message = "0 of the selected profile(s) are eligible for re-analysis" + (
+            f" -- {skipped} skipped (not approved, or no longer exist)" if skipped else ""
+        )
+        return
+
+    await mgr.emit(
+        job, "progress",
+        f"re-analysing {total_urls} selected profile(s) across {len(targets)} platform(s)",
+        total=total_urls,
+    )
+    await _run_targets(
+        job, mgr, targets, params,
+        extra_note=f"{skipped} selected profile(s) skipped (not approved)" if skipped else "",
+    )
+
+
+async def _run_targets(
+    job: Job, mgr, targets: "list[tuple[str, list[tuple[str, list[str]]]]]", params: dict,
+    *, extra_note: str = "",
+) -> None:
+    """Shared tail of both entry points above: run every (platform, urls)
+    group concurrently through _analyse_platform, aggregate the results,
+    and leave job.message/job.new_profiles set.
+
+    Each group's `urls` is (url, keywords) pairs -- see
+    profile_repository.urls_for's with_keywords option -- keywords is what
+    lets _analyse_platform score a profile against ITS OWN matched keyword
+    instead of an empty target (see that function's own comment on the
+    bug this replaced: every analysis run used to score every profile's
+    freshly-read name against "", which is always 0, silently zeroing
+    name_score -- and with it risk_score, since the scoring rubric treats
+    an unmatched name as the base case -- on every single analysed
+    profile, on every platform, forever).
+    """
     for platform_id, urls in targets:
         await mgr.emit(job, "progress", platform=platform_id, platform_status="pending", platform_total=len(urls))
 
-    import asyncio
-
-    async def _run_one(platform_id: str, urls: list[str]) -> tuple[int, int, str]:
+    async def _run_one(platform_id: str, urls: list[tuple[str, list[str]]]) -> tuple[int, int, str]:
         try:
-            saved, new, attempted, reason = await _analyse_platform(job, mgr, platform_id, urls, p)
+            saved, new, attempted, reason = await _analyse_platform(job, mgr, platform_id, urls, params)
             # "done" means every URL was actually attempted. A run that
             # stopped early, pool exhausted, credentials rejected, is
             # `partial`, and says why. Reporting it as done (which is what
@@ -170,6 +273,8 @@ async def run_analysis(job: Job) -> None:
     grand_saved = sum(r[0] for r in results)
     grand_new = sum(r[1] for r in results)
     notes = [f"{pid}: {note}" for (pid, _), (_, _, note) in zip(targets, results) if note]
+    if extra_note:
+        notes.append(extra_note)
 
     job.new_profiles = grand_new
     job.message = f"{grand_saved} analysed, {grand_new} new" + (f" -- {'; '.join(notes)}" if notes else "")
@@ -191,15 +296,36 @@ def _evidence_dir(client_id: str, platform_id: str) -> Optional[str]:
 
 
 async def _analyse_platform(
-    job: Job, mgr, platform_id: str, urls: list[str], params: dict,
+    job: Job, mgr, platform_id: str, urls: list[tuple[str, list[str]]], params: dict,
 ) -> tuple[int, int, int, str]:
     """-> (saved, newly-seen, urls actually attempted, why-it-stopped).
+
+    `urls` is (url, keywords) pairs -- see profile_repository.urls_for's
+    with_keywords option -- kept as a url->keywords lookup below so the
+    rest of this function (the wave/retry/session-rotation loop) still
+    works with plain url strings throughout, exactly as before.
 
     The attempted count is what makes an honest progress report possible:
     the caller can only distinguish "finished" from "gave up" if this says
     how far it got, and returning normally after an early break made those
     two indistinguishable.
     """
+    bare_urls = [u for u, _ in urls]
+    # THE FIX for every analysed profile scoring name_score=0 (and, with
+    # it, a depressed risk_score -- the rubric's base case is "name did not
+    # match"): a per-run `target` used to be read from job.params, which no
+    # caller ever set, so `scraper.one(url, "", feed)` scored every
+    # freshly-read profile name against an empty string, which name_score()
+    # always returns 0 for. Now each URL is scored against the keyword it
+    # was actually discovered under. A profile matched under more than one
+    # keyword uses the first one recorded -- simpler than scoring against
+    # every keyword and keeping the best, and a large improvement over the
+    # previous "always wrong" baseline either way.
+    keywords_of = {u: kws for u, kws in urls}
+
+    def _target_for(url: str) -> str:
+        kws = keywords_of.get(url) or []
+        return kws[0] if kws else ""
     options = ScanOptions(
         # Evidence capture is what makes a finding actionable downstream:
         # the impersonating account is usually gone by the time a takedown
@@ -211,19 +337,32 @@ async def _analyse_platform(
         concurrency=params.get("concurrency", settings.analysis_concurrency),
         headful=not settings.headless,
     )
-    target, feed = params.get("target", ""), params.get("feed", "")
+    feed = params.get("feed", "")
 
-    remaining = urls.copy()
+    remaining = bare_urls.copy()
     rows: list[Row] = []
     consecutive_timeouts = 0
-    saved = new = attempted = 0
+    saved = new = 0
     stop_reason = ""
+    # Distinct URLs visited, NOT visits made: a URL re-attempted because
+    # it came back incomplete must not count twice against len(urls), or
+    # the progress report and the caller's own
+    # `complete = attempted >= len(urls)` check both go wrong.
+    done: set[str] = set()
+    want_screenshot = bool(options.evidence)
+    # URLs whose row came back readable but short of a field the platform
+    # does publish (see shared/completeness.py). Re-visited after the main
+    # pass rather than immediately: the whole point is that the first read
+    # was too early or ran under too much load, so trying again inside the
+    # same wave, under the same load, mostly reproduces the same miss.
+    deferred: list[str] = []
+    pass_no = 0
 
     # `platform_pending_seed` is what an analyst watching Live Activity sees
     # as "still to analyse" for this platform before a single URL completes
     await mgr.emit(
         job, "progress", platform=platform_id, platform_status="running", platform_total=len(urls),
-        platform_pending_seed=list(urls),
+        platform_pending_seed=list(bare_urls),
     )
 
     while remaining:
@@ -299,7 +438,15 @@ async def _analyse_platform(
             # tabs can run against the same logged-in session safely. Capped
             # at 3 in code, not just by convention, so a bad config value
             # can never turn this into an unbounded stampede.
-            wave_size = 1 if platform_id == "telegram" else max(1, min(options.concurrency, 3))
+            # `pass_no` keeps a re-attempt pass single-tabbed even when
+            # the session rotates mid-pass and re-enters this block:
+            # those profiles already came up short once under
+            # contention, so handing them back to a parallel wave
+            # would just reproduce the miss.
+            wave_size = (
+                1 if platform_id == "telegram" or pass_no
+                else max(1, min(options.concurrency, 3))
+            )
             STAGGER_SECONDS = 1.5
 
             async def _process_one(idx: int, url: str) -> tuple[str, Optional[Row], Optional[Exception]]:
@@ -317,7 +464,7 @@ async def _analyse_platform(
                     # and falls straight to the except below, unretried,
                     # exactly as before this existed.
                     row = await retry_async(
-                        lambda: scraper.one(url, target, feed),
+                        lambda: scraper.one(url, _target_for(url), feed),
                         attempts=2, base_delay=2.0, max_delay=6.0,
                         retryable=is_transient,
                     )
@@ -383,7 +530,7 @@ async def _analyse_platform(
                         else:
                             consecutive_timeouts = 0
 
-                        row = Row(url=url, target=target, original_feed=feed)
+                        row = Row(url=url, target=_target_for(url), original_feed=feed)
                         row.status = "ERROR"
                         row.note(f"unexpected: {type(e).__name__}: {e}")
                         log.error(f"job {job.id}: {url} raised past .one() (after retry if transient): {e}\n{traceback.format_exc()}")
@@ -392,13 +539,33 @@ async def _analyse_platform(
                     if row.status != "ERROR":
                         consecutive_timeouts = 0
                     remaining.remove(url)
-                    attempted += 1
-                    i = attempted
+                    done.add(url)
+                    i = len(done)
+
+                    # Did this visit actually READ the profile, or only
+                    # reach it? Status OK with no last-post date and no
+                    # screenshot is the single most common way a run
+                    # loses data, and nothing used to notice: the row was
+                    # saved, counted as analysed, and never looked at
+                    # again. Re-queue it instead -- save() only ever
+                    # writes non-blank values, so a second visit can fill
+                    # the gap and can never undo what this one got.
+                    missing = missing_fields(
+                        platform_id, row, want_screenshot=want_screenshot)
+                    if missing and pass_no < _COMPLETENESS_PASSES and url not in deferred:
+                        deferred.append(url)
+                        log.info(
+                            f"[{platform_id}] {url}: incomplete ({', '.join(missing)}) "
+                            f"-- queued for re-attempt {pass_no + 1}/{_COMPLETENESS_PASSES}"
+                        )
 
                     # Save immediately to database so results are visible right away in UI
                     try:
                         s, n = await profiles_db.save_many(
-                            job.client_id, platform_id, "analysis", [_row_to_fields(row)]
+                            job.client_id, platform_id, "analysis",
+                            [_row_to_fields(
+                                row, platform_id=platform_id,
+                                want_screenshot=want_screenshot)],
                         )
                         saved += s
                         new += n
@@ -430,6 +597,30 @@ async def _analyse_platform(
                 if stop_wave:
                     break  # inner loop; outer loop retries with a new session
 
+                if not remaining and deferred:
+                    # Everything reachable has been visited once; go back
+                    # for the rows that came up short. One tab at a time
+                    # from here on: contention between parallel tabs is
+                    # exactly what makes a payload or a render miss its
+                    # window, so a slower pass is the point, not a
+                    # side-effect.
+                    pass_no += 1
+                    remaining, deferred = deferred, []
+                    wave_size = 1
+                    log.info(
+                        f"[{platform_id}] re-attempt pass {pass_no}/{_COMPLETENESS_PASSES}: "
+                        f"{len(remaining)} incomplete profile(s), one tab at a time"
+                    )
+                    try:
+                        await mgr.emit(
+                            job, "progress", platform=platform_id,
+                            message=f"[{platform_id}] re-reading {len(remaining)} "
+                                    f"incomplete profile(s) "
+                                    f"(pass {pass_no}/{_COMPLETENESS_PASSES})",
+                        )
+                    except Exception:
+                        pass
+
                 if remaining:
                     try:
                         await scraper.pause()
@@ -440,9 +631,44 @@ async def _analyse_platform(
 
     if remaining and not stop_reason:
         stop_reason = "session rotation exhausted"
+    _report_incomplete(platform_id, job, rows, want_screenshot)
     _check_last_post_extraction_health(platform_id, job, rows)
     await _check_field_extraction_health(platform_id, job, rows, mgr)
-    return saved, new, attempted, stop_reason
+    return saved, new, len(done), stop_reason
+
+
+def _report_incomplete(
+    platform_id: str, job: Job, rows: list[Row], want_screenshot: bool,
+) -> None:
+    """Say out loud which profiles finished the run still missing a field.
+
+    The re-attempt passes close most of the gap; what they do not close
+    has to be visible, because the failure mode this whole mechanism
+    exists to kill is a silent one. These rows are ALSO left eligible for
+    the next catch-up sweep (see profile_repository.urls_for's
+    `analysis_complete` clause), so this is a report, not a dead end.
+    """
+    # A URL re-attempted in this run appears once per attempt in `rows`;
+    # the last one is the best view of it.
+    last_by_url: dict[str, Row] = {r.url: r for r in rows}
+    gaps: dict[str, list[str]] = {}
+    for url, row in last_by_url.items():
+        if miss := missing_fields(platform_id, row, want_screenshot=want_screenshot):
+            gaps[url] = miss
+    if not gaps:
+        log.info(f"[{platform_id}] every profile in this batch scraped complete")
+        return
+    by_field: dict[str, int] = {}
+    for miss in gaps.values():
+        for f in miss:
+            by_field[f] = by_field.get(f, 0) + 1
+    summary = ", ".join(
+        f"{f}: {n}" for f, n in sorted(by_field.items(), key=lambda kv: -kv[1]))
+    log.warning(
+        f"job {job.id}: [{platform_id}] {len(gaps)}/{len(last_by_url)} profile(s) still "
+        f"incomplete after {_COMPLETENESS_PASSES} re-attempt pass(es) -- {summary}. "
+        f"Examples: {', '.join(list(gaps)[:3])}"
+    )
 
 
 # --- Field-level extraction canaries ------------------------------------

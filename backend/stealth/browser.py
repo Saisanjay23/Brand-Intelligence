@@ -45,7 +45,7 @@ from backend.stealth.timezone import resolve_timezone_id
 
 log = get_logger("browser")
 
-BLOCK_TYPES = {"image", "media", "font"}  # keep stylesheets: layout matters
+BLOCK_TYPES = {"media", "font"}  # keep stylesheets: layout matters
 
 # Transparent 1x1 GIF binary to fulfill image/media requests without triggering JS .onerror
 TRANSPARENT_GIF = (
@@ -54,6 +54,19 @@ TRANSPARENT_GIF = (
 )
 # Empty binary payload for fonts to avoid triggering font load failure diagnostics
 EMPTY_FONT = b"\x00\x01\x00\x00" + b"\x00" * 32
+
+BLOCKED_TRACKERS = (
+    "connect.facebook.net",
+    "facebook.com/tr/",
+    "analytics.twitter.com",
+    "telemetry.twitter.com",
+    "google-analytics.com",
+    "googletagmanager.com",
+    "doubleclick.net",
+    "scorecardresearch.com",
+    "tiktok.com/api/v1/web/report/",
+    "adroll.com",
+)
 
 
 class Session:
@@ -113,23 +126,31 @@ class Session:
 
         safe_cookies = normalize_cookies(self.cookies)
         await self.ctx.add_cookies(safe_cookies)
-        if not self.load_images:
-            await self.ctx.route("**/*", self._filter)
+        await self.ctx.route("**/*", self._filter)
         return self.ctx
 
-    @staticmethod
-    async def _filter(route, request):
+    async def _filter(self, route, request):
+        url = request.url.lower()
         rtype = request.resource_type
-        if rtype in ("image", "media"):
+
+        # 1. Block known third-party telemetry, ad beacons, and analytics
+        if any(tracker in url for tracker in BLOCKED_TRACKERS):
+            await route.fulfill(status=200, content_type="application/javascript", body=b"")
+            return
+
+        # 2. Block video/audio media streaming chunks cleanly (prevents background buffering)
+        if rtype == "media":
+            await route.fulfill(status=200, content_type="video/mp4", body=b"")
+            return
+
+        # 3. Block images only when evidence/image loading is disabled
+        if not self.load_images and rtype == "image":
             await route.fulfill(
                 status=200, content_type="image/gif", body=TRANSPARENT_GIF
             )
-        elif rtype == "font":
-            await route.fulfill(status=200, content_type="font/woff2", body=EMPTY_FONT)
-        elif rtype in BLOCK_TYPES:
-            await route.abort()
-        else:
-            await route.continue_()
+            return
+
+        await route.continue_()
 
     async def stop(self):
         for obj, meth in (

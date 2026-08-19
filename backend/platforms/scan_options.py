@@ -19,8 +19,8 @@ class ScanOptions:
     evidence: Optional[str] = None  # GridFS key prefix for screenshots; disables asset blocking
     headful: bool = False
     timeout: int = 45  # per-navigation, seconds
-    settle: float = 12  # cap on waiting for the profile payload
-    delay: float = 6.0  # between profiles, jittered
+    settle: float = 6.0  # cap on waiting for the profile payload
+    delay: float = 2.5  # between profiles, jittered
     scrolls: int = 0  # newest post is in the first render
     about: bool = False  # two extra page loads, no join date
     concurrency: int = 1  # >1 is faster and more conspicuous

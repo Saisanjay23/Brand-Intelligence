@@ -48,6 +48,7 @@ from backend.engine.models import (
 )
 from backend.platforms import registry
 from backend.platforms.scan_options import DiscoveryOptions, ScanOptions
+from backend.shared.completeness import missing_fields
 from backend.shared.logging import get_logger
 from backend.shared.models.row import Row
 from backend.shared.text import name_score
@@ -169,6 +170,12 @@ def _row_to_fields(row: Row, platform: str, evidence_root: Optional[Path]) -> di
         "risk_score": row.risk, "priority": row.priority,
         "comments": row.notes, "analysis_status": row.status, "sources": dict(row.src),
         "screenshot": shot,
+        # Kept in step with services/analysis_service.py::_row_to_fields
+        # (tests_unit/test_engine_standalone.py asserts the two agree): a
+        # row that was reached but came away short of a field the platform
+        # publishes is not a finished reading. See shared/completeness.py.
+        "analysis_complete": not missing_fields(
+            platform, row, want_screenshot=bool(evidence_root)),
     }
 
 

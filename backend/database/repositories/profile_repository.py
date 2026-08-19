@@ -64,6 +64,13 @@ ANALYSIS_FIELDS = (
     # to remount. Served through `GET /profiles/{id}/screenshot`; see
     # api/profile_routes.py.
     "screenshot", "screenshot_at",
+    # False when the analysis engine reached this profile but came away
+    # without a field the platform does publish (see
+    # shared/completeness.py). Distinct from `analysis_status`, which
+    # only says whether the page was reached at all: a row can be OK and
+    # still be missing its last-post date or its evidence screenshot,
+    # and that used to make it permanently ineligible for another look.
+    "analysis_complete",
 )
 
 # An analysis outcome that means "we did not actually get to look at this
@@ -254,9 +261,19 @@ async def save(
             # revert before anything downstream sees it. See ADR 0007.
             # The hold EXPIRES on its own; `published` is only ever set
             # early, by an explicit Publish.
-            update["$set"]["analysis_attempts"] = 0
             update["$set"]["published"] = False
             update["$set"]["publish_hold_until"] = now + timedelta(minutes=settings.publish_hold_minutes)
+            # A reading that came back short of a field the platform
+            # publishes is a real finding (it holds and publishes like
+            # any other) but it is NOT the end of the story, so it
+            # spends an attempt rather than resetting the counter to
+            # zero. Without this an incomplete row that stays incomplete
+            # would be re-queued by urls_for on every catch-up sweep
+            # forever, since each pass would clear its own budget.
+            if fields.get("analysis_complete") is False:
+                update["$inc"] = {"analysis_attempts": 1}
+            else:
+                update["$set"]["analysis_attempts"] = 0
     if keyword:
         update["$addToSet"]["keywords"] = keyword
 
@@ -340,6 +357,18 @@ async def get_by_ids(client_id: str, ids: list[str]) -> list[dict]:
         return []
     coll = db()[PROFILES]
     return [_stamp_utc_for_api(d) async for d in coll.find({"client_id": client_id, "_id": {"$in": oids}})]
+
+
+async def get_by_urls(client_id: str, platform: str, urls: list[str]) -> list[dict]:
+    """Raw profile docs matching a list of URLs for a specific client and platform."""
+    if not urls:
+        return []
+    coll = db()[PROFILES]
+    return [_stamp_utc_for_api(d) async for d in coll.find({
+        "client_id": client_id,
+        "platform": platform,
+        "$or": [{"url": {"$in": urls}}, {"urls": {"$in": urls}}],
+    })]
 
 
 async def find(
@@ -514,9 +543,17 @@ async def find(
 
 async def urls_for(
     client_id: str, platform: str, status: Optional[str] = None,
-    *, exclude_analysed: bool = False,
-) -> list[str]:
+    *, exclude_analysed: bool = False, with_keywords: bool = False,
+) -> "list[str] | list[tuple[str, list[str]]]":
     """URLs an analysis run should visit.
+
+    `with_keywords=True` returns `(url, keywords)` pairs instead of bare
+    URLs -- `keywords` is the client keyword(s) this profile was actually
+    discovered under (see `save()`'s own `keyword` param, `$addToSet`'d
+    into this same field). analysis_service.py needs this to score each
+    profile against ITS OWN matched keyword; every caller used to pass an
+    empty target into every scrape instead (see that module's own comment
+    on the bug this exists to fix).
 
     `exclude_analysed` means "skip what we have already READ", not "skip what
     we have already attempted". A profile whose last attempt ended in
@@ -542,8 +579,25 @@ async def urls_for(
                 "analysis_status": {"$in": list(RETRYABLE_ANALYSIS_STATUSES)},
                 "analysis_attempts": {"$lt": MAX_ANALYSIS_ATTEMPTS},
             },
+            # Reached and read, but short of a field this platform does
+            # publish -- most often the last-post date or the evidence
+            # screenshot, which lose their race on a loaded machine. The
+            # in-run re-attempt passes (analysis_service) catch most of
+            # these; this clause is what lets the 20-minute catch-up
+            # sweep finish the rest instead of treating a half-read
+            # profile as done forever.
+            {
+                "analysis_complete": False,
+                "analysis_attempts": {"$lt": MAX_ANALYSIS_ATTEMPTS},
+            },
         ]
-    return [d["url"] async for d in db()[PROFILES].find(q, {"url": 1, "_id": 0}) if d.get("url")]
+    if not with_keywords:
+        return [d["url"] async for d in db()[PROFILES].find(q, {"url": 1, "_id": 0}) if d.get("url")]
+    return [
+        (d["url"], [str(k) for k in (d.get("keywords") or [])])
+        async for d in db()[PROFILES].find(q, {"url": 1, "keywords": 1, "_id": 0})
+        if d.get("url")
+    ]
 
 
 async def stuck_analysis(client_id: str, platform: Optional[str] = None) -> list[dict]:
@@ -553,8 +607,14 @@ async def stuck_analysis(client_id: str, platform: Optional[str] = None) -> list
     not a result, and it is invisible unless something surfaces it."""
     q: dict[str, Any] = {
         "client_id": client_id, "status": "approved",
-        "analysis_status": {"$in": list(RETRYABLE_ANALYSIS_STATUSES)},
         "analysis_attempts": {"$gte": MAX_ANALYSIS_ATTEMPTS},
+        # Either kind of exhaustion is a coverage gap worth an analyst's
+        # attention: never read at all (a retryable status), or read but
+        # permanently missing a field the platform publishes.
+        "$or": [
+            {"analysis_status": {"$in": list(RETRYABLE_ANALYSIS_STATUSES)}},
+            {"analysis_complete": False},
+        ],
     }
     if platform:
         q["platform"] = platform

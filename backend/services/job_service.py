@@ -407,6 +407,19 @@ class JobManager:
             return None
         for job in self.jobs.values():
             if job.status == QUEUED and job.kind == ANALYSIS and job.client_id == client_id:
+                # A profile_ids job (re-analyse THESE specific profiles, see
+                # analysis_service.py::_run_selected) breaks the "platform=None
+                # means sweeps everything approved" assumption the check
+                # below relies on -- it also reports platform=None (the
+                # selection can span platforms), but only ever covers its
+                # own hand-picked ids. Without this it would silently
+                # absorb a later plain "approve -> auto-analyse" request
+                # for a DIFFERENT, unrelated profile into this narrow job,
+                # which never analyses that profile, so it would sit
+                # approved and permanently un-analysed with nothing left
+                # to notice.
+                if job.params.get("profile_ids"):
+                    continue
                 # a platform=None job sweeps everything, so it subsumes any
                 # platform-scoped request for the same client
                 if job.platform is None or job.platform == platform:
@@ -416,9 +429,13 @@ class JobManager:
     def create(self, kind: str, client_id: str, params: dict, *, platform: Optional[str] = None, callback_url: str = "") -> Job:
         # A callback_url makes a job individually observable to its caller,
         # so never coalesce one away; the caller is waiting for that exact
-        # job id to report back.
+        # job id to report back. A profile_ids job is the same story from
+        # the other side: coalescing it into an existing plain job would
+        # silently swap out its specific selection for "whatever is
+        # generically owed", which is not what "re-analyse THESE" asked for.
         force = bool(params.get("force")) if kind == ANALYSIS else False
-        if not callback_url:
+        has_profile_ids = kind == ANALYSIS and bool(params.get("profile_ids"))
+        if not callback_url and not has_profile_ids:
             if existing := self.existing_queued(kind, client_id, platform, force=force):
                 log.debug(f"coalescing {kind} for {client_id}/{platform} into queued job {existing.id}")
                 return existing

@@ -1312,6 +1312,7 @@ export function ResultsGrid({
   // selection (unlike approve/reject, it doesn't clear it) and takes much
   // longer (a real page visit per profile, not a single PATCH).
   const [resweepBusy, setResweepBusy] = useState(false);
+  const [reanalyseBusy, setReanalyseBusy] = useState(false);
 
   // Drag-to-select: mousedown on a card/row (outside its buttons/links)
   // starts a paint gesture, every card/row the cursor then passes over
@@ -1417,13 +1418,13 @@ export function ResultsGrid({
     setPublishedFilter("unpublished");
   }, [clientId]);
 
-  // A selection only ever makes sense against the rows the analyst was
-  // looking at when they made it, clear it whenever the underlying set
-  // changes so a stale selection can't silently bulk-act on different rows.
+  // A selection only ever makes sense against the active client, platform, or filter scope.
+  // We do NOT clear selection on page/offset/pageSize changes so analysts can select profiles
+  // across multiple pages and bulk-apply asset keywords, re-analyse, publish, or copy/export them.
   useEffect(() => {
     setSelectedIds(new Set());
   }, [clientId, platform, status, phase, keywordFilter, entityType, keywordMatchType,
-      priority, matchLevel, publishedFilter, debouncedSearch, offset, pageSize]);
+      priority, matchLevel, publishedFilter, debouncedSearch]);
 
   // Neither Discovery nor Analysis has an "All Platforms" tab, whenever we
   // end up with no platform selected (e.g., landing here fresh before platforms
@@ -1789,6 +1790,24 @@ export function ResultsGrid({
     }
   };
 
+  const [publishingSelected, setPublishingSelected] = useState(false);
+  const publishSelected = async () => {
+    const targetIds = [...selectedIds];
+    if (!targetIds.length || !clientId) return;
+    setPublishingSelected(true);
+    try {
+      await Promise.all(targetIds.map((id) => profilesApi.publishProfile(id)));
+      toast.success(`Published ${targetIds.length} profile(s)`, { icon: "✅" });
+      setSelectedIds(new Set());
+      await load(false);
+    } catch (e) {
+      toast.error((e as Error).message);
+      onError?.((e as Error).message);
+    } finally {
+      setPublishingSelected(false);
+    }
+  };
+
   // Applies a dotted-path edit (e.g. "socialProfileInfo.location") to a
   // profile's own `incident` preview object, immutably, the same shape
   // profile_repository.patch() expands `incident_overrides` into server-side.
@@ -1968,15 +1987,19 @@ export function ResultsGrid({
         await Promise.all(pendingSaves.current);
       }
 
-      // Checkbox selection is an explicit, row-level override, when
-      // anything is selected, copy exactly those rows
-      const selected = selectedIds.size > 0 ? displayed.filter((r) => selectedIds.has(r.id)) : null;
-
       let filtered: Profile[];
       let scopeLabel: string;
-      if (selected) {
-        filtered = selected;
-        scopeLabel = ` (${selected.length} selected)`;
+      if (selectedIds.size > 0) {
+        // Fetch up to EXPORT_LIMIT profiles so all selected IDs across all pages are included
+        const res = await profilesApi.profiles({
+          client_id: clientId,
+          platform: platform || undefined,
+          phase,
+          limit: EXPORT_LIMIT,
+          offset: 0,
+        });
+        filtered = res.items.filter((r) => selectedIds.has(r.id));
+        scopeLabel = ` (${selectedIds.size} selected)`;
       } else {
         const res = await profilesApi.profiles({
           client_id: clientId,
@@ -1994,7 +2017,7 @@ export function ResultsGrid({
       }
 
       if (type === "urls") {
-        const targetProfiles = selected ? filtered : !isAnalysisView && status ? filtered.filter((r) => r.status === status) : filtered;
+        const targetProfiles = selectedIds.size > 0 ? filtered : !isAnalysisView && status ? filtered.filter((r) => r.status === status) : filtered;
         const urls = targetProfiles.map((r) => r.url).filter(Boolean);
         if (!urls.length) {
           throw new Error(`No profile URLs found to copy${scopeLabel}.`);
@@ -2049,11 +2072,17 @@ export function ResultsGrid({
       if (pendingSaves.current.size) {
         await Promise.all(pendingSaves.current);
       }
-      const selected = selectedIds.size > 0 ? displayed.filter((r) => selectedIds.has(r.id)) : null;
-
       let filtered: Profile[];
-      if (selected) {
-        filtered = selected;
+      if (selectedIds.size > 0) {
+        // Fetch up to EXPORT_LIMIT profiles so all selected IDs across all pages are included
+        const res = await profilesApi.profiles({
+          client_id: clientId,
+          platform: platform || undefined,
+          phase,
+          limit: EXPORT_LIMIT,
+          offset: 0,
+        });
+        filtered = res.items.filter((r) => selectedIds.has(r.id));
       } else {
         const res = await profilesApi.profiles({
           client_id: clientId,
@@ -2227,6 +2256,43 @@ export function ResultsGrid({
       onError?.((e as Error).message);
     } finally {
       setResweepBusy(false);
+    }
+  };
+
+  // Re-runs analysis over just the selected profiles, whatever their
+  // current analysis state (see backend analysis_service.py::_run_selected).
+  // Distinct from the Clients tab's "Re-run Analysis", which re-analyses
+  // every approved profile on a whole platform: this is the targeted
+  // version for the handful of rows an analyst is actually looking at --
+  // after correcting an Asset Name, or when a field came back wrong and
+  // the fix has since shipped.
+  const reanalyseSelected = async () => {
+    const targetIds = [...selectedIds];
+    if (!targetIds.length || !clientId) return;
+    setReanalyseBusy(true);
+    try {
+      const { job_id } = await analysisApi.analyse({ client_id: clientId, profile_ids: targetIds });
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const job = await jobsApi.job(job_id);
+        if (job.status === "done" || job.status === "failed" || job.status === "cancelled") {
+          if (job.status === "failed") {
+            onError?.(job.error || "Re-analysis failed");
+          } else {
+            // the message carries the skipped-count (profiles in the
+            // selection that were not approved, so never eligible)
+            toast.success(job.message || "Re-analysis complete");
+          }
+          break;
+        }
+      }
+      await load(false);
+    } catch (e) {
+      toast.error((e as Error).message);
+      onError?.((e as Error).message);
+    } finally {
+      setReanalyseBusy(false);
     }
   };
 
@@ -3081,9 +3147,27 @@ export function ResultsGrid({
                 </span>
               )}
               <button
+                style={{ width: "auto", padding: "6px 12px", fontSize: "11px", marginTop: 0, background: "rgba(0,229,255,0.1)", color: "var(--cyan)", border: "1px solid var(--cyan)", borderRadius: "8px", cursor: reanalyseBusy ? "wait" : "pointer", display: "inline-flex", alignItems: "center", gap: "4px" }}
+                disabled={reanalyseBusy || bulkAssetNameBusy || publishingSelected}
+                onClick={reanalyseSelected}
+                title="Re-scrape and re-score just these profiles, whatever their current state -- for after an Asset Name change, or once a field-extraction fix has shipped. Only approved profiles are eligible."
+              >
+                <RefreshIcon size={12} />
+                <span>{reanalyseBusy ? "Re-analysing…" : `Re-analyse ${selectedIds.size}`}</span>
+              </button>
+              <button
+                className="btn-cyber-primary"
+                style={{ width: "auto", padding: "6px 12px", fontSize: "11px", marginTop: 0, display: "inline-flex", alignItems: "center", gap: "4px" }}
+                disabled={publishingSelected || bulkAssetNameBusy || reanalyseBusy}
+                onClick={publishSelected}
+                title="Publish just these selected profiles directly"
+              >
+                <span>{publishingSelected ? "Publishing…" : `Publish ${selectedIds.size}`}</span>
+              </button>
+              <button
                 style={{ width: "auto", padding: "6px 10px", fontSize: "11px", background: "transparent", border: "1px solid var(--border-color)", borderRadius: "8px", color: "var(--text-muted)", cursor: "pointer" }}
                 onClick={() => setSelectedIds(new Set())}
-                disabled={bulkAssetNameBusy}
+                disabled={bulkAssetNameBusy || reanalyseBusy || publishingSelected}
                 title="Or just press Esc"
               >
                 Clear <span style={{ opacity: 0.6 }}>(Esc)</span>

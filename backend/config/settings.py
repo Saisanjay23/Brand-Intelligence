@@ -86,7 +86,7 @@ class Settings(BaseSettings):
 
     # pacing, the single most important knob for staying unremarkable
     request_timeout_sec: int = 45
-    analysis_delay_sec: float = 6.0
+    analysis_delay_sec: float = 2.5
     # 2 tabs at once per platform (analysis_service.py::_analyse_platform
     # staggers and caps this at 3 regardless), a moderate default, not the
     # 1-at-a-time pace this used to force everywhere. Telegram is exempt

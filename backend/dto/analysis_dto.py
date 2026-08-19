@@ -26,3 +26,10 @@ class AnalysisIn(BaseModel):
     # fresh pass rather than the button silently doing nothing because the
     # auto-trigger-on-approve or a catch-up sweep already covered it.
     force: bool = False
+    # A hand-picked set of already-discovered profile ids to re-analyse,
+    # regardless of their current analysis state -- the Analysis view's
+    # "Re-analyse Selected" bulk action. Takes priority over every field
+    # above: it is a different kind of request (specific profiles, not a
+    # platform/force scope), same relationship discovery_dto.py's
+    # `profile_ids` has to its own `platform`/`keywords`.
+    profile_ids: Optional[list[str]] = None

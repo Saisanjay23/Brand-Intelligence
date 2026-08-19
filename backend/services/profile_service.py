@@ -365,7 +365,7 @@ async def add_manual_urls(
     domain_keywords = list(client.get("domain_keywords") or []) + list(client.get("asset_name_domain_keywords") or [])
     all_keywords = individual_keywords + domain_keywords
 
-    added_by_platform: dict[str, int] = {}
+    added_urls_by_platform: dict[str, list[str]] = {}
     skipped: list[str] = []
 
     async def _add_one(raw: str, forced_candidates: Optional[list] = None) -> None:
@@ -394,7 +394,7 @@ async def add_manual_urls(
             {"discovery_source": "manual"},
             url=url, entity_id=entity_id, keyword=matched, initial_status="approved",
         )
-        added_by_platform[platform] = added_by_platform.get(platform, 0) + 1
+        added_urls_by_platform.setdefault(platform, []).append(url)
 
     for raw in (urls or []):
         await _add_one(raw)
@@ -403,10 +403,16 @@ async def add_manual_urls(
     for raw in (domain_urls or []):
         await _add_one(raw, domain_keywords)
 
-    for platform in added_by_platform:
-        job_manager.create(ANALYSIS, client_id, {}, platform=platform)
+    for platform, plat_urls in added_urls_by_platform.items():
+        docs = await profiles_db.get_by_urls(client_id, platform, plat_urls)
+        doc_ids = [str(d.get("_id") or d.get("id")) for d in docs if d.get("_id") or d.get("id")]
+        if doc_ids:
+            job_manager.create(ANALYSIS, client_id, {"profile_ids": doc_ids}, platform=platform)
+        else:
+            job_manager.create(ANALYSIS, client_id, {"force": True}, platform=platform)
 
-    return {"added": sum(added_by_platform.values()), "by_platform": added_by_platform, "skipped": skipped}
+    by_platform_counts = {p: len(u) for p, u in added_urls_by_platform.items()}
+    return {"added": sum(by_platform_counts.values()), "by_platform": by_platform_counts, "skipped": skipped}
 
 
 async def patch_profile(profile_id: str, body_fields: dict) -> dict:

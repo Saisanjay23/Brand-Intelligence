@@ -24,5 +24,12 @@ export const analysisApi = {
     // Two or more platform ids to run together (the Run hub's
     // multi-select). Takes precedence over `platform` when both are sent.
     platforms?: string[];
+    // A hand-picked set of already-discovered profile ids to re-analyse
+    // (the Analysis view's "Re-analyse Selected" action). Takes priority
+    // over every field above: it is a different kind of request --
+    // specific profiles rather than a platform/force scope. Only APPROVED
+    // profiles are eligible; anything else in the selection is skipped and
+    // reported in the job message.
+    profile_ids?: string[];
   }) => post("/analysis", body).then(json<{ job_id: string; status: JobStatus }>),
 };

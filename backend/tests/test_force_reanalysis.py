@@ -120,7 +120,7 @@ async def test_run_analysis_excludes_analysed_when_not_forced(monkeypatch):
 
     captured = {}
 
-    async def fake_urls_for(client_id, platform, status, *, exclude_analysed=False):
+    async def fake_urls_for(client_id, platform, status, *, exclude_analysed=False, with_keywords=False):
         captured["exclude_analysed"] = exclude_analysed
         return []  # short-circuits to the "nothing to analyse" branch
 
@@ -139,7 +139,7 @@ async def test_run_analysis_includes_already_analysed_when_forced(monkeypatch):
 
     captured = {}
 
-    async def fake_urls_for(client_id, platform, status, *, exclude_analysed=False):
+    async def fake_urls_for(client_id, platform, status, *, exclude_analysed=False, with_keywords=False):
         captured["exclude_analysed"] = exclude_analysed
         return []
 

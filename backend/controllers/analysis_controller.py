@@ -34,6 +34,19 @@ async def start_analysis(body: AnalysisIn) -> dict:
     if not ok:
         raise ValidationError(reason)
 
+    if body.profile_ids:
+        # A hand-picked set of profiles, not a platform/force scope -- see
+        # analysis_service.py's _run_selected. platform=None: the
+        # selection can span multiple platforms, so this takes every
+        # platform's lock exactly as an "All Platforms" run does (see
+        # discovery_controller._resolve_platforms for the same reasoning
+        # on the multi-platform Run-hub case).
+        job = job_manager.create(
+            ANALYSIS, body.client_id, {"profile_ids": body.profile_ids},
+            platform=None, callback_url=body.callback_url,
+        )
+        return {"job_id": job.id, "status": job.status}
+
     # Shared with discovery so both buttons in the Run hub scope a run the
     # same way; see discovery_controller._resolve_platforms for why a
     # multi-platform job reports platform=None.

@@ -16,10 +16,10 @@ from datetime import datetime
 
 # rough seconds per action, before jitter and the multipliers below
 BASE = {
-    "page_load": 1.2,
-    "between_profiles": 6.0,
-    "between_pages": 0.6,
-    "tab_switch": 1.5,
+    "page_load": 0.8,
+    "between_profiles": 2.2,
+    "between_pages": 0.5,
+    "tab_switch": 1.0,
     "default": 1.0,
 }
 

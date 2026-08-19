@@ -388,13 +388,50 @@ def take_chip(row: Row, chip: str, source: str) -> None:
         row.note(f"followers rounded ({chip})")
 
 
+def followers_from_friends(row: Row, chips: "list[tuple[str, str]]") -> None:
+    """A personal profile's FRIEND count is its audience number, so it
+    belongs in `followers` when the profile published no follower count of
+    its own.
+
+    Facebook publishes a follower count on Pages and on creator profiles,
+    and a friend count instead on an ordinary personal profile. The report
+    has exactly ONE audience column (`followers`) -- there is no friends
+    column in the grid or in any export -- so a friend count left only in
+    `row.friends` was read correctly and then thrown away: 123 of the 165
+    personal profiles in a single 663-URL run had a perfectly good friend
+    count stored and still showed a blank Followers cell.
+
+    Runs LAST, after every genuine follower tier in read_counts, so a real
+    follower count always wins on a creator profile that publishes both.
+    The source is tagged `...-friends` and a note is added so the two stay
+    distinguishable to anyone reading the row rather than the column.
+    """
+    for chip, src in chips:
+        m = RE_CHIP.match(chip)
+        if not m or not m.group(2).lower().startswith("friend"):
+            continue
+        val, exact = parse_count(m.group(1))
+        if val is None or not (0 <= val < MAX_FOLLOWERS):
+            continue
+        row.followers = val
+        row.followers_exact = "yes" if exact else "no"
+        row.mark("followers", f"{src}-friends")
+        row.note(f"profile publishes friends, not followers ({chip})")
+        if not exact:
+            row.note(f"followers rounded ({chip})")
+        return
+
+
 def read_counts(row: Row, h: Harvest) -> None:
-    """Followers and friends, whichever the profile publishes."""
-    for s in h.ent_social():
-        take_chip(row, s, "graphql-social-context")
+    """The audience number, whichever of the three Facebook publishes."""
+    chips = [(s, "graphql-social-context") for s in h.ent_social()]
     # the header line holds the same counters when the entity is unreadable
-    for part in re.split(r"[•·|]", str(h.dom.get("counter") or "")):
-        take_chip(row, part.strip(), "dom-header")
+    chips += [
+        (part.strip(), "dom-header")
+        for part in re.split(r"[•·|]", str(h.dom.get("counter") or ""))
+    ]
+    for chip, src in chips:
+        take_chip(row, chip, src)
     if row.followers is not None:
         return
     ents = [n for n in h.ent_ints(K_FOLLOWERS) if 0 <= n < MAX_FOLLOWERS]
@@ -417,6 +454,8 @@ def read_counts(row: Row, h: Harvest) -> None:
             row.mark("followers", "page-text")
             if not exact:
                 row.note(f"followers rounded ({m.group(1).strip()})")
+            return
+    followers_from_friends(row, chips)
 
 
 def read_created(row: Row, h: Harvest) -> None:

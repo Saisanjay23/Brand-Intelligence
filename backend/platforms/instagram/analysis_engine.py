@@ -194,7 +194,7 @@ class Scraper:
         .map(s => s.trim()).filter(Boolean);
       let name = "", posts = "", followers = "", following = "";
       for (let i = 0; i < lines.length; i++) {
-        if (/^[\\d][\\d,.]*[KMB]?\\s*posts$/i.test(lines[i])) {
+        if (/^[\\d][\\d,.]*[KMB]?\\s*posts?$/i.test(lines[i])) {
           posts = lines[i];
           followers = lines[i + 1] || "";
           following = lines[i + 2] || "";
@@ -203,8 +203,9 @@ class Scraper:
         }
       }
       const img = document.querySelector(
-        `header img[alt="${username}'s profile picture"]`);
-      const verified = !!document.querySelector('header svg[aria-label="Verified"]');
+        `header img[alt*="profile picture" i], header img[alt*="profile photo" i], header img`
+      );
+      const verified = !!document.querySelector('header svg[aria-label*="Verified" i], svg[aria-label*="Verified" i]');
       const bodyText = document.body.innerText || "";
       return {
         name, posts, followers, following,
@@ -436,7 +437,21 @@ class Scraper:
                 else:
                     row.status = "PARTIAL"
                     row.note("profile payload not seen")
+                    # Capture anyway. A row whose fields could not be
+                    # read is exactly the one an analyst most needs a
+                    # picture of, and the screenshot is often the only
+                    # surviving proof the account existed. This used to
+                    # return here, so every PARTIAL row lost its
+                    # evidence as well as its fields.
+                    await self.screenshot(page, row)
                     return row
+
+            # BEFORE the last-post fallback, not after: that fallback's
+            # tier 2 navigates THIS page to up to three /p/ permalinks
+            # to read their <time> elements, so a screenshot taken
+            # afterwards captured a post, not the profile it belongs
+            # to -- silently, on every row that fell through to it.
+            await self.screenshot(page, row)
 
             if not row.last_post_iso:
                 last_post = await self.read_last_post_date(
@@ -445,8 +460,6 @@ class Scraper:
                 if last_post:
                     row.last_post_iso = last_post
                     row.mark("last_post", "post-page")
-
-            await self.screenshot(page, row)
             row.status = "OK" if row.profile_name or row.profile_id else "PARTIAL"
             return row
         finally:

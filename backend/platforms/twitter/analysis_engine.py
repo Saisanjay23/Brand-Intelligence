@@ -106,7 +106,7 @@ JS_TWEET_TIMES = """
 # date off it. Generous on purpose: the cost of waiting is a few seconds
 # per profile, the cost of reading too early is a false "this account has
 # no posts", which feeds the activity classification and the risk score.
-_DOM_TIMELINE_WAIT_MS = 8000
+_DOM_TIMELINE_WAIT_MS = 3000
 
 
 async def dom_last_post(page) -> str:
@@ -241,6 +241,10 @@ class Scraper:
                 else:
                     row.status = "PARTIAL"
                     row.note("profile payload not seen")
+                # See instagram/analysis_engine.py: a row we could not
+                # read is the one most worth having a picture of, and
+                # returning before screenshot() threw that away.
+                await self.screenshot(page, row)
                 return row
 
             # the timeline query lands just after the profile one
