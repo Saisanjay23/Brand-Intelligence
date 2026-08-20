@@ -40,6 +40,27 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from backend.shared.models.row import Row
 
+# Which platforms' analysis engines actually READ a location, established by
+# reading the engines rather than assuming: facebook, twitter and youtube
+# each have a location reader; instagram, tiktok and telegram have none at
+# all. That matches the live data exactly -- location is blank on 100% of
+# instagram (309/309) and tiktok (11/11) rows, and only sometimes blank on
+# twitter (52%) and facebook (83%), which is the signature of a field that
+# IS read but is genuinely optional for the account holder to set.
+#
+# The distinction matters for reporting, not for retry: a blank location on
+# instagram is not a miss to chase, it is a field this pipeline never claims
+# to collect there. Without this, 320 rows read as "data missing" forever
+# and no amount of re-analysis would ever change one of them.
+PLATFORMS_WITH_LOCATION = frozenset({"facebook", "twitter", "youtube"})
+
+# Fields whose absence is never, on its own, evidence the scraper failed --
+# the platform publishes them only if the account holder filled them in.
+# Kept out of `missing_fields` deliberately (it drives retry): re-visiting a
+# profile that simply has no location set would burn its retry budget on
+# something no visit can ever produce.
+OPTIONAL_FIELDS = ("location",)
+
 # Statuses where re-reading cannot help: the profile is gone, so there is
 # nothing further to scrape and its blank fields are the honest answer.
 TERMINAL_STATUSES = ("GONE",)
@@ -108,3 +129,73 @@ def missing_fields(platform_id: str, row: "Row", *, want_screenshot: bool) -> li
 
 def is_complete(platform_id: str, row: "Row", *, want_screenshot: bool) -> bool:
     return not missing_fields(platform_id, row, want_screenshot=want_screenshot)
+
+
+def field_report(platform_id: str, row: "Row", *, want_screenshot: bool) -> dict[str, str]:
+    """Why each field is or isn't populated -- one verdict per field, so a
+    blank cell downstream can always say WHICH of the two very different
+    things it means.
+
+    This is the whole point of the exercise: "no last post date" currently
+    reads the same in the database whether the account has never posted or
+    the timeline failed to load, and those demand opposite responses (leave
+    it alone / go get it). Every verdict here is derived from a signal the
+    engine already produced during the visit and, until now, discarded.
+
+        "read"          the value is there
+        "none-exist"    confirmed absent AT the profile -- the account really
+                        has no posts (posts_seen == "no"), or its timeline is
+                        private/protected so the platform itself withholds
+                        them. NOT a miss; re-visiting cannot change it.
+        "not-collected" this platform's engine does not read this field at
+                        all (e.g. location on instagram/tiktok/telegram), or
+                        the run had evidence capture switched off. Also not a
+                        miss -- nothing ever promised to fill it.
+        "unknown"       the profile is gone, so its blanks are simply the
+                        honest answer and cannot be improved on.
+        "MISSED"        the platform does publish this and the account does
+                        have it, and we still came away empty. This is the
+                        only verdict that means real data loss, and the only
+                        one worth an analyst's or a retry's attention.
+    """
+    gone = row.status in TERMINAL_STATUSES
+    missed = set() if gone else set(missing_fields(
+        platform_id, row, want_screenshot=want_screenshot))
+
+    def verdict(field: str, value, *, collected: bool = True, none_exist: bool = False) -> str:
+        if not _blank(value):
+            return "read"
+        if gone:
+            return "unknown"
+        if not collected:
+            return "not-collected"
+        if none_exist:
+            return "none-exist"
+        return "MISSED" if field in missed else "none-exist"
+
+    return {
+        "display_name": verdict("display name", row.profile_name),
+        "followers": verdict(
+            "followers",
+            row.followers if not _blank(row.followers) else row.friends,
+            # Facebook groups publish a member count under neither field.
+            collected=row.entity_type != "group",
+        ),
+        "last_post_date": verdict(
+            "last post date", row.last_post_iso,
+            # The two carve-outs missing_fields already honours, named
+            # explicitly here instead of silently folded into "not missing":
+            # an account with confirmed zero posts, and one whose timeline
+            # the platform hides from this session.
+            none_exist=row.posts_seen == "no" or _timeline_hidden(row),
+        ),
+        "location": verdict(
+            "location", row.location,
+            collected=platform_id in PLATFORMS_WITH_LOCATION,
+            # Read where supported, but never required: an account that
+            # simply never set one is indistinguishable from a failed read,
+            # so this is honestly reported as absent rather than as a miss.
+            none_exist=True,
+        ),
+        "screenshot": verdict("screenshot", row.screenshot, collected=want_screenshot),
+    }

@@ -20,12 +20,13 @@ async def list_profiles(
     entity_type: Optional[str] = None, priority: Optional[str] = None,
     match_level: Optional[str] = None, keyword_match_type: Optional[str] = None,
     search: Optional[str] = None, published: Optional[bool] = None,
+    data_quality: Optional[str] = None,
 ) -> dict:
     return await profile_service.list_profiles(
         client_id, status=status, phase=phase, platform=platform, limit=limit, offset=offset,
         include_held=include_held, keyword=keyword, entity_type=entity_type,
         priority=priority, match_level=match_level, keyword_match_type=keyword_match_type,
-        search=search, published=published,
+        search=search, published=published, data_quality=data_quality,
     )
 
 

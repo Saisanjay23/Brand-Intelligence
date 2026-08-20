@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from backend.shared.models.scoring import ACTIVE_WINDOW_DAYS, NAME_THRESHOLD, compute_score
+from backend.shared.text import contiguous_letters_match
 
 
 @dataclass
@@ -89,6 +90,17 @@ class Row:
         if not self.profile_name:
             return ""
         return "Yes" if self.name_score >= NAME_THRESHOLD else "No"
+
+    @property
+    def name_exact_run(self) -> bool:
+        """The High Match filter's actual criterion: does `profile_name`
+        contain `target`'s letters as one contiguous run (punctuation/case
+        differences ignored), see shared/text.py::contiguous_letters_match.
+        Deliberately independent of `name_score`/`name_yes` above (those
+        stay a fuzzy, order-insensitive similarity used for the Risk/
+        Priority rubric), a profile can score High on name_score's fuzzy
+        token overlap while failing this (reordered words) or vice versa."""
+        return contiguous_letters_match(self.profile_name, self.target)
 
     @property
     def risk(self) -> int:

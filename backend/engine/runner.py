@@ -48,10 +48,10 @@ from backend.engine.models import (
 )
 from backend.platforms import registry
 from backend.platforms.scan_options import DiscoveryOptions, ScanOptions
-from backend.shared.completeness import missing_fields
+from backend.shared.completeness import field_report, missing_fields
 from backend.shared.logging import get_logger
 from backend.shared.models.row import Row
-from backend.shared.text import name_score
+from backend.shared.text import contiguous_letters_match, name_score
 
 log = get_logger("engine.runner")
 
@@ -117,6 +117,7 @@ def _hit_to_fields(hit, platform: str, target: str) -> dict:
         "discovery_source": hit.source, "profile_image_url": getattr(hit, "avatar", ""),
         "has_logo": bool(getattr(hit, "has_custom_pic", False)),
         "name_score": name_score(hit.name or "", target or hit.keyword or ""),
+        "name_exact_run": contiguous_letters_match(hit.name or "", target or hit.keyword or ""),
         "tab": hit.tab, "rank": hit.rank,
     }
     # See services/discovery_service.py::_hit_to_fields, only include the
@@ -166,6 +167,7 @@ def _row_to_fields(row: Row, platform: str, evidence_root: Optional[Path]) -> di
         "has_logo": _tri(row.logo_yes), "verified": row.verified,
         "is_active": _tri(row.active_yes),
         "has_name_match": _tri(row.name_yes), "name_score": row.name_score,
+        "name_exact_run": row.name_exact_run,
         "last_post_date": row.last_post_iso, "created": row.created_iso,
         "risk_score": row.risk, "priority": row.priority,
         "comments": row.notes, "analysis_status": row.status, "sources": dict(row.src),
@@ -175,6 +177,11 @@ def _row_to_fields(row: Row, platform: str, evidence_root: Optional[Path]) -> di
         # row that was reached but came away short of a field the platform
         # publishes is not a finished reading. See shared/completeness.py.
         "analysis_complete": not missing_fields(
+            platform, row, want_screenshot=bool(evidence_root)),
+        # Kept in step with services/analysis_service.py::_row_to_fields --
+        # the two signals that make a blank explainable instead of ambiguous.
+        "posts_seen": row.posts_seen,
+        "field_status": field_report(
             platform, row, want_screenshot=bool(evidence_root)),
     }
 

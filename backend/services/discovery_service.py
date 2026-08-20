@@ -30,7 +30,7 @@ from backend.platforms.scan_options import DiscoveryOptions
 from backend.config.settings import settings
 from backend.shared.logging import get_logger
 from backend.shared.resilience import classify_failure
-from backend.shared.text import name_score
+from backend.shared.text import contiguous_letters_match, name_score
 
 log = get_logger("services.discovery")
 
@@ -73,12 +73,16 @@ def _hit_to_fields(hit, platform: str) -> dict:
         "discovery_source": hit.source, "profile_image_url": getattr(hit, "avatar", ""),
         "has_logo": bool(getattr(hit, "has_custom_pic", False)),
         # how closely the scraped name matches the keyword that found it
-        # seeds the card's High/Low match badge; analysis re-scores this
+        # seeds the card's Medium/Low match badge; analysis re-scores this
         # more precisely once a profile is actually visited. This is the
         # ONLY automated match signal; confidence is scored purely off
         # what the client actually searched for, not off any independent
         # handle/username comparison.
         "name_score": name_score(hit.name or "", hit.keyword or ""),
+        # High Match's actual criterion, see
+        # shared/text.py::contiguous_letters_match / shared/models/row.py's
+        # name_exact_run for the analysis-phase equivalent.
+        "name_exact_run": contiguous_letters_match(hit.name or "", hit.keyword or ""),
     }
     if getattr(hit, "verified", False):
         fields["verified"] = True

@@ -133,6 +133,16 @@ def _to_full(doc: dict, client: Optional[dict]) -> dict:
         "analysis_status": doc.get("analysis_status", ""),
         "analysis_attempts": doc.get("analysis_attempts", 0),
         "analysed_at": doc.get("analysed_at"),
+        # Why each field is or isn't populated -- "read" / "none-exist" /
+        # "not-collected" / "unknown" / "MISSED", see
+        # shared/completeness.py::field_report. Lets a blank cell say which
+        # of those it is instead of leaving an analyst to guess whether the
+        # profile had no data or the scraper lost it. Absent on rows
+        # analysed before this was recorded.
+        "field_status": doc.get("field_status") or {},
+        # "yes" | "no" | "" -- was this profile confirmed to have posts at
+        # all. The distinction behind last_post_date being blank.
+        "posts_seen": doc.get("posts_seen", ""),
         # null until an analyst corrects one in the analysis view; a
         # validated profile counts as matched on both without anything
         # being written here (shared/models/scoring.py::resolve_match)
@@ -167,6 +177,7 @@ async def list_profiles(
     entity_type: Optional[str] = None, priority: Optional[str] = None,
     match_level: Optional[str] = None, keyword_match_type: Optional[str] = None,
     search: Optional[str] = None, published: Optional[bool] = None,
+    data_quality: Optional[str] = None,
 ) -> dict:
     # `keyword_match_type` classifies against the CLIENT's own configured
     # keyword lists, so the client record has to be loaded before the query
@@ -180,7 +191,7 @@ async def list_profiles(
         client_id, platform=platform, status=status, phase=phase, limit=limit, offset=offset,
         include_held=include_held, keyword=keyword, entity_type=entity_type,
         priority=priority, match_level=match_level, keyword_match_type=keyword_match_type,
-        search=search, client_keywords=client, published=published,
+        search=search, client_keywords=client, published=published, data_quality=data_quality,
     )
     if phase == profiles_db.PHASE_ANALYSIS:
         items = [_to_full(d, client) for d in docs]

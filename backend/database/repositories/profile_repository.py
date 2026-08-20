@@ -26,7 +26,7 @@ from pymongo.errors import DuplicateKeyError
 from backend.config.settings import settings
 from backend.shared.errors import ConflictError, NotFoundError, ValidationError
 from backend.shared.logging import get_logger
-from backend.shared.models.scoring import MEDIUM_MATCH_THRESHOLD, NAME_THRESHOLD
+from backend.shared.models.scoring import MEDIUM_MATCH_THRESHOLD
 from backend.database.connection import db
 
 log = get_logger("repositories.profile_repository")
@@ -40,6 +40,7 @@ PHASE_ANALYSIS = "analysis"
 DISCOVERY_FIELDS = (
     "entity_id", "username", "display_name", "entity_type",
     "discovery_source", "profile_image_url", "has_logo", "verified", "name_score",
+    "name_exact_run",
 )
 
 # NOTE: `entity_id` is deliberately NOT here. It is the dedup key, and
@@ -56,8 +57,23 @@ DISCOVERY_FIELDS = (
 ANALYSIS_FIELDS = (
     "display_name", "entity_type", "target", "official_feed",
     "followers", "followers_exact", "friends", "location", "profile_image_url",
-    "has_logo", "verified", "is_active", "has_name_match", "name_score", "last_post_date",
-    "risk_score", "priority", "comments", "analysis_status", "sources",
+    "has_logo", "verified", "is_active", "has_name_match", "name_score", "name_exact_run",
+    "last_post_date", "risk_score", "priority", "comments", "analysis_status", "sources",
+    # "yes" | "no" -- whether the profile was confirmed to HAVE posts at all.
+    # Every engine has always computed this (it is what shared/completeness.py
+    # uses to avoid re-queueing an account that genuinely never posted) and
+    # every engine's value was then thrown away here, because this tuple is
+    # the whitelist save() writes through. Without it stored, a blank
+    # last_post_date is identical in the database whether the account has no
+    # posts or its timeline failed to load -- the single distinction the
+    # analysis pipeline most needs to be able to make. save() drops ""
+    # (unknown) on its own, so only a real yes/no is ever persisted.
+    "posts_seen",
+    # Per-field verdicts from shared/completeness.py::field_report -- which
+    # fields were read, which are genuinely absent at the profile, which this
+    # platform never collects, and which were actually MISSED. Stored so the
+    # answer to "why is this cell blank" survives the run that determined it.
+    "field_status",
     # the GridFS key this profile's evidence screenshot is stored under
     # (see database/repositories/evidence_repository.py), not a filesystem
     # path, so the stored value stays valid across a redeploy with no volume
@@ -94,6 +110,93 @@ ANALYSIS_FIELDS = (
 # until they clear it or exhaust their retries and surface via
 # stuck_analysis() instead.
 RETRYABLE_ANALYSIS_STATUSES = ("ERROR", "CHECKPOINT", "LOGIN_REQUIRED", "PARTIAL")
+
+# An analysis outcome that means the profile WAS read successfully. Anything
+# else -- a retryable failure above, or the terminal GONE -- is a row whose
+# blank columns are a symptom, which is exactly what the Data Quality
+# filter's "Incomplete / broken" option is for (see _incomplete_clause).
+# "" covers a row that reached the analysis phase without an outcome being
+# recorded at all.
+OK_ANALYSIS_STATUSES = ("OK", "")
+
+
+def _blank_field(field: str) -> dict:
+    """Mongo's "this field was never read". `None` already matches a missing
+    key as well as an explicit null, `$exists` is spelled out anyway so the
+    intent survives someone reading the query in isolation.
+
+    Numeric 0 is deliberately NOT blank -- a brand-new account really can
+    have 0 followers, and calling that unread would flag a correct reading
+    as broken. Mirrors shared/completeness.py::_blank, which is the same
+    rule applied to a live Row rather than a stored document.
+    """
+    return {"$or": [{field: {"$exists": False}}, {field: None}, {field: ""}]}
+
+
+def _incomplete_clause() -> dict:
+    """"This analysed row did not come back with usable data", as a query
+    over what is actually STORED on a profile document.
+
+    Deliberately NOT `{"analysis_complete": False}`: that field only exists
+    on rows analysed after shared/completeness.py was introduced (614 of 934
+    analysis rows in the live database predate it and carry no such field at
+    all), so filtering on it would silently miss most of the broken rows an
+    analyst is looking for. Evaluating the underlying fields directly is what
+    makes this work on legacy rows too.
+
+    Each clause mirrors one of shared/completeness.py::missing_fields' rules,
+    restricted to the ones a stored document can answer honestly:
+
+      * no display name -- the headline symptom (the table falls back to
+        showing the raw URL, which is what "missing profile name" looks
+        like on screen)
+      * no audience number at all: BOTH `followers` and `friends` unread.
+        Either one alone is a complete reading -- a Facebook Page publishes
+        followers, a personal profile publishes friends (see
+        facebook/analysis_engine.py::followers_from_friends) -- so requiring
+        both to be blank is what keeps ~30 correctly-read personal profiles
+        from being reported broken. Groups are exempt entirely: they publish
+        a member count under neither field.
+      * no evidence screenshot -- the takedown deliverable itself
+      * an analysis outcome that is not a clean read (a retryable failure,
+        or GONE)
+
+      * a last-post date missing from a profile CONFIRMED to have posts.
+        `posts_seen` is the engine's own verdict, now persisted (see
+        ANALYSIS_FIELDS): "yes" means the timeline was read and does carry
+        posts, so failing to date them is a real miss. "no" means the
+        account genuinely never posted -- absent on purpose, not a gap.
+        Absent/"" means the engine could not tell (a legacy row saved before
+        this was stored, or a drifted parser) and is deliberately NOT
+        flagged: guessing would sweep in every legitimately postless and
+        private account, which is exactly the "missing means we failed to
+        read it, never this account has none" mistake shared/completeness.py
+        warns against. Those rows surface through LastPostExtractionDrift
+        instead, which is the signal actually designed for them.
+    """
+    return {"$or": [
+        _blank_field("display_name"),
+        {"$and": [
+            _blank_field("followers"),
+            _blank_field("friends"),
+            {"entity_type": {"$ne": "group"}},
+        ]},
+        _blank_field("screenshot"),
+        {"analysis_status": {"$nin": list(OK_ANALYSIS_STATUSES)}},
+        # Authoritative when present: the engine's own stored verdict, so
+        # this filter and shared/completeness.py::field_report can never
+        # disagree about the same row.
+        {"field_status.last_post_date": "MISSED"},
+        # Legacy rows carry no field_status (they predate it). For those,
+        # fall back to the one unambiguous signal: posts confirmed present
+        # but undated. Scoped to `field_status` being absent so a current
+        # row is judged only by the verdict above.
+        {"$and": [
+            {"field_status": {"$exists": False}},
+            _blank_field("last_post_date"),
+            {"posts_seen": "yes"},
+        ]},
+    ]}
 
 # How many times a single profile may fail analysis before it stops being
 # retried. Without a cap, a genuinely dead URL (deleted account that still
@@ -377,7 +480,7 @@ def _build_query(
     entity_type: Optional[str] = None, priority: Optional[str] = None,
     match_level: Optional[str] = None, keyword_match_type: Optional[str] = None,
     search: Optional[str] = None, client_keywords: Optional[dict] = None,
-    published: Optional[bool] = None,
+    published: Optional[bool] = None, data_quality: Optional[str] = None,
 ) -> dict[str, Any]:
     """The filter `find()` queries with, factored out so `delete_matching()`
     (the "Delete Platform Data" button) can delete EXACTLY the set of
@@ -423,19 +526,28 @@ def _build_query(
         # "high" used to require name_score >= 100, effectively unreachable
         # for real fuzzy-matched names (token_set_ratio rarely lands on a
         # perfect 100 unless the name is byte-identical to the keyword after
-        # normalization). Live-checked against real data: 97 profiles scored
-        # 80-99, genuinely strong matches by the SAME bar this backend
-        # already uses everywhere else (NAME_THRESHOLD, scoring.py) to decide
-        # "does the name match", were being silently bucketed into
-        # "Medium" instead, which is what made "High Match" look broken for
-        # any keyword whose best hits happened to land in that range.
-        # Both bounds come from scoring.py so this file can never drift
-        # away from the bar the rest of the backend scores against again.
+        # High Match's real criterion is `name_exact_run` (see
+        # shared/text.py::contiguous_letters_match): the keyword's letters
+        # appear in the profile's name as one contiguous run, punctuation/
+        # case/word-order-preserving separators ignored -- a literal,
+        # explainable reason a profile qualifies, not a threshold on a
+        # fuzzy token-overlap ratio nobody could point at. A profile whose
+        # words merely got REORDERED ("Adani Gautam" against keyword
+        # "Gautam Adani") used to score name_score=100 and land in High
+        # too, which is exactly the kind of match this replaces: same
+        # words, but not the keyword's own letter sequence.
+        #
+        # Medium/Low stay on the pre-existing name_score fuzzy bands for
+        # everything that doesn't clear the High bar, so a profile that's
+        # merely similar (not a real contiguous run) still surfaces
+        # somewhere instead of disappearing from every Match Level filter.
         if match_level == "high":
-            q["name_score"] = {"$gte": NAME_THRESHOLD}
+            q["name_exact_run"] = True
         elif match_level == "medium":
-            q["name_score"] = {"$gte": MEDIUM_MATCH_THRESHOLD, "$lt": NAME_THRESHOLD}
+            q["name_exact_run"] = {"$ne": True}
+            q["name_score"] = {"$gte": MEDIUM_MATCH_THRESHOLD}
         else:
+            q["name_exact_run"] = {"$ne": True}
             q["name_score"] = {"$lt": MEDIUM_MATCH_THRESHOLD, "$exists": True, "$ne": None}
     if keyword_match_type and client_keywords is not None:
         # "was this found under one of the client's INDIVIDUAL-name keywords
@@ -447,6 +559,14 @@ def _build_query(
         # an empty configured list can never match anything, express that
         # as an impossible clause rather than letting it degrade to "all"
         q["keywords"] = {"$in": wanted} if wanted else {"$in": [None]}
+    if data_quality:
+        # The analyst-facing "Data Quality" filter. "complete" is the exact
+        # complement of "incomplete" ($nor of the same clause), so the two
+        # options always partition the view with nothing falling between
+        # them -- deriving the negative independently would let a row escape
+        # both the moment either definition drifted.
+        incomplete = _incomplete_clause()
+        clauses.append(incomplete if data_quality == "incomplete" else {"$nor": [incomplete]})
     if search and search.strip():
         rx = {"$regex": re.escape(search.strip()), "$options": "i"}
         clauses.append({"$or": [{"display_name": rx}, {"username": rx}, {"url": rx}]})
@@ -484,7 +604,7 @@ async def find(
     entity_type: Optional[str] = None, priority: Optional[str] = None,
     match_level: Optional[str] = None, keyword_match_type: Optional[str] = None,
     search: Optional[str] = None, client_keywords: Optional[dict] = None,
-    published: Optional[bool] = None,
+    published: Optional[bool] = None, data_quality: Optional[str] = None,
 ) -> tuple[list[dict], int, dict]:
     """`include_held=False` (the default, used by any caller that doesn't
     explicitly ask otherwise, i.e. the SaaS backend's normal poll) hides a
@@ -504,7 +624,7 @@ async def find(
         client_id, platform=platform, status=status, phase=phase, include_held=include_held,
         keyword=keyword, entity_type=entity_type, priority=priority, match_level=match_level,
         keyword_match_type=keyword_match_type, search=search, client_keywords=client_keywords,
-        published=published,
+        published=published, data_quality=data_quality,
     )
 
     coll = db()[PROFILES]

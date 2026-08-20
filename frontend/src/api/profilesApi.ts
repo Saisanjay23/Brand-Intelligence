@@ -21,6 +21,12 @@ export const profilesApi = {
     search?: string;
     // Analysis-phase Published/Unpublished tab. Omitted -> both.
     published?: boolean;
+    // Analysis-phase data-quality filter. "incomplete" = analysis came back
+    // without usable data (no profile name, no audience number at all, no
+    // evidence screenshot, or a non-clean analysis outcome); "complete" is
+    // its exact complement. Omitted -> both. See
+    // backend/database/repositories/profile_repository.py::_incomplete_clause.
+    data_quality?: "incomplete" | "complete" | "";
     limit?: number;
     offset?: number;
   }) => {
@@ -35,6 +41,7 @@ export const profilesApi = {
     if (q.keyword_match_type) p.set("keyword_match_type", q.keyword_match_type);
     if (q.search && q.search.trim()) p.set("search", q.search.trim());
     if (q.published !== undefined) p.set("published", String(q.published));
+    if (q.data_quality) p.set("data_quality", q.data_quality);
     p.set("limit", String(q.limit ?? 100));
     p.set("offset", String(q.offset ?? 0));
     // This is the analyst tool, always see a freshly analysed result

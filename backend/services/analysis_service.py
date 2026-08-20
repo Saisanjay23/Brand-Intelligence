@@ -25,7 +25,7 @@ from backend.services import health_service as health_engine
 from backend.services import incident_service as incidents_engine
 from backend.sessions import manager as sessions_engine
 from backend.services.job_service import Job
-from backend.shared.completeness import missing_fields
+from backend.shared.completeness import field_report, missing_fields
 from backend.shared.extraction import locate
 from backend.shared.models.row import Row
 from backend.shared.resilience import classify_failure, is_transient, retry_async
@@ -94,6 +94,7 @@ def _row_to_fields(
         "has_logo": _tri(row.logo_yes), "verified": row.verified,
         "is_active": _tri(row.active_yes),
         "has_name_match": _tri(row.name_yes), "name_score": row.name_score,
+        "name_exact_run": row.name_exact_run,
         "last_post_date": row.last_post_iso, "risk_score": row.risk, "priority": row.priority,
         "comments": row.notes, "analysis_status": row.status, "sources": dict(row.src),
     }
@@ -101,6 +102,11 @@ def _row_to_fields(
         fields["screenshot"] = shot
         fields["screenshot_at"] = datetime.now(timezone.utc)
     fields["analysis_complete"] = not missing_fields(
+        platform_id, row, want_screenshot=want_screenshot)
+    # The two signals that make a blank explainable rather than ambiguous,
+    # see profile_repository.ANALYSIS_FIELDS and shared/completeness.py.
+    fields["posts_seen"] = row.posts_seen
+    fields["field_status"] = field_report(
         platform_id, row, want_screenshot=want_screenshot)
     return fields
 
@@ -776,6 +782,50 @@ def _one_field_blank(row: Row, field: str) -> bool:
     return val is None if field in _NUMERIC_FIELDS else not str(val or "").strip()
 
 
+def _canary_sample(rows: list[Row]) -> list[Row]:
+    """One row per PROFILE, not one per attempt -- the sample both canaries
+    below must judge.
+
+    `rows` holds every attempt this run made, and the re-attempt passes
+    (see `_COMPLETENESS_PASSES`) re-run *only* the profiles that came back
+    missing a field. So a profile that is genuinely blank is appended once
+    per pass while a profile that read cleanly is appended once, and the
+    blank ratio these canaries compute is inflated by exactly the profiles
+    the canary is looking for.
+
+    It also defeated `_CANARY_MIN_ROWS`, the guard whose whole job is to
+    stop one odd profile tripping a critical alert: with three attempts
+    apiece, TWO blank profiles produce six rows and clear a minimum of
+    five. That is not hypothetical -- it is the shape of the alerts this
+    fixed. The live incidents read "6 of 6", "15 of 15" and "27 of 27"
+    profiles, ratios of exactly 100% that no real batch produces; they were
+    2, 5 and 9 profiles counted three times each.
+
+    Keeping the LAST attempt per URL matches `_report_incomplete`, which
+    has always deduplicated this way: a profile the re-attempt pass
+    successfully filled in must count as read, not as the miss it started
+    as.
+    """
+    return list({r.url: r for r in rows}.values())
+
+
+def _canary_applies(row: Row, field: object) -> bool:
+    """Whether a canary should judge this profile at all.
+
+    A Facebook GROUP publishes its member count under neither `followers`
+    nor `friends` (the same carve-out shared/completeness.py::missing_fields
+    already makes, which is why a group is never re-queued for a missing
+    audience number). The canary did not know that, so every group counted
+    as a blank read -- and with only two groups in the whole database, a
+    batch containing them was enough to fire a critical "facebook stopped
+    publishing follower counts" alert about a field groups never publish.
+    """
+    fields = (field,) if isinstance(field, str) else tuple(field)
+    if "followers" in fields and row.entity_type == "group":
+        return False
+    return True
+
+
 async def _check_field_extraction_health(platform_id: str, job: Job, rows: list[Row], mgr) -> None:
     """Per-field version of the last-post canary below.
 
@@ -785,18 +835,24 @@ async def _check_field_extraction_health(platform_id: str, job: Job, rows: list[
     feed, so the Live Activity panel shows the break as it happens instead
     of only once the email arrives.
     """
-    ok_rows = [r for r in rows if r.status == "OK"]
+    ok_rows = [r for r in _canary_sample(rows) if r.status == "OK"]
     if len(ok_rows) < _CANARY_MIN_ROWS:
         return
     for field, label, targets in _FIELD_CANARIES.get(platform_id, ()):
-        blank = [r for r in ok_rows if _field_blank(r, field)]
-        if len(blank) < _CANARY_MIN_BLANK or len(blank) / len(ok_rows) < _CANARY_BLANK_RATIO:
+        # Judged only over the profiles this field is meant to exist on --
+        # a group has no follower/friend count to lose, see _canary_applies.
+        judged = [r for r in ok_rows if _canary_applies(r, field)]
+        if len(judged) < _CANARY_MIN_ROWS:
             continue
+        blank = [r for r in judged if _field_blank(r, field)]
+        if len(blank) < _CANARY_MIN_BLANK or len(blank) / len(judged) < _CANARY_BLANK_RATIO:
+            continue
+        ok_rows_for_msg = judged
         where = "\n".join(f"  {locate(t)}" for t in targets)
         examples = ", ".join(r.url for r in blank[:3])
         msg = (
             f"{platform_id}: the '{label}' field came back empty for {len(blank)} of "
-            f"{len(ok_rows)} profiles that loaded successfully in this batch. Those profiles "
+            f"{len(ok_rows_for_msg)} profiles that loaded successfully in this batch. Those profiles "
             f"opened fine and their other fields populated, so this is not a session, network "
             f"or access problem -- it is {platform_id} having changed the part of its page or "
             f"data feed that carries '{label}'. Every profile analysed from now on will be "
@@ -842,11 +898,14 @@ def _check_last_post_extraction_health(platform_id: str, job: Job, rows: list[Ro
     this file already uses, so this can't flood an inbox even on an
     engine-wide outage.
     """
-    ok_rows = [r for r in rows if r.status == "OK"]
-    if len(ok_rows) < 5:
+    # One row per profile, not one per attempt -- see _canary_sample for
+    # why counting re-attempts as independent samples systematically
+    # inflated this ratio and defeated the minimum-batch guard.
+    ok_rows = [r for r in _canary_sample(rows) if r.status == "OK"]
+    if len(ok_rows) < _CANARY_MIN_ROWS:
         return
     blank = [r for r in ok_rows if r.posts_seen not in ("no", "yes")]
-    if len(blank) < 3 or len(blank) / len(ok_rows) < 0.5:
+    if len(blank) < _CANARY_MIN_BLANK or len(blank) / len(ok_rows) < _CANARY_BLANK_RATIO:
         return
     examples = ", ".join(r.url for r in blank[:3])
     msg = (

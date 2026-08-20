@@ -9,6 +9,7 @@ report.
 
 from __future__ import annotations
 
+import itertools
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -22,8 +23,20 @@ def _job() -> Job:
     return Job(id="job1", kind="analysis", client_id="client1", platform="facebook", params={})
 
 
-def _row(status: str = "OK", posts_seen: str = "", url: str = "https://x.com/a") -> Row:
-    r = Row(url=url, target="Adani")
+_seq = itertools.count()
+
+
+def _row(status: str = "OK", posts_seen: str = "", url: str = "") -> Row:
+    """Each call is a DISTINCT profile unless a url is passed explicitly.
+
+    These fixtures used to share one default url, which made a list of six
+    rows look like six profiles to the canary when it is really one profile
+    attempted six times -- the exact confusion `_canary_sample` now removes
+    (see tests/test_canary_false_positives.py). Distinct urls are also what
+    a real batch looks like, so the sensitivity these tests assert is the
+    sensitivity production actually gets.
+    """
+    r = Row(url=url or f"https://x.com/p{next(_seq)}", target="Adani")
     r.status = status
     r.posts_seen = posts_seen
     return r

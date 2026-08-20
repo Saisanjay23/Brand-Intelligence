@@ -65,7 +65,13 @@ interface Props {
 }
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 200] as const;
+// One request's ceiling, fixed by the API (backend/shared/pagination.py's
+// MAX_LIMIT); larger exports are paged through it, see fetchAllForExport.
 const EXPORT_LIMIT = 1000;
+// Total rows one export will walk before it stops and says so. Ten pages is
+// far past any real client's analysed set while still bounding how long a
+// single click can run.
+const EXPORT_MAX_ROWS = 10000;
 // how long an approve/reject/validate stays undo-able before the toast
 // disappears, long enough to catch a misclick, short enough that "undo"
 // never becomes a second, confusing source of truth for a profile's status
@@ -1116,10 +1122,22 @@ export function ResultsGrid({
   const [matchLevel, setMatchLevel] = useState<"" | "high" | "medium" | "low">("");
   const [entityType, setEntityType] = useState<"" | "profile" | "page" | "group">("");
   const [keywordMatchType, setKeywordMatchType] = useState<"" | "individual" | "domain">("");
+  // Analysis-only "Data Quality" filter: surfaces rows whose analysis came
+  // back without usable data (no profile name -- these render as a bare URL
+  // in the table -- no audience number at all, no evidence screenshot, or a
+  // non-clean analysis outcome). Server-side, like every filter beside it,
+  // so it survives pagination and the row count is honest. The rule lives in
+  // backend/database/repositories/profile_repository.py::_incomplete_clause.
+  const [dataQuality, setDataQuality] = useState<"" | "incomplete" | "complete">("");
   // Which column layout the Export/Copy buttons use, analysis view only,
   // "incident" is the Platform Format shape (OrgId, Domain, AssetType, ...);
   // "legacy" is the tool's original raw-field layout (Original Name, IMPERSONATED, Profile name, ...)
   const [exportFormat, setExportFormat] = useState<"incident" | "legacy">("incident");
+  // Export scope: just the platform tab currently open, or every platform for
+  // this client in one file. Applies to both column layouts. Deliberately NOT
+  // persisted across a client switch -- "all platforms" is a decision about
+  // one deliverable, not a standing preference.
+  const [exportScope, setExportScope] = useState<"platform" | "all">("platform");
   const [copyMenuOpen, setCopyMenuOpen] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [focusedIndex, setFocusedIndex] = useState<number>(-1);
@@ -1380,6 +1398,7 @@ export function ResultsGrid({
           keyword_match_type: keywordMatchType || undefined,
           search: debouncedSearch || undefined,
           published: isAnalysisView ? publishedFilter === "published" : undefined,
+          data_quality: isAnalysisView && dataQuality ? dataQuality : undefined,
           limit: pageSize,
           offset,
         });
@@ -1406,7 +1425,8 @@ export function ResultsGrid({
     // priority / matchLevel / keywordMatchType / debouncedSearch / published
     // are query parameters now, so load() must re-run when any of them changes
     [clientId, platform, status, phase, keywordFilter, entityType, isAnalysisView,
-     priority, matchLevel, keywordMatchType, publishedFilter, debouncedSearch, offset, pageSize, onError],
+     priority, matchLevel, keywordMatchType, publishedFilter, dataQuality, debouncedSearch,
+     offset, pageSize, onError],
   );
 
   // Any filter change invalidates the current page number: page 4 of the
@@ -1415,7 +1435,7 @@ export function ResultsGrid({
   useEffect(() => {
     setOffset(0);
   }, [clientId, platform, status, phase, keywordFilter, entityType, keywordMatchType,
-      priority, matchLevel, publishedFilter, debouncedSearch, pageSize]);
+      priority, matchLevel, publishedFilter, dataQuality, debouncedSearch, pageSize]);
 
   // Client-scoped filters must reset on a client switch, a leftover
   // Individual/Domain match selection from a different client's keyword
@@ -1431,7 +1451,7 @@ export function ResultsGrid({
   useEffect(() => {
     setSelectedIds(new Set());
   }, [clientId, platform, status, phase, keywordFilter, entityType, keywordMatchType,
-      priority, matchLevel, publishedFilter, debouncedSearch]);
+      priority, matchLevel, publishedFilter, dataQuality, debouncedSearch]);
 
   // Neither Discovery nor Analysis has an "All Platforms" tab, whenever we
   // end up with no platform selected (e.g., landing here fresh before platforms
@@ -2083,39 +2103,69 @@ export function ResultsGrid({
     "id", "platform", "status", "phase", "url", "profile_name", "username", "keyword",
   ] as const;
 
-  const handleExport = async (fmt: "csv" | "json" | "xlsx", formatOverride?: "incident" | "legacy") => {
+  // The API caps a single request at EXPORT_LIMIT (backend/shared/pagination.py
+  // MAX_LIMIT), so anything larger has to be walked page by page. Exporting a
+  // whole client across every platform routinely passes that cap, and a
+  // silently truncated deliverable is worse than a slow one. EXPORT_MAX_ROWS
+  // is a stop so a runaway client can't spin here forever; hitting it is
+  // reported to the analyst rather than passed off as a complete export.
+  const fetchAllForExport = async (
+    q: Parameters<typeof profilesApi.profiles>[0],
+  ): Promise<{ items: Profile[]; truncated: boolean }> => {
+    const items: Profile[] = [];
+    for (let offset = 0; offset < EXPORT_MAX_ROWS; offset += EXPORT_LIMIT) {
+      const res = await profilesApi.profiles({ ...q, limit: EXPORT_LIMIT, offset });
+      items.push(...res.items);
+      if (items.length >= res.total || res.items.length < EXPORT_LIMIT) {
+        return { items, truncated: false };
+      }
+    }
+    return { items, truncated: true };
+  };
+
+  const handleExport = async (
+    fmt: "csv" | "json" | "xlsx",
+    formatOverride?: "incident" | "legacy",
+    scopeOverride?: "platform" | "all",
+  ) => {
     if (!clientId) return;
     setExporting(true);
     setExportMenuOpen(false);
     const chosenFormat = formatOverride || exportFormat;
+    // "all" drops the platform constraint entirely -- from the query AND
+    // from the client-side reconciliation pass below, which would otherwise
+    // narrow the result straight back down to the active tab.
+    const allPlatforms = (scopeOverride || exportScope) === "all";
+    const scopePlatform = allPlatforms ? undefined : platform || undefined;
     try {
       if (pendingSaves.current.size) {
         await Promise.all(pendingSaves.current);
       }
       let filtered: Profile[];
+      let truncated = false;
       if (selectedIds.size > 0) {
-        // Fetch up to EXPORT_LIMIT profiles so all selected IDs across all pages are included
-        const res = await profilesApi.profiles({
+        const res = await fetchAllForExport({
           client_id: clientId,
-          platform: platform || undefined,
+          platform: scopePlatform,
           phase,
-          limit: EXPORT_LIMIT,
-          offset: 0,
         });
+        truncated = res.truncated;
         filtered = res.items.filter((r) => selectedIds.has(r.id));
       } else {
-        const res = await profilesApi.profiles({
+        const res = await fetchAllForExport({
           client_id: clientId,
-          platform: platform || undefined,
+          platform: scopePlatform,
           status: !isAnalysisView && status ? status : undefined,
           keyword: keywordFilter || undefined,
           keyword_match_type: keywordMatchType || undefined,
           phase,
           published: isAnalysisView ? publishedFilter === "published" : undefined,
-          limit: EXPORT_LIMIT,
-          offset: 0,
+          data_quality: isAnalysisView && dataQuality ? dataQuality : undefined,
         });
-        filtered = filterResults(res.items, filters, extra, platform, clientKeywordSets);
+        truncated = res.truncated;
+        filtered = filterResults(
+          res.items, filters, extra, allPlatforms ? "" : platform, clientKeywordSets,
+        );
       }
 
       if (!filtered.length) {
@@ -2124,12 +2174,15 @@ export function ResultsGrid({
       const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
       const rows: Record<string, unknown>[] = isAnalysisView
         ? chosenFormat === "legacy"
-          ? toLegacyExportRows(filtered)
+          // The all-platforms sheet gains a leading Platform column; the
+          // Platform Format layout already identifies it via AssetType.
+          ? toLegacyExportRows(filtered, { includePlatform: allPlatforms })
           : toIncidentExportRows(filtered)
         : filtered.map((r) => Object.fromEntries(DISCOVERY_EXPORT_COLS.map((c) => [c, r[c]])));
 
       const formatSuffix = isAnalysisView ? `-${chosenFormat === "legacy" ? "legacy" : "platform-format"}` : "";
-      const stem = `${(filtered[0]?.client_name || clientId).replace(/[/\\:*?"<>|]/g, "_")}-${phase}${formatSuffix}-${stamp}`;
+      const scopeSuffix = allPlatforms ? "-all-platforms" : platform ? `-${platform}` : "";
+      const stem = `${(filtered[0]?.client_name || clientId).replace(/[/\\:*?"<>|]/g, "_")}-${phase}${scopeSuffix}${formatSuffix}-${stamp}`;
       if (fmt === "csv") {
         download(`${stem}.csv`, rowsToCsv(rows), "text/csv");
       } else if (fmt === "xlsx") {
@@ -2139,7 +2192,15 @@ export function ResultsGrid({
       } else {
         download(`${stem}.json`, JSON.stringify(rows, null, 2), "application/json");
       }
-      toast.success(`Exported ${rows.length} profiles (${fmt.toUpperCase()})`);
+      const platformCount = new Set(filtered.map((r) => r.platform)).size;
+      toast.success(
+        `Exported ${rows.length} profiles${allPlatforms ? ` across ${platformCount} platform${platformCount > 1 ? "s" : ""}` : ""} (${fmt.toUpperCase()})`,
+      );
+      if (truncated) {
+        onError?.(
+          `Export capped at ${EXPORT_MAX_ROWS.toLocaleString()} rows -- narrow the filters and export again to get the rest.`,
+        );
+      }
     } catch (e) {
       onError?.((e as Error).message);
       toast.error((e as Error).message || "Export failed");
@@ -3278,6 +3339,19 @@ export function ResultsGrid({
                   <option value="Medium">MEDIUM Priority</option>
                   <option value="Low">LOW Priority</option>
                 </select>
+                <select
+                  value={dataQuality}
+                  onChange={(e) => setDataQuality(e.target.value as "" | "incomplete" | "complete")}
+                  className="select-filter"
+                  title={
+                    "Find rows whose analysis came back without usable data: no profile name (the row shows a bare URL), "
+                    + "no follower/friend count at all, no evidence screenshot, or the profile was gone / could not be read."
+                  }
+                >
+                  <option value="">All Data Quality</option>
+                  <option value="incomplete">⚠ Incomplete / Broken</option>
+                  <option value="complete">✓ Complete Data</option>
+                </select>
               </>
             )}
             <div style={{ position: "relative", flex: 1, minWidth: "160px", display: "flex", alignItems: "center" }}>
@@ -3491,10 +3565,47 @@ export function ResultsGrid({
                     <div className="action-dropdown-scope-badge">
                       <span>🎯</span> Exporting {selectedIds.size} Selected Profile{selectedIds.size > 1 ? "s" : ""}
                     </div>
+                  ) : exportScope === "all" ? (
+                    <div className="action-dropdown-scope-badge" style={{ background: "rgba(0, 229, 255, 0.12)", color: "var(--cyan)" }}>
+                      {/* No count: `total` is the current platform's own
+                          filtered count, and showing it next to an
+                          all-platforms export would understate the file. */}
+                      <span>🌐</span> Exporting All Platforms (current filters)
+                    </div>
                   ) : (
                     <div className="action-dropdown-scope-badge" style={{ background: "rgba(148, 163, 184, 0.12)", color: "var(--text-dim)" }}>
-                      <span>🌐</span> Exporting All Filtered ({total || displayed.length})
+                      <span>🎯</span> Exporting All Filtered ({total || displayed.length})
                     </div>
+                  )}
+
+                  {selectedIds.size === 0 && (
+                    <>
+                      <div className="action-dropdown-header" style={{ marginTop: "4px" }}>Platform Scope</div>
+                      <div className="action-format-selector">
+                        <button
+                          type="button"
+                          className={`action-format-btn ${exportScope === "platform" ? "active" : ""}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setExportScope("platform");
+                          }}
+                          title="Export only the platform tab currently open"
+                        >
+                          {platforms.find((p) => p.platform === platform)?.name || "This Platform"}
+                        </button>
+                        <button
+                          type="button"
+                          className={`action-format-btn ${exportScope === "all" ? "active" : ""}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setExportScope("all");
+                          }}
+                          title="Export every platform for this client into one file. The Legacy layout gains a leading Platform column; the Platform Format layout already names it under AssetType."
+                        >
+                          All Platforms
+                        </button>
+                      </div>
+                    </>
                   )}
 
                   {isAnalysisView && (

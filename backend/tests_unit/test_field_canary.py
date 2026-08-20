@@ -12,6 +12,7 @@ Two separate guarantees here:
 
 from __future__ import annotations
 
+import itertools
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -31,8 +32,19 @@ def _job() -> Job:
     return Job(id="job1", kind="analysis", client_id="client1", platform="twitter", params={})
 
 
-def _row(status="OK", name="Adani Group", followers=1000, url="https://x.com/a") -> Row:
-    r = Row(url=url, target="Adani")
+_seq = itertools.count()
+
+
+def _row(status="OK", name="Adani Group", followers=1000, url="") -> Row:
+    """Each call is a DISTINCT profile unless a url is passed explicitly.
+
+    The default used to be one shared url, so a list of six rows read as six
+    profiles when it is really one profile attempted six times -- the
+    confusion `_canary_sample` now removes (see
+    tests/test_canary_false_positives.py). Distinct urls are what a real
+    batch looks like, so what these tests assert is what production gets.
+    """
+    r = Row(url=url or f"https://x.com/p{next(_seq)}", target="Adani")
     r.status = status
     r.profile_name = name
     r.followers = followers
@@ -170,8 +182,9 @@ class TestFacebookPublishesFollowersOrFriends:
     """
 
     @staticmethod
-    def _fb(followers=None, friends=None, url="https://www.facebook.com/profile.php?id=1"):
-        r = Row(url=url, target="Adani")
+    def _fb(followers=None, friends=None, url=""):
+        r = Row(url=url or f"https://www.facebook.com/profile.php?id={next(_seq)}",
+                target="Adani")
         r.status = "OK"
         r.profile_name = "Gautam Adani"
         r.followers = followers
@@ -201,8 +214,7 @@ class TestFacebookPublishesFollowersOrFriends:
         profiles, 14 of them personal (friends only), 4 Pages."""
         rows = [self._fb(friends=n) for n in (313, 143, 12, 34, 126, 76, 4, 3,
                                               43, 129, 464, 162, 55, 88)]
-        rows += [self._fb(followers=n, url="https://www.facebook.com/page") for n in
-                 (98000, 1200, 640, 77)]
+        rows += [self._fb(followers=n) for n in (98000, 1200, 640, 77)]
         assert len(rows) == 18
 
         with patch("backend.services.incident_service.record",

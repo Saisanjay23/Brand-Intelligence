@@ -98,6 +98,34 @@ export function toLegacyExportRow(r: Profile): LegacyExportRow {
   };
 }
 
-export function toLegacyExportRows(rows: Profile[]): LegacyExportRow[] {
-  return rows.map(toLegacyExportRow);
+// Platform display names for the all-platforms export's extra first column.
+// The legacy layout has no platform column of its own -- it never needed one
+// while every export was a single platform's own sheet -- and one file
+// covering all of them is unreadable without it.
+const PLATFORM_LABELS: Record<string, string> = {
+  facebook: "Facebook",
+  twitter: "Twitter",
+  instagram: "Instagram",
+  youtube: "YouTube",
+  telegram: "Telegram",
+  tiktok: "TikTok",
+};
+
+export function platformLabel(id: string): string {
+  return PLATFORM_LABELS[id] || (id ? id.charAt(0).toUpperCase() + id.slice(1) : "");
+}
+
+/**
+ * `includePlatform` prepends a "Platform" column, used ONLY by the
+ * all-platforms export. The per-platform export's column set stays exactly
+ * as it was -- this layout's shape is fixed by what downstream consumes it
+ * (see the module docstring), so the extra column appears only in the new
+ * combined sheet, where the rows would otherwise be indistinguishable.
+ */
+export function toLegacyExportRows(
+  rows: Profile[],
+  opts?: { includePlatform?: boolean },
+): Record<string, string | number>[] {
+  if (!opts?.includePlatform) return rows.map(toLegacyExportRow);
+  return rows.map((r) => ({ Platform: platformLabel(r.platform), ...toLegacyExportRow(r) }));
 }

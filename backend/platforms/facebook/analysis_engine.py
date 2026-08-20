@@ -930,14 +930,55 @@ class Scraper:
             row.profile_id = pid
         return pid
 
-    @staticmethod
-    def blocked_status(row: Row, page_url: str, txt: str) -> bool:
+    # A rendered "915 followers" / "12 friends" / "0 following" line. Present
+    # on every live profile and Page; absent from a removed one, whose body
+    # is nothing but the unavailable-placeholder and Facebook's own chrome.
+    RE_AUDIENCE_LINE = re.compile(r"[\d][\d,.\s]*[KMB]?\s*(followers?|friends?|following)\b", re.I)
+
+    @classmethod
+    def has_profile_content(cls, h: Harvest, txt: str) -> bool:
+        """Did this page carry the profile's OWN data, whatever else is on it?
+
+        Facebook reuses ONE string -- "This content isn't available at the
+        moment" -- for two completely different situations:
+
+          * the profile/Page/group itself is removed, and
+          * a single restricted or deleted POST sitting in a live profile's
+            timeline (or a deleted comment under one).
+
+        Confirmed live against all 8 profiles this engine had marked GONE:
+        5 of them were fully alive (343k / 915 / 193 / 90 / 14 followers,
+        real names, full profile chrome) and carried that placeholder purely
+        because one item in their feed was restricted. The wording is
+        byte-identical in both cases, so no amount of tightening RE_GONE can
+        separate them -- the text genuinely does not know the difference.
+
+        What does separate them, cleanly, is whether the profile's own
+        audience number came back: on the 3 genuinely-removed pages the body
+        was 257 characters of pure chrome with no count anywhere, in the
+        payload or the DOM; on all 5 live ones a real count was readable.
+        """
+        if [n for n in h.ent_ints(K_FOLLOWERS) if 0 <= n < MAX_FOLLOWERS]:
+            return True
+        if [n for n in h.gql_ints(K_FOLLOWERS) if 0 <= n < MAX_FOLLOWERS]:
+            return True
+        return bool(cls.RE_AUDIENCE_LINE.search(txt))
+
+    @classmethod
+    def blocked_status(cls, row: Row, page_url: str, txt: str, h: Harvest) -> bool:
         """Session or availability problems that make field reading pointless."""
         if "/checkpoint" in page_url or RE_CHECKPOINT.search(txt):
             row.status, msg = "CHECKPOINT", "session checkpointed"
         elif "/login" in page_url or RE_LOGIN.search(txt):
             row.status, msg = "LOGIN_REQUIRED", "cookies rejected/expired"
-        elif RE_GONE.search(txt):
+        # The content gate is what stops a live profile being written off as
+        # taken down because one post in its timeline is restricted -- see
+        # has_profile_content. Without it this returned GONE for 5 of the 8
+        # profiles it was applied to, discarding every field on a page that
+        # had just handed over the name and follower count, and, because
+        # GONE is terminal in shared/completeness.py, marking the row
+        # analysis_complete so it was never retried either.
+        elif RE_GONE.search(txt) and not cls.has_profile_content(h, txt):
             row.status = "GONE"
             msg = "removed or unavailable -- may already be taken down"
         else:
@@ -977,7 +1018,7 @@ class Scraper:
                 return row
 
             txt = h.text.get("main", "")
-            if self.blocked_status(row, page.url, txt):
+            if self.blocked_status(row, page.url, txt, h):
                 if row.status == "GONE":
                     read_name(row, h)
                 return row

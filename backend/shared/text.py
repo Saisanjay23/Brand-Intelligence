@@ -195,3 +195,38 @@ def name_score(candidate: str, target: str) -> int:
 
     coverage = sum(_covers(t, ta) for t in tb) / len(tb)
     return int(base * coverage)
+
+
+def _letters_only(s: str) -> str:
+    """Lowercase, every character that is not a letter or digit stripped
+    (not just collapsed to a space, REMOVED), so "Gautam Adani",
+    "gautam.adani", "GAUTAM_ADANI", and "GautamAdani" all normalize to the
+    identical `gautamadani` -- whatever separator (or none) an impersonator
+    happened to put between the words disappears before the comparison
+    ever runs."""
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def contiguous_letters_match(candidate: str, keyword: str) -> bool:
+    """True High Match: `keyword`'s letters/digits appear in `candidate`, in
+    that exact order, with nothing else interleaved between them -- a real
+    contiguous run, not just "the same words somewhere in some order" the
+    way token-set based `name_score` counts a match.
+
+        candidate="GautamAdaniOfficial", keyword="Gautam Adani"   -> True
+        candidate="gautam.adani.fan.page", keyword="Gautam Adani" -> True
+        (both punctuation-stripped down to the same "gautamadani" run)
+        candidate="Adani Gautam", keyword="Gautam Adani"          -> False
+        (same two words, but reversed -- not a contiguous run of the
+        keyword's own letter order)
+        candidate="Gautam A", keyword="Gautam Adani"              -> False
+        (candidate doesn't contain the keyword's full letter run)
+
+    Deliberately simple substring containment over fuzzy scoring: an
+    analyst asking for "High Match" wants a literal, explainable reason a
+    profile qualifies, not a threshold on a fuzzy ratio that can't be
+    pointed at. Medium/Low stay on the existing name_score bands for
+    everything that doesn't clear this bar.
+    """
+    cand, kw = _letters_only(candidate), _letters_only(keyword)
+    return bool(kw) and bool(cand) and kw in cand

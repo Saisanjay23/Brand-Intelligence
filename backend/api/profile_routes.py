@@ -81,12 +81,19 @@ async def list_profiles(
     search: Optional[str] = Query(None, max_length=200),
     # Analysis-phase Published/Unpublished tab. Omitted -> both.
     published: Optional[bool] = None,
+    # Analysis-phase data-quality filter. "incomplete" = the analysis did
+    # not come back with usable data (no profile name, no audience number
+    # at all, no evidence screenshot, or a non-clean analysis outcome);
+    # "complete" is its exact complement. Omitted -> both. See
+    # profile_repository._incomplete_clause for the rule and why each part
+    # of it is what it is.
+    data_quality: Optional[str] = Query(None, pattern="^(incomplete|complete)$"),
 ) -> dict:
     return await profile_controller.list_profiles(
         client_id, status=status, phase=phase, platform=platform, limit=limit, offset=offset,
         include_held=include_held, keyword=keyword, entity_type=entity_type,
         priority=priority, match_level=match_level, keyword_match_type=keyword_match_type,
-        search=search, published=published,
+        search=search, published=published, data_quality=data_quality,
     )
 
 
