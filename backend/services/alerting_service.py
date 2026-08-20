@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import smtplib
-import time
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 

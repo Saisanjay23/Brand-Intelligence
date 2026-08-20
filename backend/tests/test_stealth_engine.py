@@ -9,7 +9,7 @@ import pytest
 from backend.stealth.fingerprint import get_identity, UA
 from backend.stealth.headers import build_user_agent_data, build_extra_headers
 from backend.stealth.navigator_spoofing import build_init_js, INIT_JS
-from backend.stealth.browser import Session, TRANSPARENT_GIF, EMPTY_FONT
+from backend.stealth.browser import Session, TRANSPARENT_GIF
 from backend.stealth.human import Human
 from backend.stealth.tls import verify_proxy_integrity
 from backend.stealth.mouse_movement import humanize_interaction
@@ -105,34 +105,96 @@ class MockRoute:
 
 
 class MockRequest:
-    def __init__(self, resource_type):
+    def __init__(self, resource_type, url="https://www.facebook.com/someone"):
         self.resource_type = resource_type
+        self.url = url
 
 
-@pytest.mark.asyncio
-async def test_session_resource_filter_fulfilling_images_and_fonts():
-    """Verify images and fonts are silently fulfilled with valid dummy bytes instead of aborting."""
-    route = MockRoute()
-    req = MockRequest("image")
-    await Session._filter(route, req)
-    assert route.fulfilled_with is not None
-    assert route.fulfilled_with["status"] == 200
-    assert route.fulfilled_with["content_type"] == "image/gif"
-    assert route.fulfilled_with["body"] == TRANSPARENT_GIF
+def _session(load_images: bool = False) -> Session:
+    """A Session with no browser behind it.
 
-    route_font = MockRoute()
-    req_font = MockRequest("font")
-    await Session._filter(route_font, req_font)
-    assert route_font.fulfilled_with is not None
-    assert route_font.fulfilled_with["status"] == 200
-    assert route_font.fulfilled_with["content_type"] == "font/woff2"
-    assert route_font.fulfilled_with["body"] == EMPTY_FONT
+    `_filter` is a plain coroutine over (route, request) plus `self.load_images`,
+    so it is exercisable without Playwright, and `__init__` starts nothing --
+    `start()` is what opens a browser.
+    """
+    return Session(options=None, cookies=[], load_images=load_images)
 
-    route_css = MockRoute()
-    req_css = MockRequest("stylesheet")
-    await Session._filter(route_css, req_css)
-    assert route_css.continued is True
-    assert route_css.aborted is False
+
+class TestResourceFilter:
+    """`Session._filter` -- what the scraper lets the browser fetch.
+
+    This suite previously called `Session._filter(route, req)` unbound, which
+    could not run at all (it is an instance method reading `self.load_images`,
+    and it reads `request.url`, which the mock did not have). It also asserted
+    a font-blocking branch that the filter does not implement -- `EMPTY_FONT`
+    is declared in browser.py and never referenced. The tests below pin the
+    behaviour that actually ships, so a future change to the filter has to
+    face a test that was really running.
+    """
+
+    @pytest.mark.asyncio
+    async def test_images_are_fulfilled_with_a_pixel_when_images_are_off(self):
+        route, req = MockRoute(), MockRequest("image")
+        await _session(load_images=False)._filter(route, req)
+        assert route.fulfilled_with["status"] == 200
+        assert route.fulfilled_with["content_type"] == "image/gif"
+        assert route.fulfilled_with["body"] == TRANSPARENT_GIF
+        assert route.aborted is False
+
+    @pytest.mark.asyncio
+    async def test_images_load_normally_when_evidence_capture_needs_them(self):
+        """A screenshot run must actually fetch the images it is capturing --
+        see Scraper.__init__, which sets load_images from `evidence`."""
+        route, req = MockRoute(), MockRequest("image")
+        await _session(load_images=True)._filter(route, req)
+        assert route.continued is True
+        assert route.fulfilled_with is None
+
+    @pytest.mark.asyncio
+    async def test_media_is_always_stubbed_out(self):
+        """Video/audio chunks are never worth downloading and would buffer in
+        the background for the whole visit."""
+        route, req = MockRoute(), MockRequest("media")
+        await _session(load_images=True)._filter(route, req)
+        assert route.fulfilled_with["content_type"] == "video/mp4"
+        assert route.fulfilled_with["body"] == b""
+
+    @pytest.mark.asyncio
+    async def test_tracker_requests_are_stubbed_not_aborted(self):
+        """Fulfilled with an empty 200 rather than aborted: an aborted
+        request is observable to page script, a served-but-empty one is far
+        less so."""
+        for tracker_url in (
+            "https://connect.facebook.net/en_US/fbevents.js",
+            "https://www.google-analytics.com/collect?v=1",
+            "https://analytics.twitter.com/i/adsct",
+        ):
+            route, req = MockRoute(), MockRequest("script", url=tracker_url)
+            await _session(load_images=True)._filter(route, req)
+            assert route.fulfilled_with is not None, tracker_url
+            assert route.fulfilled_with["body"] == b"", tracker_url
+            assert route.aborted is False, tracker_url
+
+    @pytest.mark.asyncio
+    async def test_tracker_matching_is_case_insensitive(self):
+        """`_filter` lowercases the url before matching; a host arriving in
+        mixed case must not slip past."""
+        route = MockRoute()
+        req = MockRequest("script", url="https://Connect.Facebook.NET/en_US/fbevents.js")
+        await _session(load_images=True)._filter(route, req)
+        assert route.fulfilled_with is not None
+
+    @pytest.mark.asyncio
+    async def test_everything_else_is_passed_straight_through(self):
+        """Documents, stylesheets, scripts and XHR carry the actual payloads
+        every engine parses -- blocking any of them would silently empty the
+        extraction tiers."""
+        for rtype in ("document", "stylesheet", "script", "xhr", "fetch", "font"):
+            route, req = MockRoute(), MockRequest(rtype)
+            await _session(load_images=False)._filter(route, req)
+            assert route.continued is True, rtype
+            assert route.fulfilled_with is None, rtype
+            assert route.aborted is False, rtype
 
 
 @pytest.mark.asyncio

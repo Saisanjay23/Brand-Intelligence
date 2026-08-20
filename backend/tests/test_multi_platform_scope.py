@@ -67,7 +67,7 @@ class TestScopeResolution:
 class TestReadinessAcceptsAList:
     @pytest.mark.asyncio
     async def test_only_the_named_platforms_are_considered(self):
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import patch
 
         from backend.services import discovery_service as svc
 

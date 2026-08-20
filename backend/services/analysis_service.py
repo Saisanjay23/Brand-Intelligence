@@ -403,7 +403,16 @@ async def _analyse_platform(
                 await mgr.emit(job, "progress", f"[{platform_id}] stopped early: {stop_reason}")
                 await incidents_engine.record(
                     platform_id, "analysis", job.client_id, job.id, "PoolExhausted",
-                    f"Analysis stopped after {attempted}/{len(urls)} profiles: {e}",
+                    # `len(done)` -- the distinct URLs actually visited, which
+                    # is what this function returns as its attempted count.
+                    # This read `attempted`, a name never bound anywhere in
+                    # this function, so the moment the session pool ran dry
+                    # this handler raised NameError instead: the PoolExhausted
+                    # incident was never recorded, the `break` below never
+                    # ran, and a graceful "stopped early, here is why" became
+                    # an unhandled crash -- in the one code path that only
+                    # executes when things have already gone wrong.
+                    f"Analysis stopped after {len(done)}/{len(urls)} profiles: {e}",
                 )
                 break
 

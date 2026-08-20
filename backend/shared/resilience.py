@@ -110,7 +110,7 @@ async def retry_async(
             return await fn()
         except asyncio.CancelledError:
             raise
-        except Exception as e:  # noqa: BLE001, deliberately broad, re-raised below
+        except Exception as e:
             last_exc = e
             if attempt >= attempts or not retryable(e):
                 raise

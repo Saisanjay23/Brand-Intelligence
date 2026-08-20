@@ -18,8 +18,9 @@ async def upsert(
     client_id: str, name: str, domain: str = "",
     name_keywords: Optional[list[str]] = None,
     domain_keywords: Optional[list[str]] = None,
-    asset_name_individual_keywords: list[str] = [],
-    asset_name_domain_keywords: list[str] = [],
+    # See client_repository.upsert: `None` rather than a shared mutable default.
+    asset_name_individual_keywords: Optional[list[str]] = None,
+    asset_name_domain_keywords: Optional[list[str]] = None,
     platform_limits_individual: Optional[dict[str, int]] = None,
     platform_limits_domain: Optional[dict[str, int]] = None,
     platform_tab_limits: Optional[dict[str, dict[str, object]]] = None,

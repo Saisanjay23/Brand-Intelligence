@@ -96,8 +96,12 @@ async def upsert(
     platform_limits_domain: Optional[dict[str, int]] = None,
     platform_tab_limits: Optional[dict[str, dict[str, object]]] = None,
     cron: Optional[str] = None,
-    asset_name_individual_keywords: list[str] = [],
-    asset_name_domain_keywords: list[str] = [],
+    # `None`, not `[]`: a mutable default is created once at import and
+    # shared by every call that omits the argument, so anything that ever
+    # mutated it in place would leak between clients. Matches how the two
+    # keyword arguments above already declare theirs.
+    asset_name_individual_keywords: Optional[list[str]] = None,
+    asset_name_domain_keywords: Optional[list[str]] = None,
 ) -> dict:
     """`cron` is optional, a client with keywords but no cron only ever
     gets swept when `POST /discovery` is called for it explicitly; setting

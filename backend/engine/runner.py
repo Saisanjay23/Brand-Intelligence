@@ -77,7 +77,7 @@ async def _say(on_progress: Progress, message: str) -> None:
         out = on_progress(message)
         if inspect.isawaitable(out):
             await out
-    except Exception as e:  # noqa: BLE001, see docstring
+    except Exception as e:
         log.debug(f"progress callback raised, ignoring: {type(e).__name__}: {e}")
 
 

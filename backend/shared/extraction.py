@@ -217,7 +217,7 @@ async def run_strategies(
                 value = await value
         except asyncio.CancelledError:
             raise
-        except Exception as e:  # noqa: BLE001, deliberately broad: one
+        except Exception as e:
             # strategy blowing up is exactly the case the next one exists for
             file, line, func, src = _blame_frame(e)
             result.failures.append(StrategyFailure(
