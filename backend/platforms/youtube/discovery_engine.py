@@ -52,12 +52,33 @@ class QuotaExceeded(RuntimeError):
 
 
 class YouTubeAPI:
+    """WHAT: the thin Data API v3 client both engines share. HOW: plain
+    urllib in a worker thread -- no browser, no session, no dependency
+    beyond the stdlib -- with HTTP error bodies inspected so the two
+    failures that mean different things stay apart: an exhausted daily
+    QUOTA (normal, self-healing at midnight PT) versus a rejected KEY
+    (needs a human). LINKED TO: defined here because discovery needs it
+    first; analysis_engine.py imports this class rather than defining a
+    second one."""
+
     def __init__(self, key: str = ""):
+        """Takes the key explicitly or from YOUTUBE_API_KEY. Raises
+        immediately when neither is set: failing at construction is far
+        easier to diagnose than every call failing with a 403 that looks
+        like a quota problem."""
         self.key = key or os.environ.get("YOUTUBE_API_KEY", "")
         if not self.key:
             raise RuntimeError("YOUTUBE_API_KEY is not set")
 
     def _get_sync(self, endpoint: str, params: dict) -> dict:
+        """WHAT: one blocking GET against the API. HOW: reads the error
+        BODY, not just the status code, because YouTube returns 403 for
+        both "quota gone" and "key invalid" and only the body says which.
+        Getting that wrong is what used to quarantine a perfectly good key
+        every day the quota ran out -- see the check_session docstring in
+        analysis_engine.py. LINKED TO: wrapped by get() below; raises
+        QuotaExceeded, which sweep() turns into a clean stop rather than
+        an error."""
         q = urllib.parse.urlencode({**params, "key": self.key}, doseq=True)
         url = f"{BASE}/{endpoint}?{q}"
         try:
@@ -73,7 +94,10 @@ class YouTubeAPI:
             raise RuntimeError(f"youtube {endpoint} {e.code}: {body[:200]}") from e
 
     async def get(self, endpoint: str, **params) -> dict:
-        """urllib in a thread: one dependency fewer, same behaviour."""
+        """WHAT: the async face of _get_sync. HOW: urllib in a thread --
+        one dependency fewer than an async HTTP client, identical
+        behaviour, and the call is I/O-bound so the thread costs nothing.
+        LINKED TO: every read method below goes through this."""
         return await asyncio.to_thread(self._get_sync, endpoint, params)
 
     # ---------- reads ----------
@@ -81,12 +105,23 @@ class YouTubeAPI:
     async def search_channels(
         self, keyword: str, page_token: str = "", per_page: int = 50
     ) -> tuple[list[dict], str]:
-        """--> (items, next_page_token). 100 quota units per call.
+        """WHAT: one page of channel search results -> (items,
+        next_page_token). The expensive call: 100 quota units, against a
+        daily allowance of 10,000.
 
-        Retries up to 3 times with exponential backoff for transient
-        failures (network timeouts, 500s). YouTube's Data API occasionally
-        returns empty items on the first attempt but succeeds on retry.
-        """
+        HOW: up to 3 attempts with increasing backoff. Two distinct
+        transients are handled, and the second is the subtle one: the API
+        sometimes returns HTTP 200 with an EMPTY items list on the first
+        page of a keyword that really does have results. That is
+        indistinguishable from "no such channel" to any caller, so a sweep
+        would report a clean zero-hit result and nothing would look wrong.
+        It is only retried when there is no page_token -- mid-pagination an
+        empty page is a genuine end-of-results, and retrying it would loop.
+
+        QuotaExceeded is re-raised immediately rather than retried: the
+        allowance does not come back within a backoff window, and three
+        more attempts would only cost time. LINKED TO: driven by the
+        pagination loop in Discovery.sweep()."""
         params: dict[str, Any] = {
             "part": "snippet",
             "type": "channel",
@@ -125,7 +160,12 @@ class YouTubeAPI:
         raise last_exc or RuntimeError("youtube search_channels failed after retries")
 
     async def channels(self, ids: list[str]) -> list[dict]:
-        """Full detail for up to 50 channels in one unit."""
+        """WHAT: full detail for a list of channel ids. HOW: batched 50 at
+        a time, because channels.list costs ONE unit per call regardless
+        of how many ids it carries -- batching is a 50x quota saving over
+        per-channel lookups. LINKED TO: analysis_engine.py process() for
+        an id-shaped URL, and the verification step in
+        channel_by_handle()."""
         out: list[dict] = []
         for i in range(0, len(ids), 50):
             data = await self.get(
@@ -138,14 +178,23 @@ class YouTubeAPI:
         return out
 
     async def channel_by_handle(self, handle: str) -> Optional[dict]:
-        """Resolve @handle -> channel, or None.
+        """WHAT: resolve a vanity reference (@handle, legacy /c/ or /user/)
+        to a channel, or None.
 
-        forHandle is exact. Search is only a fallback for legacy /c/ and /user/
-        URLs, and its result is accepted ONLY if the channel's own handle or
-        custom URL matches what was asked for, search happily returns a
-        similarly-named channel, and silently reporting the wrong one is worse
-        than reporting nothing.
-        """
+        HOW: three exact lookups first -- forHandle with and without the
+        @, then the legacy forUsername -- since each covers a different
+        generation of YouTube URL and all three are exact. Only if every
+        one misses does it fall back to SEARCH, and a search result is
+        accepted only when the channel own customUrl or title equals what
+        was asked for.
+
+        That verification is the whole point: search happily returns a
+        similarly-named channel for a handle that does not exist, and this
+        answer becomes an impersonation report about a named account.
+        Reporting the wrong channel is worse than reporting nothing, so an
+        unverifiable match returns None. LINKED TO: analysis_engine.py
+        process() calls this for every non-id URL shape (see channel_ref
+        there)."""
         want = handle.lstrip("@").strip().lower()
         if not want:
             return None
@@ -188,8 +237,13 @@ class YouTubeAPI:
         return None
 
     async def latest_upload(self, uploads_playlist: str) -> str:
-        """ISO date of the newest upload. 1 unit, versus 100 for a dated search.
+        """WHAT: ISO date of the newest upload, or "" when there is none.
+        HOW: reads one item from the channel uploads playlist -- 1 quota
+        unit, against 100 for the dated search that would otherwise be
+        needed. That 100x saving is why activity is read this way. LINKED
+        TO: analysis_engine.py process() sets last_post_iso from this.
 
+        THE 404 THAT IS NOT AN ERROR
         `channels()` always synthesizes an "uploads" playlist id for a
         channel (the `UC` -> `UU` prefix swap) even when that channel has
         never actually uploaded anything, the playlist is never
@@ -226,6 +280,15 @@ class YouTubeAPI:
 
 @dataclass
 class Sweep:
+    """WHAT: the result of sweeping one keyword -- the hits, plus WHY the
+    sweep ended. HOW: `stopped` carries the reason as a short tag
+    (cap:results, cap:seconds, exhausted, quota, error) and `complete` is
+    True only for `exhausted`, so a caller can tell "there was no more to
+    find" apart from "we stopped early". Returning a short list without
+    that distinction would make a quota failure look like a clean result.
+    LINKED TO: services/discovery_service.py reads these fields to decide
+    whether a keyword still has pages left."""
+
     keyword: str
     tab: str = "channels"
     hits: list[Hit] = field(default_factory=list)
@@ -236,13 +299,26 @@ class Sweep:
     error: str = ""
 
     def summary(self) -> str:
+        """One-line log form: how many, over how many pages, and why it
+        stopped."""
         return f"{len(self.hits)} hits, {self.pages} pages, {self.stopped}"
 
 
 class Discovery:
-    """`ctx` is accepted and unused, this platform needs no browser."""
+    """WHAT: keywords in, candidate channels out. HOW: the official search
+    endpoint, paginated, with no browser anywhere -- nothing to
+    fingerprint, no session to burn, no detection surface -- which makes
+    this the fastest and safest of the six platforms.
+
+    LINKED TO: `discovery_path` in backend/platforms/registry.py names
+    this class, and services/discovery_service.py drives it. `ctx` is
+    accepted and ignored so that driver can construct every platform
+    Discovery with the identical (args, ctx) signature."""
 
     def __init__(self, args, ctx=None):
+        """`ctx` is accepted and ignored -- there is no browser on this
+        platform -- so discovery_service.py can construct every platform's
+        Discovery identically."""
         self.a = args
         self.api = YouTubeAPI()
 
@@ -256,6 +332,19 @@ class Discovery:
         return None
 
     async def sweep(self, keyword: str, tab: str = "channels", on_progress: Any = None) -> Sweep:
+        """WHAT: one keyword -> a Sweep of candidate channels. HOW: pages
+        through search_channels until a cap, the end of results, or quota;
+        dedups by channel id as it goes, so the same channel appearing on
+        two pages is one Hit; and streams each page to `on_progress` so
+        the UI fills in during a long sweep instead of all at the end.
+
+        A failure is recorded ON the Sweep rather than raised, and the
+        `finally` block means hits already gathered survive it -- quota
+        running out halfway through a keyword still returns what was found
+        before it did. LINKED TO: Hit is the dataclass from
+        facebook/discovery_engine.py, shared by every platform so
+        discovery_service.py has one shape to handle; on_progress is that
+        service page callback."""
         out = Sweep(keyword=keyword, tab=tab)
         started = time.time()
         by_id: dict[str, Hit] = {}
@@ -341,10 +430,19 @@ class Discovery:
         return out
 
     async def run(self, keywords: list[str], tabs=None) -> list[Sweep]:
-        """API calls are cheap to parallelise, but quota is shared, keep it modest."""
+        """WHAT: sweeps a whole list of keywords. HOW: concurrently, but
+        capped at 4 -- API calls parallelise cheaply, yet the quota they
+        spend comes from a single shared daily pool, so more concurrency
+        only exhausts it faster and in a less predictable order. Results
+        are re-sorted back into the caller keyword order, which `gather`
+        does not guarantee. LINKED TO: the standalone entry point; the API
+        path drives sweep() per keyword through
+        services/discovery_service.py instead."""
         sem = asyncio.Semaphore(max(1, min(self.a.concurrency, 4)))
 
         async def one(i: int, keyword: str) -> tuple[int, Sweep]:
+            """One keyword, holding a quota/concurrency slot. Returns its
+            index alongside the Sweep so the caller can restore order."""
             async with sem:
                 s = await self.sweep(keyword)
                 print(

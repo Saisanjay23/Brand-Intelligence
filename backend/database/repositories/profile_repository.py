@@ -305,6 +305,7 @@ def _is_identity_upgrade(current: str, incoming: str) -> bool:
 async def save(
     client_id: str, platform: str, phase: str, fields: dict,
     *, url: str, entity_id: str = "", keyword: str = "", initial_status: str = "pending",
+    retry_pending: bool = False,
 ) -> bool:
     """Upsert one profile. Returns True when newly seen.
 
@@ -323,6 +324,19 @@ async def save(
     a hand-typed URL is itself the analyst's approval, so it should reach
     analysis without an extra click, but that must never silently
     override a decision an earlier sweep's card already got).
+
+    `retry_pending` says "this job is going to visit this URL again", and
+    exists solely to stop `analysis_attempts` being spent twice for the
+    same thing. Analysis re-reads an incomplete profile up to
+    `_COMPLETENESS_PASSES` more times WITHIN one job (see
+    services/analysis_service.py), and every one of those passes saves.
+    Counting each of them against a budget that was meant to bound whole
+    SWEEPS burned it three times per job: live, every incomplete row on
+    every platform sat at 6+ attempts (3 passes x 2 jobs) against a cap
+    of 4, so `urls_for` had permanently excluded all of them and no later
+    sweep could ever pick them up again. The in-job passes are already
+    bounded by `_COMPLETENESS_PASSES`; this counter bounds the job, so
+    only the job's final word on a URL spends from it.
     """
     coll = db()[PROFILES]
     eid = (entity_id or "").strip()
@@ -361,8 +375,11 @@ async def save(
             # A failed attempt is bookkeeping, not a finding: it must never
             # start a publish hold or present itself as a publishable
             # result. It only bumps the attempt counter that eventually
-            # stops a permanently-dead URL from being retried forever.
-            update["$inc"] = {"analysis_attempts": 1}
+            # stops a permanently-dead URL from being retried forever --
+            # and only when this visit is the job's LAST word on the URL,
+            # see `retry_pending`.
+            if not retry_pending:
+                update["$inc"] = {"analysis_attempts": 1}
             update["$set"]["published"] = False
         else:
             # A real reading resets the failure counter (this profile is
@@ -382,7 +399,8 @@ async def save(
             # would be re-queued by urls_for on every catch-up sweep
             # forever, since each pass would clear its own budget.
             if fields.get("analysis_complete") is False:
-                update["$inc"] = {"analysis_attempts": 1}
+                if not retry_pending:
+                    update["$inc"] = {"analysis_attempts": 1}
             else:
                 update["$set"]["analysis_attempts"] = 0
     if keyword:
@@ -437,15 +455,22 @@ async def save_many(
     client_id: str, platform: str, phase: str, items: list[dict],
 ) -> tuple[int, int]:
     """Each item is `{**fields, "url":..., "entity_id":..., "keyword":...}`.
-    -> (saved, newly seen). One bad row never sinks the batch."""
+    -> (saved, newly seen). One bad row never sinks the batch.
+
+    `retry_pending` may ride along on an item like the other three control
+    keys: popped here so it reaches `save` as an argument and never lands
+    in the document itself.
+    """
     saved = new = 0
     for item in items:
         item = dict(item)
         url = item.pop("url")
         entity_id = item.pop("entity_id", "")
         keyword = item.pop("keyword", "")
+        retry_pending = bool(item.pop("retry_pending", False))
         try:
-            if await save(client_id, platform, phase, item, url=url, entity_id=entity_id, keyword=keyword):
+            if await save(client_id, platform, phase, item, url=url, entity_id=entity_id,
+                          keyword=keyword, retry_pending=retry_pending):
                 new += 1
             saved += 1
         except Exception as e:

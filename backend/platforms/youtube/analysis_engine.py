@@ -24,6 +24,13 @@ from backend.platforms.youtube.discovery_engine import (RE_DEFAULT_PIC,
 
 
 def normalize_url(url: str) -> str:
+    """WHAT: one canonical `https://www.youtube.com/<path>` form for any
+    YouTube reference. HOW: shared/text.py::parse_normalized_url does the
+    scheme/host parsing, then every youtu-something host (youtu.be,
+    m.youtube.com, music.youtube.com) collapses to www.youtube.com so the
+    same channel reached by two different hosts dedups to one row. LINKED
+    TO: exposed as Scraper.normalize_url, which services/analysis_service
+    .py calls before storing any URL."""
     p = parse_normalized_url(url)
     if p is None:
         return ""
@@ -34,7 +41,15 @@ def normalize_url(url: str) -> str:
 
 
 def channel_ref(url: str) -> tuple[str, str]:
-    """-> (kind, value) where kind is 'id' | 'handle' | 'name'."""
+    """WHAT: -> (kind, value) where kind is 'id' or 'handle', naming which
+    API lookup can resolve this URL. HOW: YouTube has four surviving
+    channel URL shapes and they need different endpoints -- /channel/UC...
+    is the canonical id (a direct `channels` lookup), while /@handle, /c/
+    and the legacy /user/ are all vanity forms that only `forHandle` can
+    resolve. A bare first segment that looks like a UC id is treated as
+    one even without the /channel/ prefix. LINKED TO: process() below
+    branches on the kind to pick between api.channels() and
+    api.channel_by_handle()."""
     p = urlparse(normalize_url(url))
     seg = [unquote(s) for s in p.path.split("/") if s]
     if not seg:
@@ -56,19 +71,26 @@ class Scraper:
     normalize_url = staticmethod(normalize_url)
 
     def __init__(self, args, cookies=None, session_id: str = "", proxy=None):
-        # API-key authed, no browser, session_id/proxy exist only so
-        # jobs.py can call every platform's Scraper with the same signature.
+        """API-key authed, no browser. `cookies`, `session_id` and `proxy`
+        are accepted and unused so services/analysis_service.py can
+        construct every platform's Scraper with one signature."""
         self.a = args
         self.api = YouTubeAPI()
 
     async def start(self):
+        """No-op: there is no browser or connection to open, the API is
+        stateless and key-authed. Kept so analysis_service.py can drive
+        every platform's Scraper through the identical lifecycle."""
         return None
 
     async def stop(self):
+        """No-op, the other half of start()'s interface obligation."""
         return None
 
     async def pause(self, mult: float = 1.0):
-        return None  # quota-bound, not rate-bound: no pacing needed
+        """No-op: this platform is quota-bound, not rate-bound. Pacing
+        would not save quota, it would only make jobs slower."""
+        return None
 
     async def check_session(self) -> bool:
         """False means the KEY ITSELF is conclusively rejected, the
@@ -115,6 +137,19 @@ class Scraper:
     # ───────────────────────────── per URL ────────────────────────────── #
 
     async def process(self, raw_url: str, target: str, feed: str) -> Row:
+        """WHAT: one channel URL -> a scored Row. HOW: resolve the URL to a
+        channel through whichever lookup its shape allows (trying the
+        direct id first and falling back to the handle lookup, so a
+        /channel/UC... URL whose id has since changed still resolves),
+        fill the typed fields, then spend one more call on the uploads
+        playlist for the newest video date.
+
+        A channel with zero videos is recorded as `posts_seen = "no"` --
+        genuinely postless, which is a real finding about an impersonator
+        account -- rather than left blank, which shared/completeness.py
+        would otherwise have to report as a field we failed to read.
+        LINKED TO: fill() below for the mapping; api.latest_upload is in
+        discovery_engine.py::YouTubeAPI."""
         url = normalize_url(raw_url)
         row = Row(url=url, target=target, original_feed=feed)
         kind, ref = channel_ref(url)
@@ -154,6 +189,17 @@ class Scraper:
 
     @staticmethod
     def fill(row: Row, ch: dict) -> None:
+        """WHAT: copies one API channel resource onto the Row. HOW: every
+        value is already typed by the API, so each is marked `api` (see
+        shared/models/row.py::mark). Two YouTube-specific truths are
+        recorded rather than papered over: subscriber counts are rounded
+        to three significant figures unless hidden entirely, so
+        `followers_exact` says which of those happened; and the display
+        name falls through title -> channelTitle -> branding title ->
+        customUrl, because a channel that has never been renamed carries
+        its name in only some of those. LINKED TO: called by process()
+        above; RE_DEFAULT_PIC is discovery_engine.py's shared check for
+        the stock avatar."""
         snip = ch.get("snippet") or {}
         stats = ch.get("statistics") or {}
 
@@ -196,6 +242,13 @@ class Scraper:
     # ─────────────────────────── orchestration ────────────────────────── #
 
     async def one(self, u: str, tgt: str, feed: str) -> Row:
+        """WHAT: process() that never raises -- always a Row. HOW: quota
+        exhaustion becomes CHECKPOINT, the status that stops the wave,
+        because every further call today would fail identically and burn
+        job time for nothing. Anything else becomes ERROR carrying the
+        exception, so one dead channel cannot end a job. LINKED TO: called
+        by run(); note that check_session() deliberately does NOT treat
+        quota as a bad key -- see its docstring."""
         try:
             return await self.process(u, tgt, feed)
         except QuotaExceeded as e:
@@ -211,6 +264,10 @@ class Scraper:
 
     @staticmethod
     def report(i: int, total: int, u: str, row: Row) -> None:
+        """WHAT: one progress line per channel. HOW: prints the fields an
+        operator needs to spot a silent extraction failure early -- a
+        column reading "-" on every line means that field stopped being
+        read. LINKED TO: called by run() after each row."""
         from backend.shared.logging import get_logger as _gl
         _gl("platforms.youtube.analysis").info(
             f"[{i}/{total}] {u} | {row.status} name={row.profile_name[:22]} "
@@ -219,6 +276,13 @@ class Scraper:
         )
 
     async def run(self, jobs: list[tuple[str, str, str]]) -> list[Row]:
+        """WHAT: drives a whole batch of (url, target, feed) jobs. HOW:
+        sequentially with no pacing (the API is quota-bound, not
+        rate-bound), stopping the moment a row comes back CHECKPOINT since
+        the daily quota is gone and every remaining job would fail the
+        same way. Rows gathered before the stop are still returned.
+        LINKED TO: the standalone entry point; the API path drives one()
+        directly through services/analysis_service.py instead."""
         rows: list[Row] = []
         for i, (u, tgt, feed) in enumerate(jobs, 1):
             row = await self.one(u, tgt, feed)

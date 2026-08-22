@@ -324,6 +324,11 @@ class Scraper:
 
     @classmethod
     def _parse_alt_date(cls, text: str) -> str:
+        """WHAT: the date out of a post thumbnail's alt text. HOW:
+        Instagram writes a human-readable "Photo by X on August 19, 2026."
+        into the alt attribute, which is the only date the grid renders
+        anywhere. LINKED TO: the DOM tier of read_last_post(), used when
+        no timeline payload arrived."""
         m = cls._RE_ALT_DATE.search(text or "")
         if not m:
             return ""
@@ -433,6 +438,12 @@ class Scraper:
 
     @classmethod
     def _parse_joined(cls, text: str) -> str:
+        """WHAT: the join date out of the About-this-account panel. HOW:
+        that panel renders a month and year ("April 2025") with no day, so
+        this returns MONTH precision (YYYY-MM) rather than inventing a
+        day-of-month that would read as a precise date nobody published.
+        LINKED TO: read_about_panel(); the value lands on
+        row.created_iso."""
         m = cls._RE_MONTH_YEAR.match((text or "").strip())
         if not m:
             return ""

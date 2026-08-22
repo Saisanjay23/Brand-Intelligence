@@ -57,6 +57,13 @@ BAD_SEGMENTS = {
 
 
 def normalize_url(url: str) -> str:
+    """WHAT: one canonical `https://www.tiktok.com/<path>` form for any
+    TikTok reference. HOW: shared/text.py parse_normalized_url does the
+    scheme/host parsing, then every tiktok-something host (m.tiktok.com,
+    vm.tiktok.com, the regional variants) collapses to www.tiktok.com, so
+    the same profile reached by two different hosts dedups to one row.
+    LINKED TO: exposed as Scraper.normalize_url, which
+    services/analysis_service.py calls before storing any URL."""
     p = parse_normalized_url(url)
     if p is None:
         return ""
@@ -68,6 +75,14 @@ def normalize_url(url: str) -> str:
 
 
 def username_of(url: str) -> str:
+    """WHAT: the account handle out of a normalized TikTok URL, or "".
+    HOW: the first path segment with its leading @ stripped, rejected if
+    it is one of BAD_SEGMENTS -- tiktok.com/video/... and
+    tiktok.com/tag/... are real URLs whose first segment is a route name,
+    not an account, and treating "video" as a username would produce a
+    confident row about a profile that does not exist. LINKED TO:
+    process() sets row.profile_id from this, and an empty result is what
+    makes a URL an immediate ERROR there."""
     seg = [s for s in urlparse(normalize_url(url)).path.split("/") if s]
     if not seg:
         return ""
@@ -76,7 +91,16 @@ def username_of(url: str) -> str:
 
 
 class Scraper:
-    """One logged-in TikTok session, driven over a list of profiles."""
+    """WHAT: one TikTok session (logged-in or anonymous), driven over a
+    list of profile URLs. HOW: per profile, load the page once and read
+    the hydration payload TikTok embeds in it, falling back to the
+    rendered header only when that payload is absent -- the same
+    ordered-fallback shape every platform engine in this package uses.
+
+    LINKED TO: `analysis_path` in backend/platforms/registry.py names this
+    class, and services/analysis_service.py constructs and drives it with
+    the same (args, cookies, session_id, proxy) signature it uses for
+    every platform."""
 
     normalize_url = staticmethod(normalize_url)
 
@@ -84,6 +108,10 @@ class Scraper:
         self, args, cookies: list[dict], session_id: str = "", proxy: Optional[dict] = None,
         anonymous: bool = False,
     ):
+        """Builds either a cookie-backed TikTokSession or, in anonymous
+        mode, nothing at all until start() borrows the shared persistent
+        context. See the ANONYMOUS MODE note below for why losing the
+        login costs only one field."""
         self.a = args
         self.evidence = args.evidence or None  # GridFS key prefix, not a path
         # ANONYMOUS MODE: no cookies, driven from the same persistent
@@ -105,9 +133,16 @@ class Scraper:
 
     @property
     def ctx(self):
+        """The Playwright browser context, whichever mode is active. One
+        accessor so nothing below has to know which."""
         return self._anon_ctx if self.anonymous else self.session.ctx
 
     async def start(self):
+        """WHAT: opens the browser context. HOW: anonymous mode borrows
+        the persistent profile discovery already uses (see
+        discovery_engine.py anonymous_context), logged-in mode starts a
+        TikTokSession with the supplied cookies. LINKED TO: called by
+        services/analysis_service.py before the first profile."""
         if self.anonymous:
             from backend.platforms.tiktok.discovery_engine import anonymous_context
 
@@ -117,6 +152,9 @@ class Scraper:
         await self.session.start()
 
     async def stop(self):
+        """Closes whichever context start() opened. The anonymous branch
+        exits the context manager itself, since there is no session object
+        owning it."""
         if self.anonymous:
             if self._anon_cm is not None:
                 try:
@@ -127,6 +165,10 @@ class Scraper:
         await self.session.stop()
 
     async def pause(self, mult: float = 1.0):
+        """Between-profile pacing. Anonymous mode has no session rhythm to
+        follow, so it uses a flat delay; a logged-in session defers to
+        TikTokSession.pause, which paces against its own recent
+        activity."""
         if self.anonymous:
             import asyncio as _asyncio
 
@@ -135,8 +177,12 @@ class Scraper:
         await self.session.pause(mult)
 
     async def check_session(self) -> bool:
-        # Nothing to validate without credentials -- and nothing to
-        # quarantine either, which is the point.
+        """WHAT: is this session still usable? HOW: anonymous mode is
+        always True -- there are no credentials to validate, and more
+        importantly nothing to QUARANTINE, so an anonymous run can never
+        burn a session it does not have. LINKED TO:
+        sessions/manager.py::verify_session_item, which treats False as
+        conclusive evidence the stored cookies are dead."""
         if self.anonymous:
             return True
         return await self.session.check_session()
@@ -175,6 +221,12 @@ class Scraper:
     """
 
     async def read_dom(self, page, username: str) -> dict:
+        """WHAT: runs JS_HEADER against the live page -> the header dict.
+        HOW: any failure returns {} rather than raising, because this is
+        already the LAST tier of the fallback chain -- an exception here
+        would discard the fields the tiers above may have set. LINKED TO:
+        called by process() only when the hydration payload is missing;
+        its result feeds fill_from_dom()."""
         try:
             return await page.evaluate(self.JS_HEADER, username) or {}
         except Exception:
@@ -183,6 +235,24 @@ class Scraper:
     # ───────────────────────────── per URL ────────────────────────────── #
 
     async def process(self, raw_url: str, target: str, feed: str) -> Row:
+        """WHAT: one profile URL -> a scored Row. HOW: a single page load,
+        then an ordered fallback -- TikTok own hydration payload first (it
+        arrives with the page, so there is no XHR to race), the rendered
+        header second.
+
+        When the payload is missing, the page text is classified BEFORE
+        falling back, because the four reasons it can be missing need four
+        different outcomes: a CAPTCHA (CHECKPOINT -- stop the run, the
+        session is burning), rejected cookies (LOGIN_REQUIRED), a deleted
+        account (GONE -- terminal, no retry), or a slow render (PARTIAL --
+        retryable, and the one case where another visit genuinely helps).
+        Collapsing those into one ERROR is what makes a dead account and a
+        dying session look identical in the results grid.
+
+        Last-post is then filled by the two-tier scheme in the module
+        docstring. LINKED TO: fill()/fill_from_dom() below do the mapping;
+        read_hydration, profile_from and newest_post_via_search all come
+        from discovery_engine.py."""
         url = normalize_url(raw_url)
         row = Row(url=url, target=target, original_feed=feed)
         row.profile_id = username_of(url)
@@ -274,6 +344,18 @@ class Scraper:
 
     @staticmethod
     def fill(row: Row, u: TikTokUser) -> None:
+        """WHAT: copies a parsed TikTokUser onto the Row. HOW: every value
+        is marked `hydration` (see shared/models/row.py::mark) so
+        shared/completeness.py can later tell a field that was READ from
+        one that was never reached. Two deliberate choices: the display
+        NAME is preferred over the handle because that is what an
+        impersonator copies, and a zero video_count is recorded as
+        `posts_seen = "no"` -- genuinely postless, a real finding -- rather
+        than left blank, which would read as a failed extraction. The
+        closing note records that TikTok exposes no creation date at all,
+        so the blank column is explained rather than mysterious. LINKED
+        TO: called by process(); TikTokUser is parsed in
+        discovery_engine.py::profile_from."""
         row.profile_id = u.username
         # the display name is what an impersonator copies; fall back to handle
         row.profile_name = u.nickname or u.username
@@ -305,11 +387,20 @@ class Scraper:
 
     @staticmethod
     def fill_from_dom(row: Row, dom: dict) -> None:
-        """Same fields as fill(), read from the rendered header instead.
-        Last-post date is NOT available from this path, it needs a video
-        id to decode (see newest_post_iso), and the header alone carries no
-        video ids, so it stays blank rather than guessed when analysis
-        has fallen all the way through to the DOM."""
+        """WHAT: the same fields as fill(), recovered from the rendered
+        header when the hydration payload was absent. HOW: marked
+        `dom-header` rather than `hydration`, so the stored row records
+        which tier actually produced each value and a silent slide from
+        payload to DOM across a whole run is visible instead of invisible.
+        Counts come back as display strings here ("1.2M"), so
+        `followers_exact` reports "no" when shared/text.py::parse_count
+        had to expand an abbreviation -- an approximate number labelled as
+        approximate, never presented as exact.
+
+        Last-post is NOT available from this path: decoding it needs a
+        video id (see newest_post_iso) and the header carries none, so it
+        stays blank rather than guessed. LINKED TO: called by process()
+        as the last tier; read_dom() supplies the dict."""
         nickname = (dom.get("nickname") or "").strip()
         if nickname:
             row.profile_name = nickname
@@ -341,6 +432,15 @@ class Scraper:
         row.note("creation date not exposed by TikTok")
 
     async def screenshot(self, page, row: Row) -> None:
+        """WHAT: captures the evidence PNG into GridFS. HOW: waits for
+        visible content first so the capture is not a half-painted page,
+        then stores under a DETERMINISTIC key derived from the handle --
+        re-analysing a profile must overwrite its own previous capture
+        rather than accumulate one per run. Best-effort throughout: a
+        failed screenshot must never fail the profile visit, since the
+        scraped fields are the actual finding. LINKED TO:
+        database/repositories/evidence_repository.py owns the store;
+        row.screenshot holds the key, not a filesystem path."""
         if not self.evidence:
             return
         # DETERMINISTIC key, no timestamp, re-analysing a profile must
@@ -360,6 +460,11 @@ class Scraper:
     # ─────────────────────────── orchestration ────────────────────────── #
 
     async def one(self, u: str, tgt: str, feed: str) -> Row:
+        """WHAT: process() that never raises -- always a Row. HOW: any
+        exception becomes an ERROR row carrying the exception type and
+        message, so one unreachable profile cannot end a job and the
+        reason survives into the results grid. LINKED TO: called by run(),
+        and directly by services/analysis_service.py on the API path."""
         try:
             return await self.process(u, tgt, feed)
         except Exception as e:
@@ -371,6 +476,10 @@ class Scraper:
 
     @staticmethod
     def report(i: int, total: int, u: str, row: Row) -> None:
+        """WHAT: one progress line per profile. HOW: prints the fields an
+        operator needs to spot a silent extraction failure early -- a
+        column reading "-" on every line means that field stopped being
+        read. LINKED TO: called by run() after each row."""
         from backend.shared.logging import get_logger as _gl
         _gl("platforms.tiktok.analysis").info(
             f"[{i}/{total}] {u} | {row.status} name={row.profile_name[:22]} "
@@ -379,6 +488,14 @@ class Scraper:
         )
 
     async def run(self, jobs: list[tuple[str, str, str]]) -> list[Row]:
+        """WHAT: drives a whole batch of (url, target, feed) jobs. HOW:
+        sequentially, pausing between profiles, and aborting on the first
+        CHECKPOINT unless `keep_going` was set -- a CAPTCHA means TikTok
+        is already challenging this session, and pushing on is what turns
+        a challenge into a dead account. Rows gathered before the abort
+        are still returned. LINKED TO: the standalone entry point; the API
+        path drives one() through services/analysis_service.py, which does
+        its own session-burn handling on CHECKPOINT."""
         rows: list[Row] = []
         for i, (u, tgt, feed) in enumerate(jobs, 1):
             row = await self.one(u, tgt, feed)

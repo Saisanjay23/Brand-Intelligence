@@ -93,7 +93,21 @@ RE_GONE = re.compile(
 
 
 class TikTokSession(Session):
+    """WHAT: a logged-in TikTok browser session. HOW: everything is
+    inherited from stealth/browser.py::Session; only the liveness probe is
+    platform-specific. LINKED TO: constructed by analysis_engine.py's
+    Scraper, and by sessions/manager.py when it verifies stored cookies."""
+
     async def check_session(self) -> bool:  # type: ignore[override]
+        """WHAT: are these cookies still logged in? HOW: loads the upload
+        page, which redirects a logged-out visitor away, and confirms the
+        browser actually LANDED on /upload rather than merely receiving a
+        200 from a login wall. Returning the base implementation's verdict
+        keeps the conclusive-vs-inconclusive contract every platform
+        shares (see stealth/browser.py): False means the cookies are
+        genuinely rejected, while a network failure raises instead, so
+        sessions/manager.py never quarantines a good session over a
+        blip."""
         return await super().check_session(
             UPLOAD_PROBE, RE_LOGIN, RE_CHECKPOINT, expect_path="/upload",
         )
@@ -115,6 +129,15 @@ def _to_int(v: Any) -> Optional[int]:
 
 @dataclass
 class TikTokUser:
+    """WHAT: one TikTok account, normalised out of whichever JSON dialect
+    it arrived in. HOW: a single flat record that both of TikTok's own
+    response shapes (camelCase video-author nodes and snake_case
+    user-card nodes) are parsed INTO by user_from_node, so nothing
+    downstream has to know which dialect a given account came from.
+    LINKED TO: analysis_engine.py::Scraper.fill maps this onto a Row;
+    `match_kind` is what discovery_service.py surfaces as
+    discovery_source."""
+
     entity_id: str = ""
     username: str = ""
     nickname: str = ""
@@ -140,10 +163,15 @@ class TikTokUser:
 
     @property
     def url(self) -> str:
+        """The canonical profile URL, or "" for a record with no handle
+        (which is unusable as a hit -- sweep() filters those out)."""
         return f"https://www.tiktok.com/@{self.username}" if self.username else ""
 
     @property
     def has_custom_pic(self) -> bool:
+        """TikTok omits the avatar entirely for a default-picture account
+        rather than serving a known stock URL, so presence IS the signal.
+        That is why this platform needs no RE_DEFAULT_PIC equivalent."""
         return bool(self.avatar)
 
 
@@ -176,6 +204,10 @@ def user_from_node(user: dict, stats: Optional[dict] = None) -> Optional[TikTokU
     stats = stats if isinstance(stats, dict) else {}
 
     def stat(*keys: str) -> Optional[int]:
+        """First usable count under any of `keys`, looked for in the
+        sibling stats dict before the user dict. Several spellings are
+        tried per field because the two dialects name them differently
+        (see the LIVE-CONFIRMED note below)."""
         for src in (stats, user):
             for k in keys:
                 if k in src:
@@ -251,6 +283,10 @@ def iter_users(blob: Any) -> Iterator[TikTokUser]:
     seen: set[str] = set()
 
     def take(u: Optional[TikTokUser], bucket: list[TikTokUser]) -> None:
+        """Add a parsed user to its bucket unless that handle was already
+        taken. Dedup is global across both buckets, so an account that is
+        BOTH a name match and a video author stays in `accounts` -- the
+        stronger classification wins because accounts are walked first."""
         if u and u.username.lower() not in seen:
             seen.add(u.username.lower())
             bucket.append(u)
@@ -312,6 +348,13 @@ def profile_from(blob: Any, username: str = "") -> Optional[TikTokUser]:
 # independently reproducible property of the id itself, unlike everything
 # else in this module that depends on guessing a JSON key name correctly.
 def _video_id_to_iso(video_id: Any) -> str:
+    """WHAT: a video id -> the ISO date it was created. HOW: shifts the
+    top 32 bits out of the Snowflake-style id (see the note above) and
+    sanity-bounds the result to [TikTok's 2016 launch, now] -- a stamp
+    outside that window means the value was not a video id at all, and
+    reporting nothing beats reporting a date from 1974. LINKED TO:
+    newest_post_iso() below; analysis_engine.py uses it as the free,
+    no-extra-navigation tier of its last-post chain."""
     try:
         ts = int(video_id) >> 32
     except (TypeError, ValueError):
@@ -544,6 +587,9 @@ async def newest_post_via_search(ctx, username: str, timeout_s: float = 20.0) ->
     responses: list[str] = []
 
     async def on_response(resp):
+        """Collects the search response bodies as the page fires them.
+        Filtered to the one endpoint that carries `createTime`, since this
+        page is only being visited to read a real post date."""
         if "/api/search/general/full" not in resp.url:
             return
         try:
@@ -669,6 +715,10 @@ _PROFILE_LOCKS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 
 
 def _profile_lock() -> asyncio.Lock:
+    """The lock guarding the persistent profile directory, for THIS event
+    loop (see the note above for why it cannot be a module-level lock).
+    LINKED TO: taken by anonymous_context(); Discovery._merge_user_accounts
+    deliberately skips re-taking it when the sweep already holds it."""
     loop = asyncio.get_running_loop()
     lock = _PROFILE_LOCKS.get(loop)
     if lock is None:
@@ -677,6 +727,9 @@ def _profile_lock() -> asyncio.Lock:
 
 
 def _profile_dir():
+    """Where the persistent browser profile lives. Under the same
+    configured blob path as every other session artefact, so one setting
+    moves them all."""
     return settings.session_blob_path / "tiktok-profile"
 
 
@@ -861,6 +914,10 @@ async def _users_for(ctx, keyword: str, timeout_s: float) -> list[TikTokUser]:
     bodies: list[str] = []
 
     async def on_response(resp):
+        """Collects the Users-tab response bodies. Kept alongside the DOM
+        harvest rather than replacing it: the XHR is richer (verified
+        flag, exact counts, entity id) but the DOM is what carries
+        TikTok's ranking order, so both are read and merged below."""
         if "/api/search/user" not in resp.url:
             return
         try:
@@ -875,12 +932,10 @@ async def _users_for(ctx, keyword: str, timeout_s: float) -> list[TikTokUser]:
         await page.goto(USER_SEARCH_URL.format(q=quote(keyword)),
                         wait_until="domcontentloaded", timeout=int(timeout_s * 1000))
 
-        # Wait for the cards themselves, not a fixed sleep. Server-rendered
-        # results have been observed taking ~12s to paint; a 6s sleep read
-        # an empty page and reported no accounts at all.
-        # Poll for the cards rather than sleeping a fixed amount:
-        # server-rendered results have been observed taking ~12s to paint,
-        # and a 6s sleep read an empty page and reported no accounts at all.
+        # Poll for the cards themselves rather than sleeping a fixed
+        # amount: server-rendered results have been observed taking ~12s
+        # to paint, and a 6s sleep read an empty page and reported no
+        # accounts at all.
         deadline = time.time() + timeout_s
         while time.time() < deadline:
             if len(await user_cards(page)) >= 1:
@@ -896,6 +951,10 @@ async def _users_for(ctx, keyword: str, timeout_s: float) -> list[TikTokUser]:
         ordered: dict[str, TikTokUser] = {}
 
         async def harvest() -> int:
+            """Absorb whatever cards are currently rendered, keeping FIRST
+            sight of each handle -- DOM order is TikTok's own ranking, and
+            setdefault preserves it across scrolls. Returns the running
+            total, which the scroll loop uses to detect a stall."""
             for u in await user_cards(page):
                 ordered.setdefault(u.username.lower(), u)
             return len(ordered)
@@ -940,6 +999,16 @@ async def _users_for(ctx, keyword: str, timeout_s: float) -> list[TikTokUser]:
 
 @dataclass
 class Sweep:
+    """WHAT: the result of sweeping one keyword -- the hits, the accounts
+    behind them, and WHY the sweep ended. HOW: `stopped` carries the
+    reason as a short tag and `complete` is True only when the results
+    genuinely ran out, so a caller can tell "nothing more to find" apart
+    from "we stopped early"; `source` records whether the values came from
+    TikTok's own payloads or from the DOM stand-in, which makes a silent
+    slide down the fallback chain visible in the logs. LINKED TO:
+    services/discovery_service.py reads these fields; `extraction` is the
+    blame-frame report from shared/extraction.py."""
+
     keyword: str
     tab: str = "people"
     hits: list[Hit] = field(default_factory=list)
@@ -961,15 +1030,30 @@ class Sweep:
         return sum(1 for u in self.users if u.match_kind == "account")
 
     def summary(self) -> str:
+        """One-line log form. Reports name-matched accounts SEPARATELY
+        from the raw hit count, because a sweep that returns 40 hits of
+        which 0 are name matches has found nothing worth triaging, and a
+        single total would hide that."""
         base = (f"{len(self.hits)} hits ({self.account_hits} name-matched accounts), "
                 f"{self.pages} pages, {self.stopped}")
         return f"{base}, via {self.source}" if self.source != "hydration+network" else base
 
 
 class Discovery:
-    """Runs keyword sweeps on an already-started browser session."""
+    """WHAT: keywords in, candidate accounts out. HOW: runs sweeps on an
+    already-started browser context, reading TikTok's own search payloads
+    first and falling back to the rendered results page only when those
+    come up empty.
+
+    LINKED TO: `discovery_path` in backend/platforms/registry.py names
+    this class, and services/discovery_service.py drives it. The context
+    is passed IN rather than created here so one browser can serve a whole
+    multi-keyword run."""
 
     def __init__(self, args, ctx, anonymous: bool = False):
+        """`ctx` is an already-started browser context. `anonymous` says it
+        is the persistent credential-free one, which changes how the
+        Users-tab pass acquires it (see _merge_user_accounts)."""
         self.a = args
         self.ctx = ctx
         # True when `ctx` is ALREADY the anonymous persistent context. The
@@ -980,6 +1064,20 @@ class Discovery:
         self._viewer = ""
 
     async def sweep(self, keyword: str, tab: str = "people") -> Sweep:
+        """WHAT: one keyword -> a Sweep of candidate accounts. HOW: opens
+        the search page and intercepts the /api/search/ responses it
+        fires, since those carry richer records (verified flag, exact
+        counts, entity id) than anything the DOM renders. Scrolls to pull
+        further pages, then folds in the Users tab via
+        _merge_user_accounts so genuine NAME matches rank ahead of people
+        who merely posted a matching video.
+
+        The viewer's own handle is removed: every rendered TikTok page
+        embeds the logged-in account, and without that filter the
+        session's own profile was collected as an impersonator of every
+        keyword on every sweep (see viewer_username). LINKED TO: Hit is
+        facebook/discovery_engine.py's shared dataclass; iter_users and
+        parse_lines above do the payload work."""
         out = Sweep(keyword=keyword, tab=tab)
         started = time.time()
         page = await self.ctx.new_page()
@@ -988,6 +1086,11 @@ class Discovery:
         arrived = asyncio.Event()
 
         async def on_response(resp):
+            """Absorbs every search payload the page fires, keeping FIRST
+            sight of each handle -- iter_users already yields name matches
+            ahead of video authors, so setdefault preserves that
+            precedence. Signals `arrived` so the sweep can stop waiting as
+            soon as real data lands instead of sleeping a fixed time."""
             try:
                 if "/api/search/" not in resp.url:
                     return
@@ -1181,10 +1284,19 @@ class Discovery:
         ]
 
     async def run(self, keywords: list[str], tabs: Optional[list[str]] = None) -> list[Sweep]:
-        """TikTok has one people-search surface, so `tabs` is accepted and ignored."""
+        """WHAT: sweeps a whole list of keywords. HOW: concurrently up to
+        the configured limit, with a staggered start so several browser
+        tabs do not hit TikTok in the same instant, and results re-sorted
+        back into the caller's keyword order (which `gather` does not
+        guarantee). `tabs` is accepted and ignored: TikTok has one
+        people-search surface, and the parameter exists so every
+        platform's Discovery.run has the same signature. LINKED TO: the
+        standalone entry point; the API path drives sweep() per keyword
+        through services/discovery_service.py instead."""
         sem = asyncio.Semaphore(max(1, self.a.concurrency))
 
         async def one(i: int, keyword: str) -> tuple[int, Sweep]:
+            """One keyword, holding a concurrency slot for its duration."""
             async with sem:
                 await asyncio.sleep(i % max(1, self.a.concurrency) * 1.0)
                 s = await self.sweep(keyword)

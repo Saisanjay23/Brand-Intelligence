@@ -112,6 +112,27 @@ GENERIC_NAMES = {"facebook", "notifications"}
 
 
 class Harvest:
+    """WHAT: everything one profile visit collected, and the lookups that
+    read fields back out of it.
+
+    HOW: Facebook publishes the same value in several places and none of
+    them reliably -- an intercepted /api/graphql response, an embedded
+    `script[type=application/json]` blob, the rendered DOM. All three are
+    accumulated here as a profile is visited, and the readers below query
+    them in a deliberate order of trust:
+
+      ent_*    -- scoped to dicts that ARE this profile (id == pid). The
+                  only readings that cannot belong to somebody else.
+      gql_*    -- unscoped across every payload. A fallback, and the
+                  reason `ents` scoping exists: a Facebook page carries
+                  suggested pages, sponsored blocks and commenters, each
+                  with their own name and follower count.
+      dom/html -- last resort, whatever actually rendered.
+
+    LINKED TO: filled by Scraper.process()'s response listener; read by
+    the field extractors, which record WHICH tier answered so
+    shared/completeness.py can tell a real reading from a lucky guess."""
+
     def __init__(self):
         self.gql: list[Any] = []  # parsed XHR /api/graphql lines
         self.raw: list[str] = []  # unparsed script[type=application/json]
@@ -124,6 +145,11 @@ class Harvest:
     # ---------- collection ----------
 
     def add_gql(self, body: str) -> None:
+        """WHAT: absorbs one /api/graphql response body. HOW: Facebook
+        streams these as JSON LINES, not one document, so each line is
+        parsed independently and an unparseable one is skipped rather than
+        discarding the whole response. LINKED TO: called from the
+        page-response listener in Scraper.process()."""
         for line in body.splitlines():
             line = line.strip()
             if line.startswith("{"):
@@ -133,12 +159,20 @@ class Harvest:
                     pass
 
     def add_embedded(self, texts) -> None:
+        """WHAT: absorbs the page's embedded JSON script blocks. HOW: kept
+        as RAW strings -- most are large and never queried, so parsing is
+        deferred to mentioning(), which substring-filters first. Cached
+        scope views are dropped because new payloads may change what
+        counts as this profile's own entity."""
         self.raw.extend(t for t in texts or [] if t)
         self._scopes.clear()  # new payloads invalidate cached views
 
     # ---------- lookup ----------
 
     def gql_raw(self) -> str:
+        """Every parsed XHR payload as one JSON string, for the regex
+        scans that are cheaper than another tree walk. "" when the
+        payloads contain something json cannot re-serialise."""
         try:
             return json.dumps(self.gql)
         except (TypeError, ValueError):
@@ -207,6 +241,12 @@ class Harvest:
         return ""
 
     def ent_path(self, *paths: str) -> str:
+        """WHAT: first non-empty string at any of these dotted paths,
+        within this profile's OWN entity dicts. HOW: paths are tried in
+        order, so callers pass them most-specific first; a missing
+        intermediate key is a miss, never an exception. LINKED TO: the
+        scoped counterpart of gql_strs() -- see the class docstring for
+        why scoping matters on Facebook."""
         for d in self.ents:
             for p in paths:
                 cur: Any = d
@@ -239,6 +279,9 @@ class Harvest:
         return out
 
     def ent_ints(self, keys) -> list[int]:
+        """Every integer stored under any of `keys` within this profile's
+        own entities. Booleans are excluded deliberately: `True` is an int
+        in Python and would otherwise be harvested as the number 1."""
         out = []
         for _k, v in self._entity_kv(set(keys)):
             if isinstance(v, bool):
@@ -250,6 +293,8 @@ class Harvest:
         return out
 
     def ent_strs(self, keys) -> list[str]:
+        """Every non-blank string stored under any of `keys` within this
+        profile's own entities, in discovery order."""
         return [
             v.strip()
             for _k, v in self._entity_kv(set(keys))
@@ -257,6 +302,9 @@ class Harvest:
         ]
 
     def _entity_kv(self, want: set[str]) -> Iterator[tuple[str, Any]]:
+        """Every (key, value) under `want`, walked across this profile's
+        own entity dicts only. The shared engine behind ent_ints/ent_strs/
+        ent_social."""
         for d in self.ents:
             for k, v in iter_kv(d):
                 if k in want:
@@ -265,6 +313,10 @@ class Harvest:
     # ---------- unscoped fallbacks ----------
 
     def gql_ints(self, keys) -> list[int]:
+        """Every integer under `keys` across ALL payloads, this profile's
+        or not. Unscoped, so a value from here may belong to a suggested
+        page or a commenter -- callers use it only after the ent_* tier
+        has come up empty, and record that they did."""
         want, out = set(keys), []
         for blob in self.gql:
             for k, v in iter_kv(blob):
@@ -277,6 +329,9 @@ class Harvest:
         return out
 
     def gql_strs(self, keys) -> list[str]:
+        """Every non-blank string under `keys` across ALL payloads. The
+        unscoped fallback to ent_strs(), with the same caveat as
+        gql_ints()."""
         want, out = set(keys), []
         for blob in self.gql:
             for k, v in iter_kv(blob):
@@ -486,7 +541,12 @@ def read_counts(row: Row, h: Harvest) -> None:
 
 
 def _post_stamps(roots) -> list[int]:
-    """K_POST_TIME values that belong to a genuine post object, not just
+    """WHAT: the post timestamps under `roots` -> a list of epoch ints.
+    HOW: only dicts carrying a `post_id` sibling count, which is what
+    scopes this to genuine posts. LINKED TO: read_last_post() picks the
+    newest of these.
+
+    K_POST_TIME values that belong to a genuine post object, not just
     any nested dict that happens to reuse the key name.
 
     This used to trust ANY dict carrying a K_POST_TIME key, on the
@@ -969,6 +1029,13 @@ class Scraper:
             h.dom = {}
 
     async def screenshot(self, page, row: Row) -> None:
+        """WHAT: captures the evidence PNG into GridFS. HOW: waits for
+        visible content first so the capture is not a half-painted page,
+        under a DETERMINISTIC key so re-analysing overwrites its own
+        previous capture rather than accumulating one per run.
+        Best-effort: a failed capture never fails the visit. LINKED TO:
+        database/repositories/evidence_repository.py owns the store;
+        row.screenshot holds that key, not a filesystem path."""
         if not self.evidence:
             return
         # DETERMINISTIC key, no timestamp: re-analysing a profile must
@@ -1143,6 +1210,9 @@ class Scraper:
         h = Harvest()
 
         async def on_response(resp):
+            """Feeds every /api/graphql body this visit fires into the
+            Harvest. Silent on failure: a response that cannot be read is
+            one tier of one field, never a reason to fail the visit."""
             try:
                 if "/api/graphql" in resp.url and resp.request.resource_type in (
                     "xhr",
@@ -1255,6 +1325,9 @@ class Scraper:
 
     @staticmethod
     def report(i: int, total: int, u: str, row: Row) -> None:
+        """One progress line per profile, carrying the fields an operator
+        needs to spot a silent extraction failure early: a column reading
+        "-" on every line means that field has stopped being read."""
         from backend.shared.logging import get_logger as _gl
         _log = _gl("platforms.facebook.analysis")
         _log.info(
@@ -1265,6 +1338,14 @@ class Scraper:
         )
 
     async def run(self, jobs: list[tuple[str, str, str]]) -> list[Row]:
+        """WHAT: drives a whole batch of (url, target, feed) jobs. HOW:
+        hands off to run_parallel() when concurrency allows it, otherwise
+        walks them one at a time with pacing between profiles, aborting on
+        the first CHECKPOINT unless `keep_going` was set -- a challenge
+        means Facebook is already suspicious, and continuing is what turns
+        it into a dead session. Rows gathered before the abort are still
+        returned. LINKED TO: the standalone entry point; the API path
+        drives one() through services/analysis_service.py."""
         from backend.shared.logging import get_logger as _gl
         _run_log = _gl("platforms.facebook.analysis")
         if getattr(self.a, "concurrency", 1) > 1:
@@ -1287,6 +1368,10 @@ class Scraper:
         done = 0
 
         async def worker(idx: int, job: tuple[str, str, str]) -> tuple[int, Row]:
+            """One profile in its own tab, holding a concurrency slot.
+            Starts staggered so several tabs do not hit Facebook in the
+            same instant, and returns its index so the caller can restore
+            the caller's original job order."""
             nonlocal done
             async with sem:
                 await asyncio.sleep(idx % self.a.concurrency * 1.5)  # stagger

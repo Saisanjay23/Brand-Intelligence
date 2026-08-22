@@ -5,6 +5,7 @@ import { clientsApi } from "../api/clientsApi";
 import { discoveryApi } from "../api/discoveryApi";
 import { jobsApi } from "../api/jobsApi";
 import type { Client, Job, KeywordGroup, PlatformHealth } from "../api/types";
+import { mergeGeneratedChildren } from "../services/keywordGroups";
 import { PlatformIcon } from "../components/PlatformIcon";
 import { GlobalSearchModal } from "../components/GlobalSearchModal";
 import { confirmAction } from "../utils/confirmAction";
@@ -218,13 +219,24 @@ function KeywordGeneratorModal({
 }: {
   nameKeywords: string[];
   domainKeywords: string[];
-  onAddKeywords: (type: "names" | "domain", list: string[]) => void;
+  // Keyed by the PARENT each variation was generated from -> the variations
+  // to attach to it as children.
+  onAddKeywords: (type: "names" | "domain", byParent: Record<string, string[]>) => void;
   onClose: () => void;
 }) {
   const [selectedSuggestions, setSelectedSuggestions] = useState<Set<string>>(new Set());
 
   const suggestions = useMemo(() => {
-    const list: { type: "names" | "domain"; kw: string; pattern: string }[] = [];
+    // Every variation remembers the `parent` it was derived from, because
+    // that is where it has to be FILED. A generated permutation is a search
+    // term, never a thing to match against: "official_gautam_adani" is not
+    // a name any real profile is called, so adding it as its own parent
+    // (which this modal used to do) meant hits found through it were scored
+    // and grouped under the permutation instead of under "Gautam Adani".
+    // See backend/shared/keywords.py -- children are searched, parents are
+    // matched -- and the regression documented in
+    // tests_unit/test_keyword_groups.py::TestScoringUsesTheParentNotTheSearchTerm.
+    const list: { type: "names" | "domain"; parent: string; kw: string; pattern: string }[] = [];
     const namePrefixes = ["official_", "real_", "the_real_"];
     const nameSuffixes = ["_official", "_real", "_vip", "_direct", "_fanpage", "_investment", "_crypto"];
     const domainPrefixes = ["official_", "support_", "help_"];
@@ -232,23 +244,30 @@ function KeywordGeneratorModal({
 
     nameKeywords.forEach((name) => {
       const clean = name.toLowerCase().replace(/\s+/g, "_");
-      namePrefixes.forEach((pre) => list.push({ type: "names", kw: `${pre}${clean}`, pattern: "Prefix Impersonation" }));
-      nameSuffixes.forEach((suf) => list.push({ type: "names", kw: `${clean}${suf}`, pattern: "Suffix Impersonation" }));
+      namePrefixes.forEach((pre) => list.push({ type: "names", parent: name, kw: `${pre}${clean}`, pattern: "Prefix Impersonation" }));
+      nameSuffixes.forEach((suf) => list.push({ type: "names", parent: name, kw: `${clean}${suf}`, pattern: "Suffix Impersonation" }));
     });
 
     domainKeywords.forEach((dom) => {
       const clean = dom.toLowerCase().replace(/\s+/g, "_");
-      domainPrefixes.forEach((pre) => list.push({ type: "domain", kw: `${pre}${clean}`, pattern: "Customer Support Lure" }));
-      domainSuffixes.forEach((suf) => list.push({ type: "domain", kw: `${clean}${suf}`, pattern: "Scam / Giveaway / Job Lure" }));
+      domainPrefixes.forEach((pre) => list.push({ type: "domain", parent: dom, kw: `${pre}${clean}`, pattern: "Customer Support Lure" }));
+      domainSuffixes.forEach((suf) => list.push({ type: "domain", parent: dom, kw: `${clean}${suf}`, pattern: "Scam / Giveaway / Job Lure" }));
     });
 
     return list;
   }, [nameKeywords, domainKeywords]);
 
-  const toggleSelect = (kw: string) => {
+  // Selection is keyed by type+parent+term, not by the term alone: the same
+  // permutation can legitimately be generated for two different parents
+  // (an individual "Adani" and a domain "Adani" both yield
+  // "official_adani"), and keying on the bare term would tie those two
+  // checkboxes together and file the variation under both.
+  const idOf = (s: { type: string; parent: string; kw: string }) => `${s.type}:${s.parent}:${s.kw}`;
+
+  const toggleSelect = (id: string) => {
     setSelectedSuggestions((prev) => {
       const next = new Set(prev);
-      next.has(kw) ? next.delete(kw) : next.add(kw);
+      next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
   };
@@ -257,22 +276,24 @@ function KeywordGeneratorModal({
     if (selectedSuggestions.size === suggestions.length) {
       setSelectedSuggestions(new Set());
     } else {
-      setSelectedSuggestions(new Set(suggestions.map((s) => s.kw)));
+      setSelectedSuggestions(new Set(suggestions.map(idOf)));
     }
   };
 
   const handleApply = () => {
-    const namesToAdd: string[] = [];
-    const domainToAdd: string[] = [];
+    // Grouped by parent so each variation is added as a CHILD of the name
+    // it was built from, which is what makes it a search term that still
+    // scores and files against the real name.
+    const names: Record<string, string[]> = {};
+    const domains: Record<string, string[]> = {};
     suggestions.forEach((s) => {
-      if (selectedSuggestions.has(s.kw)) {
-        if (s.type === "names") namesToAdd.push(s.kw);
-        else domainToAdd.push(s.kw);
-      }
+      if (!selectedSuggestions.has(idOf(s))) return;
+      const bucket = s.type === "names" ? names : domains;
+      (bucket[s.parent] ||= []).push(s.kw);
     });
-    if (namesToAdd.length) onAddKeywords("names", namesToAdd);
-    if (domainToAdd.length) onAddKeywords("domain", domainToAdd);
-    toast.success(`Added ${selectedSuggestions.size} threat actor keywords!`, { icon: "✨" });
+    if (Object.keys(names).length) onAddKeywords("names", names);
+    if (Object.keys(domains).length) onAddKeywords("domain", domains);
+    toast.success(`Added ${selectedSuggestions.size} search variations!`, { icon: "✨" });
     onClose();
   };
 
@@ -331,7 +352,7 @@ function KeywordGeneratorModal({
             <div style={{ maxHeight: "260px", overflowY: "auto", border: "1px solid var(--border-subtle)", borderRadius: "8px", padding: "6px" }}>
               {suggestions.map((s) => (
                 <label
-                  key={s.kw}
+                  key={idOf(s)}
                   style={{
                     display: "flex",
                     alignItems: "center",
@@ -339,16 +360,20 @@ function KeywordGeneratorModal({
                     padding: "6px 10px",
                     borderRadius: "6px",
                     cursor: "pointer",
-                    background: selectedSuggestions.has(s.kw) ? "rgba(0, 229, 255, 0.08)" : "transparent",
+                    background: selectedSuggestions.has(idOf(s)) ? "rgba(0, 229, 255, 0.08)" : "transparent",
                   }}
                 >
                   <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                     <input
                       type="checkbox"
-                      checked={selectedSuggestions.has(s.kw)}
-                      onChange={() => toggleSelect(s.kw)}
+                      checked={selectedSuggestions.has(idOf(s))}
+                      onChange={() => toggleSelect(idOf(s))}
                     />
                     <span style={{ fontSize: "12px", fontFamily: "var(--font-mono)", color: "var(--text-main)" }}>{s.kw}</span>
+                    {/* Which parent this will be filed under -- the whole
+                        point of the change, so it should be visible before
+                        the analyst commits to it. */}
+                    <span style={{ fontSize: "10px", color: "var(--text-dim)" }}>→ {s.parent}</span>
                   </div>
                   <span style={{ fontSize: "10px", color: "var(--text-dim)", background: "var(--bg-inner)", padding: "2px 6px", borderRadius: "4px", display: "inline-flex", alignItems: "center", gap: "4px" }}>
                     {s.type === "names" ? <UserIcon size={12} color="var(--cyan)" /> : <TagIcon size={12} color="var(--purple)" />}
@@ -530,8 +555,6 @@ function KeywordTabs({
   domainGroups,
   onNameGroups,
   onDomainGroups,
-  onAddName,
-  onAddDomain,
   assetNameIndividualKw,
   assetNameDomainKw,
   onAddAssetIndividual,
@@ -542,18 +565,15 @@ function KeywordTabs({
 }: {
   activeTab: KeywordTab;
   onTab: (t: KeywordTab) => void;
-  // Derived parent lists -- still used for the tab counts and by the
-  // threat-keyword generator, which reads the real names to build
-  // permutations from.
+  // Derived parent lists -- the tab counts, and the source the
+  // threat-keyword generator builds its permutations FROM (it files each
+  // one back under the parent it came from, as a child).
   nameKeywords: string[];
   domainKeywords: string[];
   nameGroups: KeywordGroup[];
   domainGroups: KeywordGroup[];
   onNameGroups: (next: KeywordGroup[]) => void;
   onDomainGroups: (next: KeywordGroup[]) => void;
-  // Adds a new PARENT (what the generator modal produces).
-  onAddName: (kw: string) => void;
-  onAddDomain: (kw: string) => void;
   assetNameIndividualKw: string[];
   assetNameDomainKw: string[];
   onAddAssetIndividual: (kw: string) => void;
@@ -668,12 +688,12 @@ function KeywordTabs({
         <KeywordGeneratorModal
           nameKeywords={nameKeywords}
           domainKeywords={domainKeywords}
-          onAddKeywords={(type, list) => {
-            if (type === "names") {
-              list.forEach(onAddName);
-            } else {
-              list.forEach(onAddDomain);
-            }
+          onAddKeywords={(type, byParent) => {
+            // Attach the variations as CHILDREN of the parents they were
+            // generated from, never as new parents (see
+            // services/keywordGroups.ts for why, and for the merge rules).
+            if (type === "names") onNameGroups(mergeGeneratedChildren(nameGroups, byParent));
+            else onDomainGroups(mergeGeneratedChildren(domainGroups, byParent));
           }}
           onClose={() => setGenOpen(false)}
         />
@@ -932,19 +952,6 @@ export function HomeView({
   const nameKeywords = useMemo(() => nameGroups.map((g) => g.parent), [nameGroups]);
   const domainKeywords = useMemo(() => domainGroups.map((g) => g.parent), [domainGroups]);
 
-  // Adding a bare PARENT (what the threat-keyword generator produces). A
-  // parent with no children searches itself, so a generated permutation
-  // added this way behaves exactly as it did before groups existed.
-  const addNameParent = (v: string) =>
-    setNameGroups((prev) =>
-      prev.some((g) => g.parent.toLowerCase() === v.toLowerCase())
-        ? prev
-        : [...prev, { parent: v, children: [] }]);
-  const addDomainParent = (v: string) =>
-    setDomainGroups((prev) =>
-      prev.some((g) => g.parent.toLowerCase() === v.toLowerCase())
-        ? prev
-        : [...prev, { parent: v, children: [] }]);
   const [assetNameIndividualKw, setAssetNameIndividualKw] = useState<string[]>([]);
   const [assetNameDomainKw, setAssetNameDomainKw] = useState<string[]>([]);
   const [platformLimitsIndividual, setPlatformLimitsIndividual] = useState<Record<string, string>>({});
@@ -1506,8 +1513,6 @@ export function HomeView({
                   domainGroups={domainGroups}
                   onNameGroups={setNameGroups}
                   onDomainGroups={setDomainGroups}
-                  onAddName={addNameParent}
-                  onAddDomain={addDomainParent}
                   assetNameIndividualKw={assetNameIndividualKw}
                   assetNameDomainKw={assetNameDomainKw}
                   onAddAssetIndividual={(v) => setAssetNameIndividualKw((prev) => (prev.some((k) => k.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]))}
@@ -1891,8 +1896,6 @@ export function HomeView({
                   domainGroups={domainGroups}
                   onNameGroups={setNameGroups}
                   onDomainGroups={setDomainGroups}
-                  onAddName={addNameParent}
-                  onAddDomain={addDomainParent}
                   assetNameIndividualKw={assetNameIndividualKw}
                   assetNameDomainKw={assetNameDomainKw}
                   onAddAssetIndividual={(v) => setAssetNameIndividualKw((prev) => (prev.some((k) => k.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]))}

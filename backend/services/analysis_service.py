@@ -608,7 +608,16 @@ async def _analyse_platform(
                     # the gap and can never undo what this one got.
                     missing = missing_fields(
                         platform_id, row, want_screenshot=want_screenshot)
-                    if missing and pass_no < _COMPLETENESS_PASSES and url not in deferred:
+                    # Whether THIS job will look at the URL again. Also
+                    # decides, below, that the save it is about to do is
+                    # provisional and must not spend a durable retry
+                    # attempt -- the in-job passes are bounded by
+                    # `_COMPLETENESS_PASSES` already, and counting them
+                    # against `analysis_attempts` too exhausted the whole
+                    # budget inside a single job (see the `retry_pending`
+                    # note in profile_repository.save).
+                    retry_pending = bool(missing) and pass_no < _COMPLETENESS_PASSES
+                    if retry_pending and url not in deferred:
                         deferred.append(url)
                         # Counted the INSTANT the re-read is queued, which is
                         # before this visit's own progress event is emitted a
@@ -626,9 +635,10 @@ async def _analyse_platform(
                     try:
                         s, n = await profiles_db.save_many(
                             job.client_id, platform_id, "analysis",
-                            [_row_to_fields(
+                            [{**_row_to_fields(
                                 row, platform_id=platform_id,
-                                want_screenshot=want_screenshot)],
+                                want_screenshot=want_screenshot),
+                              "retry_pending": retry_pending}],
                         )
                         saved += s
                         new += n

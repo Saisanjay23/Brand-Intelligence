@@ -230,6 +230,12 @@ class Scraper:
         wanted = row.profile_id.lower()
 
         async def on_response(resp):
+            """Captures the profile visit's GraphQL payloads. Watches BOTH
+            the user query (identity, counts, join date) and the timeline
+            queries (the post dates), because a single profile load fires
+            both and missing either costs a whole column. Silent on
+            failure -- an unreadable response costs one tier of one field,
+            never the visit."""
             try:
                 is_user = any(q in resp.url for q in USER_QUERIES)
                 is_tweets = any(q in resp.url for q in TWEETS_QUERIES)
@@ -469,6 +475,9 @@ class Scraper:
         landed = asyncio.Event()
 
         async def on_response(resp):
+            """Captures only the About-panel payload, which carries the
+            account's country and creation date -- fields the profile
+            header itself does not render."""
             try:
                 if ABOUT_QUERY not in resp.url:
                     return
@@ -534,6 +543,10 @@ class Scraper:
         landed = asyncio.Event()
 
         async def on_response(resp):
+            """Captures the replies-timeline payload. Separate from the
+            profile visit because an account that ONLY replies has an
+            empty originals timeline and would otherwise look postless --
+            see read_last_post's fallback order."""
             try:
                 if not any(q in resp.url for q in TWEETS_QUERIES):
                     return

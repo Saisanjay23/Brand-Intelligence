@@ -81,8 +81,9 @@ class Scraper:
     normalize_url = staticmethod(normalize_url)
 
     def __init__(self, args, cookies=None, session_id: str = "", proxy=None):
-        # MTProto, not cookies, session_id/proxy exist only so jobs.py can
-        # call every platform's Scraper with the same signature.
+        """MTProto, not a browser. `cookies`, `session_id` and `proxy` are
+        accepted and unused so services/analysis_service.py can construct
+        every platform's Scraper with one signature."""
         self.a = args
         self.tg = Telegram(args)
 
@@ -115,6 +116,15 @@ class Scraper:
     # ───────────────────────────── per URL ────────────────────────────── #
 
     async def process(self, raw_url: str, target: str, feed: str) -> Row:
+        """WHAT: one t.me URL -> a scored Row. HOW: normalize the URL, pull
+        the @username out of it, resolve that username to an entity over
+        MTProto, then hand the entity to fill() for the field-by-field
+        mapping. Three outcomes, deliberately distinguished: no username
+        (ERROR -- a private t.me/joinchat link carries no resolvable
+        identity, so retrying cannot help), no such entity (GONE -- the
+        terminal state, the account is deleted or banned), or a reading.
+        LINKED TO: called by one() below, which wraps it in the error
+        handling; resolve() is discovery_engine.py::Telegram.resolve."""
         url = normalize_url(raw_url)
         row = Row(url=url, target=target, original_feed=feed)
         username = username_of(url)
@@ -137,6 +147,16 @@ class Scraper:
 
     @staticmethod
     def fill(row: Row, e: TelegramEntity) -> None:
+        """WHAT: copies one resolved TelegramEntity onto the Row, field by
+        field. HOW: every value comes from the protocol rather than a
+        rendered page, so each one is marked `mtproto` (see
+        shared/models/row.py::mark, which records WHERE a field came from
+        so shared/completeness.py can tell "read it" from "never saw it").
+        Absences are recorded as findings rather than left blank and
+        unexplained: a user account genuinely has no creation date
+        anywhere in the protocol, so it gets a note saying so instead of a
+        guess. LINKED TO: called by process() above; the entity is built
+        in discovery_engine.py::TelegramEntity."""
         row.profile_id = e.username or e.entity_id
         row.entity_type = e.kind
         row.profile_name = e.title
@@ -176,6 +196,14 @@ class Scraper:
     # ─────────────────────────── orchestration ────────────────────────── #
 
     async def one(self, u: str, tgt: str, feed: str) -> Row:
+        """WHAT: process() that never raises -- always a Row, whatever
+        happened. HOW: FloodWait becomes CHECKPOINT, which is the status
+        the run loop and services/analysis_service.py both treat as "stop
+        the wave, the account is at risk", the same handling a browser
+        platform's login challenge gets. Anything else becomes ERROR with
+        the exception on the row, so one unreachable channel cannot end a
+        job. LINKED TO: called by run(); the CHECKPOINT contract is read
+        in analysis_service.py, which burns the session on it."""
         try:
             return await self.process(u, tgt, feed)
         except FloodWait as e:
@@ -193,6 +221,11 @@ class Scraper:
 
     @staticmethod
     def report(i: int, total: int, u: str, row: Row) -> None:
+        """WHAT: one progress line per profile. HOW: prints the fields an
+        operator watching a run needs to spot a silent extraction failure
+        early -- a column that is "-" on every line means that field
+        stopped being read. LINKED TO: called by run() after each row; the
+        equivalent of the browser engines' own report()."""
         from backend.shared.logging import get_logger as _gl
         _gl("platforms.telegram.analysis").info(
             f"[{i}/{total}] {u} | {row.status} name={row.profile_name[:22]} "
@@ -201,6 +234,14 @@ class Scraper:
         )
 
     async def run(self, jobs: list[tuple[str, str, str]]) -> list[Row]:
+        """WHAT: drives a whole batch of (url, target, feed) jobs. HOW:
+        sequentially, pausing between profiles, and stopping the moment a
+        row comes back CHECKPOINT -- a flood wait means Telegram is
+        already rate-limiting this account, and continuing to hammer it is
+        what turns a temporary wait into a ban. Rows gathered before the
+        stop are still returned, so the work already done is never thrown
+        away. LINKED TO: the standalone entry point; the API path drives
+        one() directly through services/analysis_service.py instead."""
         rows: list[Row] = []
         for i, (u, tgt, feed) in enumerate(jobs, 1):
             row = await self.one(u, tgt, feed)
