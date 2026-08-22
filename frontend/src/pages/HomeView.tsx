@@ -850,6 +850,22 @@ function platformScope(sel: Set<string>): { platform?: string; platforms?: strin
 
 const EMPTY_FORM = { id: "", name: "", domain: "", nameKw: [] as string[], domainKw: [] as string[], cron: "" };
 
+// The keyword categories a discovery sweep can be narrowed to, rendered as
+// toggle chips beside the platform chips. Mirrors backend/shared/keywords.py's
+// own INDIVIDUAL/DOMAIN vocabulary -- the server scopes by these exact names
+// (see discovery_controller._validated_keyword_type), so they are a contract,
+// not display strings.
+const KEYWORD_SCOPES = [
+  { id: "individual", label: "Individual Names" },
+  { id: "domain", label: "Domain Keywords" },
+] as const;
+
+// Narrowed rather than plain `string` so the value flowing into
+// discoveryApi.discover's `keyword_type` is checked at compile time against
+// the two categories the server actually accepts, instead of relying on a
+// cast that would happily pass a typo through to a 400.
+type KeywordScope = (typeof KEYWORD_SCOPES)[number]["id"];
+
 // A loaded client's groups for one keyword type. The API always returns
 // `keyword_groups` (synthesising childless parents from the flat lists for
 // a client saved before the feature existed), but this falls back to the
@@ -1097,7 +1113,25 @@ export function HomeView({
   // by each keyword's own resolved category (see
   // backend/services/discovery_service.py), so this and the per-category
   // caps can never disagree about what "individual" means.
-  const [sweepKeywordType, setSweepKeywordType] = useState<"" | "individual" | "domain">("");
+  // Which keyword categories a discovery sweep covers. A SET with the same
+  // semantics as `sweepPlatforms` above: EMPTY means all of them, which is
+  // the default and what every sweep did before this existed. Selecting
+  // both categories is the same thing as selecting neither, so it collapses
+  // back to empty (see toggleKeywordType).
+  const [sweepKeywordTypes, setSweepKeywordTypes] = useState<Set<KeywordScope>>(new Set());
+
+  // The scope persists across client switches (the platform chips do too),
+  // which can strand it on a category the newly-selected client has none of
+  // -- that chip is disabled, so the only way out would be noticing it and
+  // clicking another. Dropping the empty category is the honest fallback.
+  useEffect(() => {
+    setSweepKeywordTypes((prev) => {
+      const next = new Set(prev);
+      if (!activeIndividualCount) next.delete("individual");
+      if (!activeDomainCount) next.delete("domain");
+      return next.size === prev.size ? prev : next;
+    });
+  }, [activeIndividualCount, activeDomainCount]);
 
   const saveConfig = async (): Promise<Client | null> => {
     const id = idInput.trim();
@@ -1171,12 +1205,12 @@ export function HomeView({
     // The server rejects this too (discovery_service raises rather than
     // sweeping nothing and reporting success), but catching it here means
     // the analyst finds out on click instead of via a failed job.
-    if (sweepKeywordType === "individual" && !activeIndividualCount) {
-      onError("This client has no individual names configured — switch the scope back to Both or Domain, or add some in the Keywords tab.");
+    if (sweepKeywordScope === "individual" && !activeIndividualCount) {
+      onError("This client has no individual names configured — pick All Keywords or Domain, or add some in the Keywords tab.");
       return;
     }
-    if (sweepKeywordType === "domain" && !activeDomainCount) {
-      onError("This client has no domain keywords configured — switch the scope back to Both or Individual, or add some in the Keywords tab.");
+    if (sweepKeywordScope === "domain" && !activeDomainCount) {
+      onError("This client has no domain keywords configured — pick All Keywords or Individual, or add some in the Keywords tab.");
       return;
     }
     try {
@@ -1187,7 +1221,7 @@ export function HomeView({
           ...(activeClient.domain_keywords || []),
         ]),
         ...platformScope(sweepPlatforms),
-        ...(sweepKeywordType ? { keyword_type: sweepKeywordType } : {}),
+        ...(sweepKeywordScope ? { keyword_type: sweepKeywordScope } : {}),
       });
       const job = await jobsApi.job(job_id);
       onJobs([job]);
@@ -1287,6 +1321,26 @@ export function HomeView({
     setSweepPlatforms(new Set());
     setAnalysisPlatforms(new Set());
   };
+
+  // Keyword-category chips, same interaction as the platform chips above:
+  // toggle them on, and an EMPTY selection means all of them.
+  const toggleKeywordType = (id: KeywordScope) => {
+    const next = new Set(sweepKeywordTypes);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    // With only two categories, "both selected" IS "all" -- collapsing it
+    // back to empty keeps one canonical representation of that state, so
+    // the All chip lights up instead of two chips that mean the same thing.
+    setSweepKeywordTypes(next.size === KEYWORD_SCOPES.length ? new Set() : next);
+  };
+  const selectAllKeywordTypes = () => setSweepKeywordTypes(new Set());
+
+  // The single category to send to the API, or "" for all. Only a
+  // selection of exactly one narrows anything -- empty (and, by the
+  // collapse above, both) sweeps everything, which is what omitting the
+  // parameter already means server-side.
+  const sweepKeywordScope: KeywordScope | "" =
+    sweepKeywordTypes.size === 1 ? [...sweepKeywordTypes][0] : "";
   return (
     <div className="clients-workspace-layout">
       {globalSearchOpen && (
@@ -1658,36 +1712,44 @@ export function HomeView({
                     })}
                   </div>
 
-                  {/* Which KEYWORD CATEGORY the sweep covers, independent of
-                      the platform chips above. Scopes discovery only --
-                      analysis re-reads whatever discovery already stored, so
-                      it has no keyword scope of its own to set. */}
+                  {/* WHICH KEYWORDS to sweep -- the same interaction as the
+                      platform chips above: toggle them on, and selecting
+                      NONE means all of them. Scopes discovery only; analysis
+                      re-reads whatever discovery already stored, so it has no
+                      keyword scope of its own to set. */}
                   <div className="unified-platform-selector" style={{ marginTop: "8px" }}>
-                    <span style={{ fontSize: "11px", color: "var(--text-dim)", fontWeight: 600, alignSelf: "center", marginRight: "2px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                      Keywords
-                    </span>
-                    {([
-                      { id: "" as const, label: "Both", count: activeKeywordCount,
-                        title: "Sweep both individual names and domain keywords (default)" },
-                      { id: "individual" as const, label: "Individual", count: activeIndividualCount,
-                        title: "Sweep only this client's executive/individual names" },
-                      { id: "domain" as const, label: "Domain", count: activeDomainCount,
-                        title: "Sweep only this client's brand/domain keywords" },
-                    ]).map((opt) => (
-                      <button
-                        key={opt.id || "both"}
-                        type="button"
-                        className={`unified-platform-btn ${sweepKeywordType === opt.id ? "active" : ""}`}
-                        onClick={() => setSweepKeywordType(opt.id)}
-                        disabled={opt.id !== "" && opt.count === 0}
-                        title={opt.id !== "" && opt.count === 0
-                          ? `This client has no ${opt.label.toLowerCase()} keywords configured`
-                          : opt.title}
-                      >
-                        <span>{opt.label}</span>
-                        <span className="kw-tab-count">{opt.count}</span>
-                      </button>
-                    ))}
+                    <button
+                      type="button"
+                      className={`unified-platform-btn ${sweepKeywordTypes.size === 0 ? "active" : ""}`}
+                      onClick={selectAllKeywordTypes}
+                      title="Search both individual names and domain keywords"
+                    >
+                      <LayersIcon size={15} color={sweepKeywordTypes.size === 0 ? "#7C5CFF" : "#94A3B8"} />
+                      <span>All Keywords</span>
+                      <span className="kw-tab-count">{activeKeywordCount}</span>
+                    </button>
+                    {KEYWORD_SCOPES.map((opt) => {
+                      const count = opt.id === "individual" ? activeIndividualCount : activeDomainCount;
+                      const on = sweepKeywordTypes.has(opt.id);
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          className={`unified-platform-btn ${on ? "active" : ""}`}
+                          onClick={() => toggleKeywordType(opt.id)}
+                          disabled={count === 0}
+                          title={count === 0
+                            ? `This client has no ${opt.label.toLowerCase()} configured`
+                            : `${on ? "Click to remove" : "Click to add"} ${opt.label} -- selecting none searches everything`}
+                        >
+                          {opt.id === "individual"
+                            ? <UserIcon size={15} color={on ? "#7C5CFF" : "#94A3B8"} />
+                            : <TagIcon size={15} color={on ? "#7C5CFF" : "#94A3B8"} />}
+                          <span>{opt.label}</span>
+                          <span className="kw-tab-count">{count}</span>
+                        </button>
+                      );
+                    })}
                   </div>
 
                   {/* Discover/Analyse stay available while something is
@@ -1718,8 +1780,8 @@ export function HomeView({
                           {(() => {
                             const bits = [
                               sweepPlatformName,
-                              sweepKeywordType === "individual" ? "Individual"
-                                : sweepKeywordType === "domain" ? "Domain" : "",
+                              sweepKeywordScope === "individual" ? "Individual"
+                                : sweepKeywordScope === "domain" ? "Domain" : "",
                             ].filter(Boolean);
                             return bits.length ? `Discover (${bits.join(" · ")})` : "Discover";
                           })()}
