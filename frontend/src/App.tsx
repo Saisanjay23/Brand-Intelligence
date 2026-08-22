@@ -16,11 +16,19 @@ const ACTIVE_JOB_STATUSES = new Set(["queued", "running"]);
 
 export default function App() {
   const [page, setPage] = useState<ViewPage>("home");
+  const [theme, setTheme] = useState<"light" | "dark">(
+    () => (localStorage.getItem("theme") as "light" | "dark") || "dark"
+  );
   const [recentClients, setRecentClients] = useState<RecentClient[]>([]);
   const [allClients, setAllClients] = useState<Client[]>([]);
   const [clientId, setClientId] = useState("");
   const [clientName, setClientName] = useState("");
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("theme", theme);
+  }, [theme]);
 
   const refreshAllClients = useCallback(() => {
     clientsApi.listClients().then((res) => setAllClients(res.items)).catch(() => {});
@@ -176,6 +184,8 @@ export default function App() {
       readySessionsCount={readySessionsCount}
       platformCount={platforms.length}
       error={error || platformStateError}
+      theme={theme}
+      onThemeToggle={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))}
     >
       {page === "home" && (
         <HomeView

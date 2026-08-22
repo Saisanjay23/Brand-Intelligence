@@ -106,7 +106,19 @@ RE_DEFAULT_PIC = re.compile(
 
 
 class FacebookSession(Session):
+    """The Facebook-specific half of `Session` (backend/stealth/browser.py):
+    owns nothing but the one thing that differs per platform, whether a
+    cookie set is still logged in. Loaded dynamically by
+    backend/platforms/registry.py's `session_path` entry for "facebook",
+    and constructed by session_for_job() (backend/sessions/manager.py)
+    whenever a discovery or analysis job needs a live Facebook browser
+    context."""
+
     async def check_session(self) -> bool:  # type: ignore[override]
+        # WHAT/HOW: visits /me (an authenticated-only destination) and asks
+        # the shared Session.check_session() to confirm the browser landed
+        # on an account page rather than a login/checkpoint wall -- see
+        # deny_paths below for the specific signal this platform needs.
         # deny_paths is the positive confirmation, the same job expect_path
         # does for Instagram/TikTok, /me cannot use expect_path because
         # its authenticated destination is the account's OWN profile path,
@@ -126,6 +138,15 @@ class FacebookSession(Session):
 
 
 def normalize_url(url: str) -> str:
+    """WHAT: one canonical `https://www.facebook.com/...` form for any
+    Facebook URL variant (fb.com, fb.me, m.facebook.com, with or without a
+    scheme). HOW: delegates the generic host/path parsing to
+    shared/text.py::parse_normalized_url, then folds every Facebook host
+    onto "www.facebook.com". LINKED TO: the one normalizer both this file
+    and analysis_engine.py use for every Facebook URL they touch --
+    analysis_engine.py imports this directly rather than redefining it, so
+    there is exactly one definition across both phases (see this module's
+    own top-of-file docstring)."""
     p = parse_normalized_url(url)
     if p is None:
         return ""
@@ -158,6 +179,11 @@ def profile_id(url: str) -> str:
 
 
 def tab_url(base: str, sk: str) -> str:
+    """WHAT: the URL for one sub-tab (`sk`, e.g. "about", "friends") of the
+    profile `base` points at. HOW: profile.php ids take the sub-tab as a
+    `&sk=` query param; a vanity-slug profile takes it as a path segment.
+    LINKED TO: analysis_engine.py's Scraper.process(), which visits the
+    About and About-transparency tabs this way after the main timeline."""
     p = urlparse(base)
     if "profile.php" in p.path:
         uid = parse_qs(p.query).get("id", [""])[0]
@@ -179,6 +205,12 @@ _STP_SIZE = re.compile(r"([sp])\d+x\d+")
 
 
 def hd_picture_url(url: str) -> str:
+    """WHAT: the same fbcdn photo URL, rewritten to request the full
+    upload resolution instead of the tiny thumbnail every profile-picture
+    field hands out by default. HOW: see the two module-level comments
+    just above (_CTP/_CSTP/_STP_SIZE) for the exact crop-parameter
+    rewrite and the live measurement behind it. LINKED TO: iter_results
+    and _extract_entity below, discovery's two photo-reading paths."""
     if not url:
         return url
     cstp = _CSTP.search(url)
@@ -236,6 +268,20 @@ class Hit:
     source: str = "graphql"  # graphql | id-backfill
 
     def as_dict(self) -> dict:
+        """WHAT: this Hit's fields as a plain dict. HOW: a flat
+        field-by-field copy, deliberately not `dataclasses.asdict()` --
+        an explicit dict keeps this the one place that has to change if
+        Hit ever gains an internal-only field.
+
+        NOT CURRENTLY CALLED anywhere in this codebase (confirmed via
+        grep across backend/ and every test, 2026-08-22) --
+        discovery_service.py builds its own dict from a Hit's attributes
+        directly instead of going through this method. Left in place
+        rather than deleted only because removing it is a separate,
+        deliberate change (not something to fold into a comment pass);
+        flagged here so whoever next touches this file has the evidence
+        already gathered instead of re-deriving it.
+        """
         return {
             "entity_id": self.entity_id,
             "name": self.name,
@@ -262,7 +308,6 @@ class PageState:
     """
 
     has_next: bool = False
-    page_number: Optional[int] = None
     ids_shown: list[str] = field(default_factory=list)
     ids_processed: list[str] = field(default_factory=list)
     total_results: Optional[int] = None
@@ -276,6 +321,11 @@ TAB_KIND = {"people": "profile", "pages": "page", "groups": "group"}
 
 
 def kind_for_tab(tab: str) -> str:
+    """WHAT: the entity_type a search TAB implies ("people" -> "profile",
+    etc). HOW: a straight lookup in TAB_KIND above, defaulting to
+    "profile" for an unrecognised tab rather than raising. LINKED TO:
+    Discovery.sweep() (tags every Hit it finds) and dom_search_hits()
+    below (the DOM fallback, same tagging)."""
     return TAB_KIND.get(tab, "profile")
 
 
@@ -362,7 +412,6 @@ def page_state(blob: Any) -> Optional[PageState]:
         totals = c.get("unit_id_logging_fields") or {}
         return PageState(
             has_next=bool(pi["has_next_page"]),
-            page_number=c.get("page_number"),
             ids_shown=[str(i) for i in (c.get("result_ids_shown") or [])],
             ids_processed=_processed_ids(c),
             total_results=totals.get("num_total_results"),
@@ -390,6 +439,13 @@ def _processed_ids(cursor: dict) -> list[str]:
 
 
 def is_search_response(post_body: str) -> bool:
+    """WHAT: does this /api/graphql request's own POST body identify it as
+    a search-results query (as opposed to the dozen other unrelated
+    GraphQL calls a Facebook page fires on every load -- notifications,
+    chat, the sidebar). HOW: a plain substring check against the query's
+    own name, QUERY_NAME above. LINKED TO: Discovery.sweep()'s
+    on_response() handler, the response filter that keeps the sweep from
+    trying to parse irrelevant GraphQL traffic as search results."""
     return QUERY_NAME in (post_body or "")
 
 
@@ -904,9 +960,24 @@ JS_DOM_AVATAR = """
 
 
 class Discovery:
-    """Runs keyword sweeps on an already-started browser session."""
+    """Runs keyword sweeps on an already-started browser session.
+
+    LINKED TO: `discovery_path` in backend/platforms/registry.py names
+    this class (loaded dynamically, by import path string, not a direct
+    import -- see that module's own docstring on why), and
+    backend/services/discovery_service.py is the actual caller: it
+    constructs one Discovery per sweep batch and drives `run()` (or
+    `sweep()` directly for a single keyword/tab, e.g. a re-sweep).
+    """
 
     def __init__(self, args, ctx):
+        """WHAT: binds this Discovery to one already-started browser
+        context. HOW: `args` is a ScanOptions/DiscoveryOptions-shaped
+        object (backend/platforms/scan_options.py) carrying every pacing
+        knob (timeout, settle, concurrency, caps); `ctx` is the
+        Playwright BrowserContext `stealth/browser.py::Session.start()`
+        already produced -- this class never starts or owns a session
+        itself, only drives pages inside one handed to it."""
         self.a = args
         self.ctx = ctx
 
@@ -1163,6 +1234,40 @@ class Discovery:
         return out
 
     async def sweep(self, keyword: str, tab: str, on_progress=None) -> Sweep:
+        """One keyword, one tab (people/pages/groups), start to finish --
+        the whole engine's core loop, and the method every other function
+        in this file ultimately exists to serve.
+
+        WHAT IT RETURNS: a `Sweep` (see the dataclass above) carrying every
+        Hit found, which of the three completeness signals stopped it
+        (exhausted / end-of-serp / stalled / a cap / an error -- see the
+        module docstring's COMPLETENESS section), and the extraction
+        chain's own record of what succeeded (network:graphql-search or
+        dom:results-page, see `run_strategies`).
+
+        HOW, roughly in order:
+          1. Navigate to the tab's search URL (TABS) and wait for the
+             first GraphQL search response (network) or embedded JSON
+             (first-page render) to arrive.
+          2. Scroll-paginate, absorbing each response's edges into `by_id`
+             (`absorb()`, a closure) until one of the three completeness
+             signals fires or a cap/timeout does.
+          3. Reconcile against what Facebook's own cursor says it rendered
+             (`rendered_ids`) and processed (`processed_ids`) to find any
+             id parsed as an edge miss, then back-fill those via one cheap
+             profile-page visit each (`_resolve_missing`).
+          4. Run the extraction chain (GraphQL first, DOM fallback second,
+             see `run_strategies` in shared/extraction.py) to pick the
+             final hit list and record which one actually produced it.
+
+        LINKED TO: called by `run()` below (one call per keyword x tab
+        pair) and directly by discovery_service.py for a single re-sweep.
+        Every helper above this method in the file -- `iter_results`,
+        `page_state`, `parse_lines`/`parse_embedded`, `dom_search_hits`,
+        `_tab_cap`, `_notify`, `_extract_entity`/`_resolve_missing` -- is a
+        piece this method assembles; none of them is meant to be called on
+        its own outside a test.
+        """
         out = Sweep(keyword=keyword, tab=tab)
         started = time.time()
         page = await self.ctx.new_page()

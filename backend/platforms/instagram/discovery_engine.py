@@ -57,7 +57,17 @@ RE_GONE = re.compile(
 
 
 class InstagramSession(Session):
+    """The Instagram-specific half of `Session` (backend/stealth/browser.py):
+    owns nothing but whether a cookie set is still logged in. Loaded
+    dynamically by backend/platforms/registry.py's `session_path` entry
+    for "instagram", constructed by session_for_job()
+    (backend/sessions/manager.py) whenever a job needs a live Instagram
+    browser context."""
+
     async def check_session(self) -> bool:  # type: ignore[override]
+        # WHAT/HOW: visits the authenticated-only /accounts/edit/ page and
+        # asks Session.check_session() to confirm the browser actually
+        # landed there rather than a login/checkpoint wall.
         # expect_path is what actually catches a dead Instagram session:
         # the logged-out redirect lands on `instagram.com/#`, which trips
         # none of the negative patterns, see Session.check_session.
@@ -83,7 +93,38 @@ class InstagramSession(Session):
 # "About this account", which is an authenticated interactive panel, so that
 # column stays blank rather than guessed, the same call made for Facebook.
 
-PROFILE_ENDPOINTS = ("users/web_profile_info", "api/v1/users/", "graphql/query")
+# Every response worth reading a profile out of. Substring-matched against
+# the response URL, so each entry must be a fragment that really appears.
+#
+# `api/graphql` was the missing one, and its absence was the single largest
+# source of data loss in this engine. Confirmed live (2026-08-22, a real
+# logged-in profile visit): the modern web client answers a profile
+# navigation with `https://www.instagram.com/api/graphql`, whose
+# `data.user` object carries the whole record as TYPED values --
+# follower_count 79525 (an exact integer, not the rendered "79.5K"),
+# following_count, media_count, biography, city_name, external_url,
+# is_private, is_verified, profile_pic_url. `profile_from()` below parses
+# that object perfectly and always could; the URL simply never matched
+# anything in this tuple, so it was never handed to it.
+#
+# The measured cost of that one missing fragment: 310 of 310 stored
+# Instagram analysis rows came from the LAST-RESORT rendered-header tier
+# (`sources` = dom-header on every single one), which is why followers were
+# stored as rounded strings, biography was blank on 100% of rows, and the
+# last-post date was missing on 30%.
+#
+# `web_profile_info` is kept, but it is no longer the path anything relies
+# on: re-verified live on the same date, i.instagram.com AND
+# www.instagram.com both answer it HTTP 429 with an empty body for every
+# username, under both the Android and desktop User-Agent. It is a
+# hard-throttled endpoint now, not a flaky one, and an engine that treats
+# it as primary is an engine permanently running on its fallback.
+PROFILE_ENDPOINTS = (
+    "api/graphql",
+    "graphql/query",
+    "users/web_profile_info",
+    "api/v1/users/",
+)
 
 # Instagram's anonymous avatar
 DEFAULT_PIC_HINTS = (
@@ -95,6 +136,13 @@ DEFAULT_PIC_HINTS = (
 
 @dataclass
 class InstagramUser:
+    """One Instagram account, flattened from whichever payload shape
+    found it (search result, profile-page graphql, or timeline). LINKED
+    TO: the universal per-platform result type -- produced by
+    `user_from_node`/`profile_from`/`web_search_users` below, consumed by
+    analysis_engine.py's Scraper.fill(), the same relationship
+    facebook/discovery_engine.py's `Hit` has to its own consumers."""
+
     entity_id: str = ""
     username: str = ""
     full_name: str = ""
@@ -109,20 +157,35 @@ class InstagramUser:
     category: str = ""
     external_url: str = ""
     has_highlight_reels: Optional[bool] = None
+    # Instagram's only location field, and it really is published: it sits
+    # on the same `data.user` object as everything else (confirmed live
+    # 2026-08-22). Professional/business accounts fill it in; personal ones
+    # usually leave it empty, which is why this stays an optional field
+    # rather than something a missing value counts against -- see
+    # shared/completeness.py::missing_fields, which never checks location
+    # on any platform for exactly this reason.
+    city_name: str = ""
 
     @property
     def url(self) -> str:
+        """The canonical profile URL, built from `username` -- Instagram
+        has no separate numeric-id-only URL form the way Facebook does."""
         return f"https://www.instagram.com/{self.username}/" if self.username else ""
 
     @property
     def has_custom_pic(self) -> bool:
+        """Is `avatar` a real upload, not Instagram's own anonymous-user
+        placeholder (see DEFAULT_PIC_HINTS above)."""
         return bool(self.avatar) and not any(
             h in self.avatar for h in DEFAULT_PIC_HINTS
         )
 
 
 def _count(node: Any, *keys: str) -> Optional[int]:
-    """Counts appear either as {"count": N} or as a bare integer."""
+    """WHAT: an integer count field, checked under each of `keys` in
+    order. HOW: counts appear either as {"count": N} or as a bare integer,
+    both shapes handled. LINKED TO: user_from_node() below, for followers/
+    following/posts."""
     for k in keys:
         v = node.get(k) if isinstance(node, dict) else None
         if isinstance(v, dict) and isinstance(v.get("count"), int):
@@ -145,6 +208,14 @@ def _latest_post(node: dict) -> str:
 
 
 def user_from_node(node: dict) -> Optional[InstagramUser]:
+    """WHAT: one `InstagramUser` out of a raw payload node (a search
+    result, a profile object, or similar), or None if `node` doesn't even
+    have a username. HOW: reads every field this project cares about off
+    whichever of its several known key-name variants is present (Instagram
+    has shipped more than one shape for follower/following/post counts and
+    bio links over time). LINKED TO: the shared builder every parser below
+    (iter_search_users, iter_mobile_search_users, profile_from) calls once
+    it has located the right node in its own payload shape."""
     if not isinstance(node, dict):
         return None
     username = node.get("username")
@@ -174,6 +245,7 @@ def user_from_node(node: dict) -> Optional[InstagramUser]:
         category=category,
         external_url=external_url,
         has_highlight_reels=has_highlight_reels,
+        city_name=str(node.get("city_name") or "").strip(),
     )
 
 
@@ -206,6 +278,100 @@ def profile_from(blob: Any, username: str = "") -> Optional[InstagramUser]:
     return best
 
 
+def timeline_latest_post(blob: Any, username: str = "") -> str:
+    """Newest post date in a TIMELINE payload, as ISO. "" when there is none.
+
+    THE GAP THIS CLOSES
+        `_latest_post()` above is only ever reached from inside
+        `user_from_node()`, which is only reached for a node that already
+        looks like a full profile record (it must carry a follower/media
+        count or a biography -- see `profile_from`'s gate). A timeline
+        response carries none of those: its user objects are the slim
+        `edges[].node.user` shape. So on a real profile visit the post
+        timestamps were sitting in an intercepted response, fully parsed,
+        and then dropped on the floor because the payload holding them
+        could not pass a gate designed for a different payload.
+
+        Measured cost: the last-post date was blank on 93 of 310 stored
+        Instagram rows (30%). Confirmed live (2026-08-22): the
+        `graphql/query` response for a real profile carries 12 posts under
+        `data.xdt_api__v1__feed__user_timeline_graphql_connection.edges[]`,
+        and this function reads 2026-08-21 off the very payload the old
+        code discarded.
+
+    WHY IT IS SCOPED BY OWNER
+        That same response really does mention other accounts -- tagged
+        users, co-authors and suggestions (live capture: `gautam.adani`,
+        `pritiadani`, `cmo_keralam` alongside the profile's own
+        `adaniparivar`). None of them owned a `taken_at` node in that
+        capture, but nothing guarantees that, and attributing someone
+        else's post date to this profile would make a dormant impersonator
+        look active -- the exact failure mode the Twitter and Facebook
+        engines already scope against. So a node counts only when its own
+        `user.username` matches; the unscoped reading is kept solely as a
+        fallback for payloads that carry no owner at all, and never
+        overrides a scoped one.
+
+    WHY max() AND NOT THE FIRST EDGE
+        Instagram pins up to 3 posts to the top of a profile. Confirmed in
+        the same capture: `edges[0]` was a pinned post from 2025-12-25
+        while the account's real newest post (2026-08-21) sat further down.
+        Taking the maximum is what survives pinning -- the same conclusion
+        the grid-alt reader in analysis_engine.py reached independently.
+    """
+    want = (username or "").lower().strip("/")
+    scoped, unscoped = 0, 0
+    for d in iter_dicts(blob):
+        ts = d.get("taken_at") or d.get("taken_at_timestamp")
+        if not isinstance(ts, int) or not (1_000_000_000 < ts < 4_000_000_000):
+            continue
+        owner = ""
+        user = d.get("user")
+        if isinstance(user, dict):
+            owner = str(user.get("username") or "").lower()
+        if want and owner:
+            if owner == want:
+                scoped = max(scoped, ts)
+            continue
+        unscoped = max(unscoped, ts)
+    best = scoped or unscoped
+    if not best:
+        return ""
+    return datetime.fromtimestamp(best, timezone.utc).date().isoformat()
+
+
+# Instagram's "About this account" panel.
+#
+# Reached by clicking (Options -> About this account); it is NOT directly
+# fetchable. Confirmed live 2026-08-22: the panel is served by a POST to
+# `/async/wbloks/fetch/?appid=com.bloks.www.ig.about_this_account` carrying
+# ~1.8KB of session-derived tokens (__bkv, __hs, __rev, __s, __hsi, __dyn),
+# and `/api/v1/users/<pk>/about_this_account/` answers 404 while
+# `/api/v1/users/<pk>/info/` answers 200 but carries no country at all.
+# Letting the page issue the request is what keeps those tokens correct
+# without this file having to harvest or forge any of them.
+#
+# The response is a Bloks payload -- a serialised UI tree, not a data
+# document -- so the country is read from its own NAMED state key rather
+# than by position in the component list. The label/value Text components
+# ("Account based in", then "India") are adjacent siblings whose order is a
+# layout decision; the named key is the closest thing to a stable contract
+# the payload offers.
+ABOUT_PANEL_APPID = "com.bloks.www.ig.about_this_account"
+_RE_ABOUT_COUNTRY = re.compile(
+    r'"key"\s*:\s*"IG_ABOUT_THIS_ACCOUNT:about_this_account_country"'
+    r'\s*,\s*"mode"\s*:\s*"[^"]*"\s*,\s*"initial"\s*:\s*"([^"]*)"'
+)
+
+
+def about_country(body: str) -> str:
+    """The country Instagram says an account is based in, out of the Bloks
+    payload behind "About this account". "" when the payload does not carry
+    one (the key is genuinely absent for some accounts)."""
+    m = _RE_ABOUT_COUNTRY.search(body or "")
+    return (m.group(1).strip() if m else "")
+
+
 def iter_search_users(blob: Any) -> Iterator[InstagramUser]:
     """Users from a search payload, in result order."""
     seen: set[str] = set()
@@ -232,6 +398,13 @@ def iter_mobile_search_users(blob: Any) -> Iterator[InstagramUser]:
 
 
 def parse_lines(text: str) -> Iterator[Any]:
+    """WHAT: yields every JSON object found in `text`, tolerating both a
+    single JSON document and newline-delimited JSON. HOW: tries a whole-
+    text parse first (the common case for a plain API response), falls
+    back to per-line parsing for a streamed response. LINKED TO: every
+    caller in this file and analysis_engine.py that reads a raw HTTP/XHR
+    response body -- the same shape facebook/twitter/telegram's own
+    `parse_lines` functions provide for their platforms."""
     text = (text or "").strip()
     if not text:
         return
@@ -335,6 +508,14 @@ async def web_search_users(ctx, keyword: str, timeout_s: int = 45) -> list[Insta
 
 @dataclass
 class Sweep:
+    """One keyword's search sweep, and how it ended. LINKED TO: built and
+    returned by Discovery.sweep() below; the facebook/twitter/telegram/
+    tiktok/youtube discovery engines each define their own Sweep with the
+    same shape (hits, pages, stopped, complete, source, extraction) --
+    there is no shared base class, each platform's own completeness
+    signals and pagination model differ enough that a shared type would
+    be mostly unused fields."""
+
     keyword: str
     tab: str = "people"
     hits: list[Hit] = field(default_factory=list)
@@ -355,11 +536,48 @@ class Sweep:
 
 
 class Discovery:
+    """Runs keyword sweeps against Instagram's private mobile search API.
+
+    LINKED TO: `discovery_path` in backend/platforms/registry.py names
+    this class (loaded dynamically, by import path string), and
+    backend/services/discovery_service.py is the actual caller.
+    """
+
     def __init__(self, args, ctx):
+        """`args` is a DiscoveryOptions-shaped object (scan_options.py)
+        carrying pacing/cap knobs; `ctx` is the already-started Playwright
+        BrowserContext (stealth/browser.py::Session.start()) this class
+        issues raw API requests through via `ctx.request`."""
         self.a = args
         self.ctx = ctx
 
     async def sweep(self, keyword: str, tab: str = "people") -> Sweep:
+        """One keyword, start to finish -- the counterpart to
+        facebook/discovery_engine.py's Discovery.sweep(), but page-token
+        paginated over a direct API call instead of scroll-paginated over
+        a browser page (see this module's own top docstring for why: a
+        spoofed-UA request to Instagram's mobile search endpoint, not a
+        rendered page visit).
+
+        WHAT IT RETURNS: a `Sweep` carrying every hit found, which
+        completeness signal stopped it (exhausted / cap:pages / http-NNN /
+        error), and the extraction chain's own record of which API
+        answered (api:mobile-topsearch or the api:web-topsearch fallback).
+
+        HOW, roughly in order:
+          1. Page through MOBILE_SEARCH_API up to `max_pages` times (or
+             DEFAULT_MAX_PAGES), following `page_token`/`rank_token`,
+             absorbing new users into `by_name` until the API says
+             `has_more: false` with no next token, or the page budget
+             runs out (marked incomplete, not silently "done").
+          2. Run the extraction chain (mobile API result first, the web
+             client's own search endpoint as fallback -- see
+             `run_strategies` in shared/extraction.py) to decide the
+             final user list and record which one actually produced it.
+          3. Build `Hit`s from the winning user list.
+
+        LINKED TO: called by `run()` below (one call per keyword).
+        """
         out = Sweep(keyword=keyword, tab=tab)
         started = time.time()
         by_name: dict[str, InstagramUser] = {}
@@ -478,6 +696,12 @@ class Discovery:
         return out
 
     async def run(self, keywords: list[str], tabs=None) -> list[Sweep]:
+        """Every keyword, `self.a.concurrency` at a time, each staggered
+        by a couple seconds (see the sleep just below) to avoid firing a
+        burst of near-simultaneous search requests off one session --
+        `tabs` is accepted and ignored, Instagram search has no tab
+        concept the way Facebook's People/Pages/Groups does. LINKED TO:
+        called by discovery_service.py once per client's keyword batch."""
         sem = asyncio.Semaphore(max(1, self.a.concurrency))
 
         async def one(i: int, keyword: str) -> tuple[int, Sweep]:

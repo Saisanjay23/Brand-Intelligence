@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     # an un-evidenced finding is not much use downstream; set false to trade
     # the proof for speed.
     capture_evidence: bool = True
+    # Auto-delete evidence screenshots older than N days from Mongo GridFS
+    # (evidence.files and evidence.chunks) to prevent unlimited storage growth.
+    evidence_retention_days: int = 7
 
     # alerts
     smtp_host: str = ""

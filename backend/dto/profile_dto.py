@@ -50,6 +50,14 @@ class BulkPatchRequest(BaseModel):
     username_match: Optional[bool] = None
 
 
+class BulkStopRetryRequest(BaseModel):
+    """The retry queue screen's "Stop all shown/selected" action. See
+    profile_service.bulk_stop_retry -- a bad id in the batch is reported
+    back in `failed`, never raised, same "one bad row never sinks the
+    batch" spirit as BulkPatchRequest/BulkDeleteRequest below."""
+    profile_ids: list[str]
+
+
 class BulkDeleteRequest(BaseModel):
     """Hard-deletes the named profile records, irreversible, unlike a
     status patch (reject/archive). See profile_service.delete_profiles."""

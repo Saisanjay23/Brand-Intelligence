@@ -26,6 +26,7 @@ only to where the bytes physically live.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from motor.motor_asyncio import AsyncIOMotorGridFSBucket
@@ -132,3 +133,57 @@ async def delete_many(keys: list[str]) -> int:
         await delete(key)
         n += 1
     return n
+
+
+async def delete_older_than(days: int = 7) -> int:
+    """Delete evidence screenshots older than `days` days from GridFS.
+
+    Deleting through `bucket.delete()` deletes the file record in
+    `evidence.files` AND all its corresponding chunk documents in
+    `evidence.chunks`.
+    """
+    if days <= 0:
+        return 0
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    bucket = _bucket_for()
+    n = 0
+    try:
+        async for f in bucket.find({"uploadDate": {"$lt": cutoff}}):
+            try:
+                await bucket.delete(f._id)
+                n += 1
+            except Exception as e:
+                log.warning(f"failed to delete expired evidence file {f._id}: {e}")
+    except Exception as e:
+        log.error(f"error querying expired evidence files: {e}")
+    if n > 0:
+        log.info(f"retention: pruned {n} evidence screenshot(s) older than {days} days")
+    return n
+
+
+async def cleanup_orphaned_chunks() -> int:
+    """Find and delete any binary chunks in `evidence.chunks` that have no
+    parent metadata record in `evidence.files`.
+
+    This purges dangling chunks left behind by interrupted or legacy deletions.
+    """
+    database = db()
+    files_coll = database["evidence.files"]
+    chunks_coll = database["evidence.chunks"]
+
+    try:
+        file_count = await files_coll.count_documents({})
+        if file_count == 0:
+            res = await chunks_coll.delete_many({})
+            deleted = res.deleted_count
+        else:
+            file_ids = await files_coll.distinct("_id")
+            res = await chunks_coll.delete_many({"files_id": {"$nin": file_ids}})
+            deleted = res.deleted_count
+        if deleted > 0:
+            log.info(f"cleanup: purged {deleted} orphaned evidence chunk(s)")
+        return deleted
+    except Exception as e:
+        log.error(f"error cleaning up orphaned chunks: {e}")
+        return 0
+

@@ -260,7 +260,14 @@ async def coverage(client_id: str, platform: Optional[str] = None) -> dict:
             {
                 "id": b["id"], "url": b.get("url", ""), "platform": b.get("platform", ""),
                 "profile_name": b.get("display_name", ""),
-                "reason": b.get("analysis_status", ""), "attempts": b.get("analysis_attempts", 0),
+                # `stuck_analysis` sets "reason" itself for a row that is
+                # here because an analyst manually stopped it, which is a
+                # more honest answer than its (possibly perfectly fine)
+                # analysis_status -- see that function's own comment.
+                # `.get("reason")` falls back to analysis_status for every
+                # other row, which is the original, still-correct behavior.
+                "reason": b.get("reason") or b.get("analysis_status", ""),
+                "attempts": b.get("analysis_attempts", 0),
                 "detail": b.get("comments", ""),
             }
             for b in blocked
@@ -274,6 +281,122 @@ async def get_profile(profile_id: str) -> dict:
         raise NotFoundError(f"profile {profile_id!r} not found")
     client = await clients_db.try_get(doc.get("client_id", ""))
     return _to_full(doc, client)
+
+
+def _retry_state(doc: dict) -> str:
+    """One row's own fields -> "eligible" | "exhausted" | "stopped".
+
+    Mirrors, in order, exactly the conditions `profile_repository.urls_for`
+    and `stuck_analysis` already query by -- this function does not decide
+    policy, it just narrates the same policy for a human reading the retry
+    queue screen. Order matters: an analyst who stopped a profile that had
+    ALSO already hit the attempt cap should see "you stopped this", not
+    "this ran out of attempts", since the first is the one they can act on
+    (Resume) and is the more recent, more specific fact.
+    """
+    if doc.get("retry_disabled"):
+        return "stopped"
+    if doc.get("analysis_attempts", 0) >= profiles_db.MAX_ANALYSIS_ATTEMPTS:
+        return "exhausted"
+    return "eligible"
+
+
+def _retry_reason(doc: dict) -> str:
+    """One line: WHY this row is in the queue at all, for the column an
+    analyst actually reads first. Two different shapes of "incomplete" get
+    different wording on purpose (see profile_repository.urls_for's own
+    docstring on the same distinction): a RETRYABLE analysis_status means
+    the profile was never actually reached (session/network problem, not a
+    data problem); analysis_complete=False means it WAS reached and read,
+    just short of a field the platform genuinely publishes.
+    """
+    status = doc.get("analysis_status", "")
+    if status in profiles_db.RETRYABLE_ANALYSIS_STATUSES:
+        return f"never reached ({status})"
+    missed = [
+        field for field, verdict in (doc.get("field_status") or {}).items()
+        if verdict == profiles_db._ACTIONABLE_FIELD_VERDICT
+    ]
+    if missed:
+        return f"missing: {', '.join(missed)}"
+    return status or "incomplete"
+
+
+def _to_retry_row(doc: dict, client: Optional[dict]) -> dict:
+    """A retry-queue row: the same full analysis shape (`_to_full`) an
+    analyst already reads on every other profile screen, plus the three
+    fields specific to this queue. Deliberately NOT a separate shape --
+    reusing `_to_full` means a click-through from the retry queue to the
+    normal profile card is showing the exact same object, not a second,
+    slightly different one to keep in sync.
+    """
+    full = _to_full(doc, client)
+    full["retry_state"] = _retry_state(doc)
+    full["retry_reason"] = _retry_reason(doc)
+    full["retry_disabled"] = bool(doc.get("retry_disabled", False))
+    return full
+
+
+async def retry_queue(client_id: str, platform: Optional[str] = None) -> dict:
+    """Every approved profile analysis has not finished with -- everything
+    `stuck_analysis` already calls "blocked" PLUS the rows that are not
+    blocked yet but will be revisited on the next catch-up sweep or
+    round-robin pass, one list instead of two partial ones. See
+    profile_repository.retry_queue_profiles for the query and
+    _to_retry_row for how each row is classified.
+    """
+    client = await clients_db.try_get(client_id)
+    docs = await profiles_db.retry_queue_profiles(client_id, platform)
+    items = [_to_retry_row(d, client) for d in docs]
+    counts = {"eligible": 0, "exhausted": 0, "stopped": 0}
+    for item in items:
+        counts[item["retry_state"]] += 1
+    return {"items": items, "total": len(items), "counts": counts}
+
+
+async def stop_retry(profile_id: str) -> dict:
+    """Turn OFF automatic retry for one profile. The next Resume (or a
+    fresh manual re-analysis via the existing "selected profiles" action)
+    is the only thing that can bring it back -- catch-up sweeps and the
+    round-robin engine will both skip it from the moment this returns
+    (profile_repository.urls_for enforces this, not this function; this
+    only ever sets the one flag that query reads)."""
+    doc = await profiles_db.set_retry_state(profile_id, disabled=True)
+    if doc is None:
+        raise NotFoundError(f"profile {profile_id!r} not found")
+    client = await clients_db.try_get(doc.get("client_id", ""))
+    return _to_retry_row(doc, client)
+
+
+async def resume_retry(profile_id: str) -> dict:
+    """Turn retry back ON, and reset the attempt counter. Resetting matters:
+    a profile stopped after it had already hit MAX_ANALYSIS_ATTEMPTS would
+    otherwise clear `retry_disabled` and immediately fail the SAME attempts
+    <MAX condition it always had -- Resume would look like it did nothing.
+    Mirrors the reset every normal successful read already does
+    (profile_repository.save's own "a real reading resets the failure
+    counter" comment)."""
+    doc = await profiles_db.set_retry_state(profile_id, disabled=False, reset_attempts=True)
+    if doc is None:
+        raise NotFoundError(f"profile {profile_id!r} not found")
+    client = await clients_db.try_get(doc.get("client_id", ""))
+    return _to_retry_row(doc, client)
+
+
+async def bulk_stop_retry(profile_ids: list[str]) -> dict:
+    """The retry queue screen's "Stop all shown" action -- one call per id
+    rather than a dedicated bulk-update query, matching bulk_patch_profiles'
+    own "one bad id never sinks the batch" behavior below: a stale or
+    foreign id fails on its own and is reported back, not raised."""
+    succeeded: list[str] = []
+    failed: list[str] = []
+    for pid in profile_ids:
+        try:
+            await profiles_db.set_retry_state(pid, disabled=True)
+            succeeded.append(pid)
+        except Exception:
+            failed.append(pid)
+    return {"succeeded": succeeded, "failed": failed}
 
 
 # host -> platform id, for auto-detecting which scraper a hand-typed URL

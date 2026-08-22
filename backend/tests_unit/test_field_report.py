@@ -60,12 +60,26 @@ class TestLastPostVerdict:
 
 class TestLocationVerdict:
     def test_platform_that_never_reads_location_reports_not_collected(self):
-        """Instagram/TikTok/Telegram engines have no location reader at all
-        (verified by reading them), so 309/309 blank instagram locations are
-        not 309 misses -- nothing ever attempted to fill them."""
+        """TikTok/Telegram engines have no location reader at all (verified
+        by reading them), so their blank locations are not misses --
+        nothing ever attempted to fill them.
+
+        Instagram used to belong here and no longer does: its analysis
+        engine now reads `city_name` off the same `data.user` payload it
+        reads followers and biography from, so a blank Instagram location
+        means the account holder did not set one, exactly as on Facebook
+        and Twitter. See the test right below."""
         row = _row(profile_name="x", followers=1, posts_seen="no")
-        for platform in ("instagram", "tiktok", "telegram"):
+        for platform in ("tiktok", "telegram"):
             assert field_report(platform, row, want_screenshot=False)["location"] == "not-collected"
+
+    def test_instagram_now_reads_location_so_blank_is_absent_not_uncollected(self):
+        """Guards the wiring, not just the constant: Instagram reporting
+        "not-collected" again would mean the city_name reader was lost."""
+        row = _row(profile_name="x", followers=1, posts_seen="no")
+        assert field_report("instagram", row, want_screenshot=False)["location"] == "none-exist"
+        row_with = _row(profile_name="x", followers=1, posts_seen="no", location="Ahmedabad")
+        assert field_report("instagram", row_with, want_screenshot=False)["location"] == "read"
 
     def test_supported_platform_reads_it_when_present(self):
         row = _row(profile_name="x", followers=1, posts_seen="no", location="Ahmedabad, India")

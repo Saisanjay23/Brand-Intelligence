@@ -86,6 +86,8 @@
   --bg-elevated-grad: linear-gradient(45deg, var(--background-color-dark, #101828), #293546);
   --bg-light: #ffffff;
   --bg-nav-active: #475467;
+  --bg-glass: rgba(16, 24, 40, 0.85);
+  --bg-glass-75: rgba(16, 24, 40, 0.75);
 
   /* ---- Text Tokens ---- */
   --text-primary: #FFFFFF;
@@ -142,6 +144,65 @@
   --font-sans:
     "Poppins", "Nunito", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     sans-serif;
+}
+
+[data-theme="light"] {
+  /* ---- Application Theme Aliases for Light Mode ---- */
+  --bg-outermost: var(--background-color-light, #ffffff);
+  --bg-app: var(--background-color-light, #ffffff);
+  --bg-deep: var(--background-color-light, #ffffff);
+  --bg-main: var(--background-color-light, #ffffff);
+  --bg-surface: #f9fafb;
+  --bg-card: #ffffff;
+  --bg-inner: #ffffff;
+  --bg-elevated: #ffffff;
+  --bg-surface-alt: #f0f2f5;
+  --bg-surface-3: #f2f4f7;
+  --bg-hover: #f2f4f7;
+  --bg-avatar: #e4e7ec;
+  --bg-elevated-grad: #ffffff;
+  --bg-light: #ffffff;
+  --bg-nav-active: #eaecf0;
+  --bg-glass: rgba(255, 255, 255, 0.85);
+  --bg-glass-75: rgba(255, 255, 255, 0.75);
+
+  /* ---- Text Tokens ---- */
+  --text-primary: var(--primary-text-color-light, #1f2328);
+  --text-body: var(--primary-text-color-light, #1f2328);
+  --text-main: var(--primary-text-color-light, #1f2328);
+  --text-secondary: var(--secondary-text-color-light, #656d76);
+  --text-tertiary: #475467;
+  --text-muted: #667085;
+  --text-dim: #98a2b3;
+  --text-inverse: #ffffff;
+
+  /* ---- Brand / Accent Tokens ---- */
+  --cyan: var(--primary-color, #8838dd);
+  --cyan-bright: var(--ext-link-color, #9a50e9);
+  --cyan-glow: rgba(136, 56, 221, 0.15);
+  --purple: var(--active-badge-background-color, #7727cd);
+  --purple-glow: rgba(119, 39, 205, 0.15);
+  --primary: var(--primary-color, #8838dd);
+  --primary-badge: var(--active-badge-background-color, #7727cd);
+  --primary-link: var(--ext-link-color, #9a50e9);
+  --primary-tint: rgba(154, 80, 233, 0.15);
+  --primary-bg-soft: #f9f5ff;
+
+  /* ---- Border Tokens ---- */
+  --border-subtle: rgba(0, 0, 0, 0.08);
+  --border-color: var(--outer-border-color-light, #c4c4c4);
+  --border-card: var(--outer-border-color-light, #c4c4c4);
+  --border-glow: rgba(136, 56, 221, 0.15);
+  --border-strong: #98a2b3;
+  --border-table: var(--table-border-color-light, #cccccc);
+  --border-grey: #d0d5dd;
+  --border-separator: #eaecf0;
+  --surface: #f9fafb;
+
+  /* ---- Status / Severity Tokens ---- */
+  --badge-neutral: rgba(102, 112, 133, 0.15);
+  --badge-inactive: #e4e7ec;
+  --scrollbar-thumb: #d0d5dd;
 }
 
 * {
@@ -268,7 +329,7 @@ a:hover {
   align-items: center;
   justify-content: space-between;
   padding: 12px 28px;
-  background: rgba(16, 24, 40, 0.85);
+  background: var(--bg-glass, rgba(16, 24, 40, 0.85));
   backdrop-filter: blur(20px);
   border-bottom: 1px solid var(--border-subtle);
   min-height: 62px;
@@ -2164,7 +2225,7 @@ a:hover {
   border-radius: 999px;
   font-size: var(--sub-label-font-size);
   font-weight: var(--bolder-font-weight);
-  background: rgba(16, 24, 40, 0.85);
+  background: var(--bg-glass, rgba(16, 24, 40, 0.85));
   backdrop-filter: blur(4px);
   border: 1px solid var(--border-subtle);
 }
@@ -2597,10 +2658,10 @@ a:hover {
 /* Glassmorphism for Core Table Headers */
 .core_table th,
 .cyber-table th {
-  background: rgba(16, 24, 40, 0.75) !important;
+  background: var(--bg-glass-75, rgba(16, 24, 40, 0.75)) !important;
   backdrop-filter: blur(12px) !important;
   -webkit-backdrop-filter: blur(12px) !important;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border-bottom: 1px solid var(--border-subtle) !important;
   position: sticky;
   top: 0;
   z-index: 10;
@@ -2829,7 +2890,7 @@ div[role="dialog"] > div {
 
 .action-dropdown-item:hover {
   background: var(--bg-hover, rgba(255, 255, 255, 0.08));
-  color: #fff;
+  color: var(--text-main);
 }
 
 .action-dropdown-item:active {
@@ -2908,7 +2969,7 @@ div[role="dialog"] > div {
   font-family: inherit;
 }
 .toast-action-link:hover {
-  color: #fff;
+  color: var(--text-main);
 }
 
 /* ── Manual URL input sliding tabs ───────────────────────────────────── */
@@ -3060,7 +3121,7 @@ tr:hover .row-quick-actions {
 }
 .floating-shortcuts-btn:hover {
   border-color: var(--cyan, #00E5FF);
-  color: #fff;
+  color: var(--text-main);
   transform: translateY(-2px);
   box-shadow: 0 6px 20px rgba(0, 229, 255, 0.25);
 }
@@ -3152,7 +3213,7 @@ tr:hover .row-quick-actions {
 }
 .job-log-action-btn:hover {
   background: var(--bg-hover, rgba(255, 255, 255, 0.08));
-  color: #fff;
+  color: var(--text-main);
   border-color: var(--border-color);
 }
 .job-log-action-btn.active {

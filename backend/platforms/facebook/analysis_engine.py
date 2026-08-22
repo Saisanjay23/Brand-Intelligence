@@ -37,6 +37,11 @@ from backend.platforms.facebook.discovery_engine import (RE_CHECKPOINT,
 
 MAX_FOLLOWERS = 5_000_000_000
 
+# Set on a profile Facebook publishes no audience count for at all. Matched
+# by shared/completeness.py to tell that apart from a failed read; keep the
+# two in step (completeness.py::_NO_AUDIENCE_MARKERS).
+NO_AUDIENCE_NOTE = "profile publishes no audience count"
+
 K_FOLLOWERS = (
     "follower_count",
     "followers_count",
@@ -280,9 +285,15 @@ class Harvest:
         return out
 
     def all_html(self) -> str:
+        """Every visited tab's raw page HTML, concatenated -- used where a
+        regex needs to scan markup (entity-type sniffing via `__typename`
+        in Scraper.process())."""
         return "\n".join(self.html.values())
 
     def all_text(self) -> str:
+        """Every visited tab's rendered inner-text, concatenated -- used
+        where a regex needs to scan visible copy (read_location()'s
+        "Lives in"/"From" tier, RE_NO_POSTS in read_last_post())."""
         return "\n".join(self.text.values())
 
 
@@ -299,6 +310,13 @@ class Harvest:
 
 
 def read_name(row: Row, h: Harvest) -> None:
+    """WHAT: the profile's display name, into `row.profile_name`, plus
+    the resulting name_score against `row.target`. HOW: tries five
+    sources in trust order (graphql entity -> DOM header -> DOM post-author
+    label -> og:title -> <title> tag -> loose unscoped graphql), taking
+    the first non-generic hit; see the inline comments below for why each
+    one is or isn't trusted. LINKED TO: called from read_profile() below,
+    which Scraper.process() calls once the visit has landed."""
     # the entity's own "name" is the full display name; "short_name" is the
     # first name only and would fall under NAME_THRESHOLD, so never use it.
     # og:title is absent on logged-in renders and <title> is "(2) Facebook".
@@ -442,6 +460,29 @@ def read_counts(row: Row, h: Harvest) -> None:
                 row.note(f"followers rounded ({m.group(1).strip()})")
             return
     followers_from_friends(row, chips)
+    if row.followers is None and row.friends is None and h.ents:
+        # Every tier above came up empty on a profile we DID successfully
+        # read (`h.ents` is non-empty: the entity resolved, and the name,
+        # avatar and post dates all came out of its payload). That
+        # combination is not a parser failure -- it is Facebook declining
+        # to publish an audience number for this profile at all.
+        #
+        # Confirmed live (2026-08-22) on the real stored rows that showed
+        # this: a brand-new locked-down personal profile renders its name,
+        # "Add friend", and its tab bar, and NO count anywhere -- not on the
+        # timeline, not on /friends, not on /about, not on
+        # /about_profile_transparency (those tabs return 155-299 characters
+        # of text in total), and no rendered chip anywhere in the GraphQL
+        # payload either. There is nothing further to fetch.
+        #
+        # Saying so matters because silence here is not free:
+        # shared/completeness.py counts a blank audience number as a MISS,
+        # which re-queues the profile on every sweep forever and reports it
+        # to the analyst as real data loss. This note is what lets it be
+        # read as the honest answer it is -- the same job
+        # `posts_seen == "no"` already does for a profile with no posts.
+        row.note(NO_AUDIENCE_NOTE)
+        row.mark("followers", "not-published")
 
 
 def _post_stamps(roots) -> list[int]:
@@ -554,6 +595,16 @@ def read_last_post(row: Row, h: Harvest) -> None:
 # confirmed to capture Reel timestamps correctly (it reads structured data,
 # not the rendered page), this DOM path only ever fires when that has
 # already returned nothing.
+#
+# The same selector doubles as the evidence screenshot's "a real post is on
+# screen" anchor (see Scraper.screenshot). Defined once here rather than
+# written out twice: it is the platform's own live-verified hook for a post
+# permalink, and the two uses want exactly the same thing.
+POST_LINK_SELECTOR = (
+    'a[href*="/posts/"], a[href*="story_fbid"], a[href*="/videos/"], '
+    'a[href*="/reel/"], a[href*="permalink"]'
+)
+
 JS_POST_TIMES = """
 () => {
   const out = [];
@@ -614,6 +665,15 @@ async def dom_last_post(page) -> str:
 
 
 def read_location(row: Row, h: Harvest) -> None:
+    """WHAT: the profile's stated city/hometown, into `row.location`. HOW:
+    three tiers -- the entity's own scoped location fields (K_LOCATION)
+    first, then a "Lives in"/"From" text-regex scan of the rendered About
+    tab, then the unscoped graphql fallback -- each candidate validated by
+    `shared/text.py::is_place` before being accepted, so marketing copy
+    that happens to start with "From" (see RE_FROM's own comment for the
+    live false-positive this guards) never becomes a fabricated location.
+    LINKED TO: called from Scraper.process() after the About-tab visit,
+    not from read_profile() -- location is not on the main timeline."""
     for v in h.ent_strs(K_LOCATION):
         if is_place(v):
             row.location = v.strip()
@@ -630,6 +690,13 @@ def read_location(row: Row, h: Harvest) -> None:
 
 
 def read_pic(row: Row, h: Harvest) -> None:
+    """WHAT: the profile picture, into `row.profile_pic_url` +
+    `row.has_custom_pic`. HOW: four tiers in trust order -- the entity's
+    own scoped picture-uri paths, the DOM header avatar, the page's
+    og:image meta tag, the unscoped graphql fallback -- upgraded to full
+    resolution via hd_picture_url() and checked against RE_DEFAULT_PIC to
+    tell a real upload from Facebook's own silhouette placeholder. LINKED
+    TO: called from read_profile() below."""
     # the entity's own picture, else the header avatar, not whichever
     # fbcdn URL happened to appear first in the pile
     url = h.ent_path(
@@ -663,6 +730,11 @@ def read_pic(row: Row, h: Harvest) -> None:
 
 
 def read_verified(row: Row, h: Harvest) -> None:
+    """WHAT: the real, platform-issued verification badge, into
+    `row.verified`. HOW: reads the DOM header's own detection of
+    `svg[title="Verified account"]` (see Scraper.JS_HEADER) -- there is
+    no GraphQL field for this that has been found reliable, so DOM is the
+    only tier. LINKED TO: called from read_profile() below."""
     # only ever set True on an actual detection, never write False, since
     # a scroll/settle timing miss on one visit must not erase a badge this
     # or an earlier visit already confirmed (see Row.verified's docstring).
@@ -689,7 +761,14 @@ def read_profile(row: Row, h: Harvest) -> None:
 
 
 class Scraper:
-    """One logged-in browser session, driven over a list of profiles."""
+    """One logged-in browser session, driven over a list of profiles.
+
+    LINKED TO: `analysis_path` in backend/platforms/registry.py names this
+    class (loaded dynamically, by import path string -- see that module's
+    docstring for why not a direct import), and backend/services/
+    analysis_service.py is the actual caller: one Scraper per analysis run,
+    driven via `run()`/`run_parallel()` or `one()` for a single profile.
+    """
 
     # callers normalise URLs without knowing which platform they are holding
     normalize_url = staticmethod(normalize_url)
@@ -701,6 +780,13 @@ class Scraper:
         session_id: str = "",
         proxy: Optional[dict] = None,
     ):
+        """WHAT: binds this Scraper to one FacebookSession (a fresh
+        browser context) built from `cookies`. HOW: `args` is a
+        ScanOptions-shaped object (backend/platforms/scan_options.py)
+        carrying pacing knobs and the evidence GridFS prefix; images are
+        allowed to load only when evidence capture is on, since a
+        screenshot with every image blocked is useless as impersonation
+        proof."""
         self.a = args
         self.evidence = args.evidence or None  # GridFS key prefix, not a path
         # evidence screenshots need images, so the session must not block them
@@ -716,18 +802,27 @@ class Scraper:
 
     @property
     def ctx(self):
+        """The live Playwright BrowserContext, once `start()` has run."""
         return self.session.ctx
 
     async def start(self):
+        """Launches the browser context (delegates to FacebookSession/
+        stealth/browser.py::Session.start())."""
         await self.session.start()
 
     async def stop(self):
+        """Closes the browser context and its Playwright driver."""
         await self.session.stop()
 
     async def pause(self, mult=1.0):
+        """Between-profile pacing (jittered, fatigue-aware) -- see
+        stealth/human.py. `mult` scales the base delay for a slower or
+        faster step than usual."""
         await self.session.pause(mult)
 
     async def check_session(self) -> bool:
+        """Is this cookie set still logged in and unchallenged? Delegates
+        to FacebookSession.check_session() above."""
         return await self.session.check_session()
 
     # ─────────────────────────── page scripts ─────────────────────────── #
@@ -810,6 +905,16 @@ class Scraper:
     async def visit(
         self, page, url, h: Harvest, tag, scrolls=0, needle: Optional[str] = None
     ) -> bool:
+        """WHAT: navigates `page` to `url`, waits for data readiness, and
+        stores the resulting HTML/text/embedded-JSON into `h` under `tag`
+        (a Harvest visit-tab key, e.g. "main"/"about"). Returns whether
+        the page produced any HTML at all. HOW: if `needle` (a numeric
+        entity id) is given, polls JS_READY for that id's own payload to
+        land before reading anything, capped at `self.a.settle` seconds;
+        otherwise a flat short wait. Scrolls `scrolls` times afterward if
+        asked (the main timeline visit only). LINKED TO: called from
+        process() below for every tab a profile visit touches (main,
+        about, about_profile_transparency)."""
         try:
             await page.goto(
                 url, wait_until="domcontentloaded", timeout=self.a.timeout * 1000
@@ -848,6 +953,12 @@ class Scraper:
         return bool(h.html[tag])
 
     async def read_dom(self, page, h: Harvest, scrolled: bool = False) -> None:
+        """WHAT: runs JS_HEADER against `page` and stores the result on
+        `h.dom` (name, follower-chip text, avatar, verified badge, the
+        pbIds used to resolve a vanity URL's numeric id -- see
+        Scraper.owner_id). HOW: if the page has been scrolled, scrolls
+        back to the top first, since the profile intro block can unmount
+        off-screen. LINKED TO: called once per visit from process()."""
         try:
             if scrolled:
                 # scrolling can unmount the intro block, go back up first
@@ -872,7 +983,12 @@ class Scraper:
             # the screen is still a bare loading splash, since it reads
             # embedded JSON, never the rendered page. See
             # Session.wait_for_visible_content for why this is separate.
-            await self.session.wait_for_visible_content(page)
+            # A post permalink is Facebook's "the feed has painted" signal.
+            # Without it this returned in 0.07s -- the character floor is
+            # met by the page's own chrome, so it was never waiting for
+            # anything, and the capture showed a header above an empty feed.
+            await self.session.wait_for_visible_content(
+                page, content_selector=POST_LINK_SELECTOR)
             data = await page.screenshot(full_page=False)
             from backend.database.repositories import evidence_repository
             await evidence_repository.save(key, data)
@@ -989,6 +1105,36 @@ class Scraper:
     # ───────────────────────────── per URL ────────────────────────────── #
 
     async def process(self, raw_url: str, target: str, feed: str) -> Row:
+        """One profile URL, start to finish -- the whole engine's core
+        loop, the counterpart to discovery_engine.py's Discovery.sweep().
+
+        WHAT IT RETURNS: a scored `Row` (shared/models/row.py), status OK/
+        PARTIAL/GONE/ERROR/CHECKPOINT/LOGIN_REQUIRED, every field this
+        engine reads tagged with `row.mark()` so its provenance survives
+        into the stored document (see shared/completeness.py::field_report,
+        which reads those tags).
+
+        HOW, roughly in order:
+          1. Visit the main timeline (`visit()`), bail out to ERROR/
+             CHECKPOINT/LOGIN_REQUIRED/GONE if the session or the profile
+             itself blocks it (`blocked_status()`).
+          2. Read the DOM header (`read_dom()`), resolve a vanity URL to
+             its numeric id (`resolve_id()`), and scope the Harvest to
+             that id (`h.scoped()`).
+          3. Sniff entity_type (group/page/profile) from the URL shape and
+             payload `__typename`.
+          4. Run every field reader (`read_profile()` -> read_name/
+             read_counts/read_last_post/read_pic/read_verified), then
+             capture the evidence screenshot.
+          5. Fall back to the DOM aria-label last-post date
+             (`dom_last_post()`) if the payload carried none.
+          6. Visit the About and About-transparency tabs for `read_location`,
+             the one field the timeline itself rarely carries.
+
+        LINKED TO: called by `one()` below (which turns an exception into
+        an ERROR row instead of crashing the whole batch), which `run()`/
+        `run_parallel()` call once per URL in a job.
+        """
         url = normalize_url(raw_url)
         row = Row(url=url, target=target, original_feed=feed)
         row.profile_id = profile_id(url)

@@ -2,7 +2,7 @@
 // A client's org id/name/domain/keyword config is curated up front here,
 // discovery no longer upserts a client as a side effect (see discoveryApi.ts).
 import { json, post, url } from "./httpClient";
-import type { Client } from "./types";
+import type { Client, KeywordGroup } from "./types";
 
 export const clientsApi = {
   listClients: () => fetch(url("/clients")).then(json<{ items: Client[] }>),
@@ -30,12 +30,20 @@ export const clientsApi = {
     // { facebook: { people: { individual: 5, domain: 20 }, ... } }
     platform_tab_limits?: Record<string, Record<string, Record<string, number>>>;
     cron?: string | null;
+    // { individual: KeywordGroup[], domain: KeywordGroup[] } -- parents
+    // (what results are matched/filed against) and their children (what is
+    // actually searched). AUTHORITATIVE when sent: the server re-derives
+    // name_keywords/domain_keywords from these parents, so the two can
+    // never be saved in a state where they disagree. See types.ts's
+    // KeywordGroup and backend/shared/keywords.py.
+    keyword_groups?: Record<string, KeywordGroup[]>;
   }) =>
     post("/clients", {
       domain: "",
 
       name_keywords: [],
       domain_keywords: [],
+      keyword_groups: {},
       asset_name_individual_keywords: [],
       asset_name_domain_keywords: [],
       platform_limits_individual: {},

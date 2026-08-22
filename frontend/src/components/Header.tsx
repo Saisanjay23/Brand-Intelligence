@@ -8,6 +8,8 @@ import {
   AdminNavIcon,
   BellAlertIcon,
   SearchIcon,
+  SunIcon,
+  MoonIcon,
 } from "./AppIcons";
 
 export type ViewPage = "home" | "results" | "admin";
@@ -25,6 +27,8 @@ interface Props {
   readySessionsCount: number;
   platformCount: number;
   liveResultsCount?: number;
+  theme: "light" | "dark";
+  onThemeToggle: () => void;
 }
 
 export function Header({
@@ -40,6 +44,8 @@ export function Header({
   readySessionsCount,
   platformCount,
   liveResultsCount = 0,
+  theme,
+  onThemeToggle,
 }: Props) {
   const [openDropdown, setOpenDropdown] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -92,6 +98,14 @@ export function Header({
       </div>
 
       <div className="header-right-actions">
+        <div
+          className="bell-btn"
+          onClick={onThemeToggle}
+          title={`Switch to ${theme === "dark" ? "Light" : "Dark"} Mode`}
+        >
+          {theme === "dark" ? <SunIcon size={16} /> : <MoonIcon size={16} />}
+        </div>
+
         <div
           className="bell-btn"
           onClick={() => onPage("admin")}

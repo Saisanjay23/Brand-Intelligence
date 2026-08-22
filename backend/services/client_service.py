@@ -25,11 +25,17 @@ async def upsert(
     platform_limits_domain: Optional[dict[str, int]] = None,
     platform_tab_limits: Optional[dict[str, dict[str, object]]] = None,
     cron: Optional[str] = None,
+    # Parent/child keyword groups. When supplied this is AUTHORITATIVE and
+    # the flat name_keywords/domain_keywords above are re-derived from its
+    # parents (see client_repository.upsert), so a caller cannot save the
+    # two in a state where they disagree.
+    keyword_groups: Optional[dict] = None,
 ) -> dict:
     return await clients_db.upsert(
         client_id, name, domain, name_keywords, domain_keywords,
         platform_limits_individual, platform_limits_domain, platform_tab_limits, cron,
         asset_name_individual_keywords, asset_name_domain_keywords,
+        keyword_groups,
     )
 
 

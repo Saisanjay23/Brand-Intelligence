@@ -538,7 +538,7 @@ async def save_cookies(platform_id: str, blob: str, identifier: str = "") -> dic
     try:
         await sessions_db.add_item(platform_id, cookies, identifier)
     except ValueError as e:
-        raise ConflictError(str(e))
+        raise ConflictError(str(e)) from e
     return await status(platform_id)
 
 
@@ -570,7 +570,7 @@ async def save_credentials(
         )
         await sessions_db.update_item(platform_id, item["id"], status="running_login")
     except ValueError as e:
-        raise ConflictError(str(e))
+        raise ConflictError(str(e)) from e
 
     async def _do_login():
         try:
@@ -626,7 +626,7 @@ async def save_api_key(platform_id: str, key: str, identifier: str = "") -> dict
     try:
         await sessions_db.save_api_key_session(platform_id, key, identifier=identifier or "YouTube API Key")
     except ValueError as e:
-        raise ConflictError(str(e))
+        raise ConflictError(str(e)) from e
     log.info(f"{platform_id}: API key saved ({identifier or 'YouTube API Key'})")
     return await status(platform_id)
 
@@ -929,7 +929,7 @@ async def _verify_credential_item(platform_id: str, item: dict) -> tuple[bool, s
 async def _record_item_result(
     platform_id: str, session_id: str, identifier: str, ok: bool, detail: str, conclusive: bool = True,
 ) -> None:
-    previous = await sessions_db.record_item_health(platform_id, session_id, identifier, ok, detail)
+    await sessions_db.record_item_health(platform_id, session_id, identifier, ok, detail)
     if not conclusive:
         # the check itself failed to run (network/transport error), leave
         # the session's actual status untouched, it may well still be fine
@@ -941,14 +941,27 @@ async def _record_item_result(
         # clear any quarantine and reset the consecutive-failure ladder
         await mark_session_ok(platform_id, session_id)
         return
-    was_ok = previous is None or previous.get("ok", True)
-    if was_ok and not ok:
-        # mark_session_failed itself raises the SessionInvalid incident
-        # (naming this exact session) the first time it goes dead, one
-        # notification path shared with every live-job failure, not a
-        # second one duplicated here.
-        await mark_session_failed(platform_id, session_id, "expired", detail=detail)
-        log.warning(f"{platform_id}/{identifier}: session went bad -- {detail}")
+    # BUG FIXED 2026-08-22: this used to be gated on `was_ok` (was the
+    # PREVIOUSLY recorded health check a pass), so only the very FIRST
+    # failing check in a session's life ever reached mark_session_failed.
+    # Every later 30-minute recheck of an already-broken session silently
+    # did nothing -- consecutive_failures froze at 1 forever, and the
+    # Sessions panel showed "1st failure" on an account that had in fact
+    # failed every check for weeks.
+    #
+    # The gate was redundant in the first place: mark_session_failed
+    # already raises the SessionInvalid incident (naming this exact
+    # session) only on the actual transition into a dead state, via its
+    # OWN `newly_dead` check against the session's stored status, not
+    # against this function's health-check history. Calling it
+    # unconditionally on every conclusive failure is also what every live
+    # job failure already does (analysis_service.py, discovery_service.py
+    # both call it on every failed visit, never gated on "was this the
+    # first one"), so this brings the background monitor in line with
+    # every other caller instead of being the one path that stops updating
+    # a session's failure count after the first strike.
+    await mark_session_failed(platform_id, session_id, "expired", detail=detail)
+    log.warning(f"{platform_id}/{identifier}: session went bad -- {detail}")
 
 
 async def _record_platform_summary(platform_id: str) -> None:

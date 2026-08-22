@@ -25,8 +25,28 @@ class ClientIn(BaseModel):
     # logo to compare against. Purely a display aid, not scored/matched
     # automatically, no image-similarity model exists here.
 
+    # PARENT keywords: the real names being protected. These are the match
+    # targets and the buckets results are filed under -- see
+    # shared/keywords.py. Kept as plain flat lists, unchanged in shape, so
+    # every existing reader of them keeps working; `keyword_groups` below is
+    # what adds the searchable child permutations.
+    #
+    # Derived server-side from `keyword_groups` when that is supplied, so
+    # the two can never disagree (client_repository.upsert). A caller may
+    # still send only these (no groups) -- that is exactly what a client
+    # saved before this feature looks like, and it sweeps identically.
     name_keywords: list[str] = []  # individual people to protect
     domain_keywords: list[str] = []  # brand/domain keyword variants
+    # {"individual": [{"parent": str, "children": [str]}], "domain": [...]}
+    #
+    # `parent` is the real name -- never searched, used to score and file
+    # results. `children` are the analyst's own generated permutations --
+    # searched on every platform, never scored against. A parent with no
+    # children searches itself, which is the pre-groups behaviour.
+    # Normalised and validated server-side by
+    # shared/keywords.py::normalize_groups, which drops malformed entries
+    # rather than rejecting the whole request.
+    keyword_groups: dict[str, list[dict]] = {}
     asset_name_individual_keywords: list[str] = []  # asset name choices for individuals
     asset_name_domain_keywords: list[str] = []  # asset name choices for domains
     # platform id -> max results to scrape for THIS client's sweeps, scoped

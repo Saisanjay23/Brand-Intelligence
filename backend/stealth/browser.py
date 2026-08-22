@@ -183,6 +183,8 @@ class Session:
 
     async def wait_for_visible_content(
         self, page, min_chars: int = 200, timeout_ms: int = 4000, poll_ms: int = 250,
+        *, content_selector: str = "", content_timeout_ms: int = 5000,
+        settle_images_ms: int = 1500,
     ) -> None:
         """Block until the page has actually PAINTED real content, not just
         parsed enough DOM to satisfy `domcontentloaded` or a data-readiness
@@ -223,9 +225,54 @@ class Session:
             except Exception:
                 return  # page navigated away/closed mid-check, nothing to wait for
             if len(text) >= min_chars:
-                return
+                break
             await page.wait_for_timeout(poll_ms)
             elapsed += poll_ms
+
+        # The character floor above is necessary and NOT sufficient. Measured
+        # live (2026-08-22) on real evidence captures: it is satisfied by the
+        # page's own chrome long before any of the profile's content exists,
+        # so every screenshot this engine produced showed a correct, complete
+        # header sitting above a LOADING SPINNER where the posts belong --
+        # on Instagram the whole post grid, on X the whole timeline.
+        #
+        # For impersonation evidence that is the wrong half of the page to
+        # lose: the header proves the account copied a name and a photo, and
+        # the posts are what show it is actively being used. Facebook's wait
+        # returned in 0.07s for exactly this reason -- it was never waiting
+        # for anything.
+        #
+        # `content_selector` is the platform's own hook for "a real item is
+        # on screen". Bounded separately and generously, because an account
+        # with genuinely no posts never satisfies it and must NOT be made to
+        # pay the full timeout on every capture -- it simply shoots what is
+        # there, which for that account is the truth.
+        if content_selector:
+            try:
+                await page.wait_for_selector(
+                    content_selector, timeout=content_timeout_ms, state="attached")
+            except Exception:
+                pass  # genuinely empty timeline, or slower than the budget
+
+        # Give the images that are actually ON SCREEN a moment to decode.
+        # A tile that exists in the DOM but has not painted screenshots as a
+        # blank rectangle, which is indistinguishable in the evidence from a
+        # profile that posts blank images.
+        if settle_images_ms > 0:
+            try:
+                await page.wait_for_function(
+                    """() => {
+                        const vis = Array.from(document.images).filter(i => {
+                          const r = i.getBoundingClientRect();
+                          return r.width > 0 && r.top < innerHeight && r.bottom > 0;
+                        });
+                        return vis.length === 0
+                            || vis.every(i => i.complete && i.naturalWidth > 0);
+                    }""",
+                    timeout=settle_images_ms,
+                )
+            except Exception:
+                pass
 
     async def check_session(
         self, probe_url: str, login_re, checkpoint_re, *, expect_path: str = "",

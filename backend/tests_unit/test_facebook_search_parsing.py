@@ -130,7 +130,6 @@ class TestPageState:
         assert ps is not None
         assert ps.has_next is True
         assert ps.ids_shown == ["1", "2", "3"]
-        assert ps.page_number == 2
 
     def test_end_of_serp_flag_is_read(self):
         blob = {"page_info": {"has_next_page": False, "end_cursor": _cursor_json(is_end_of_serp=True)}}

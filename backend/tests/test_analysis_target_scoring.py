@@ -49,6 +49,12 @@ class _FakeRow:
         self.verified = None
         self.posts_seen = ""
         self.last_post_iso = ""
+        # Kept in step with shared/models/row.py. _row_to_fields reads both,
+        # and the save path swallows an AttributeError, so a fake that
+        # drifts from the real Row makes this test quietly stop exercising
+        # the save at all instead of failing.
+        self.bio = ""
+        self.created_iso = ""
         self.risk = 0
         self.priority = ""
         self.notes = ""

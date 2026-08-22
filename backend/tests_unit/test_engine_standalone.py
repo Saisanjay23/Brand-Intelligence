@@ -89,11 +89,20 @@ def test_hit_fields_match_the_service_mapping():
     has no surrounding document to carry those) and scores the name against
     an explicit target, so those are compared separately below.
     """
+    from backend.shared import keywords as kw
     from backend.services.discovery_service import _hit_to_fields as service_mapping
 
     hit = _FakeHit()
-    mine = _hit_to_fields(hit, "twitter", target="")
-    theirs = service_mapping(hit, "twitter")
+    # Both sides express the SAME idea in their own vocabulary: the
+    # standalone engine's `target` and the service's KeywordPlan parent are
+    # both "the thing to score against, rather than whichever search term
+    # happened to surface this hit" (see backend/shared/keywords.py and
+    # runner._hit_to_fields' own docstring). Pointing both at the hit's own
+    # keyword is what makes this a like-for-like comparison instead of one
+    # side scoring against something the other never saw.
+    mine = _hit_to_fields(hit, "twitter", target=hit.keyword)
+    plan = kw.build_plans({}, [hit.keyword])[0]
+    theirs = service_mapping(hit, "twitter", plan)
 
     assert set(theirs) <= set(mine), f"engine mapping dropped keys: {set(theirs) - set(mine)}"
     for key, value in theirs.items():

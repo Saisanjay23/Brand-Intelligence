@@ -29,7 +29,9 @@ from backend.services.job_service import Job
 from backend.platforms.scan_options import DiscoveryOptions
 from backend.config.settings import settings
 from backend.shared.logging import get_logger
+from backend.shared import keywords as kw
 from backend.shared.resilience import classify_failure
+from backend.shared.models.scoring import NAME_THRESHOLD
 from backend.shared.text import contiguous_letters_match, name_score
 
 log = get_logger("services.discovery")
@@ -48,8 +50,19 @@ PLATFORM_TABS: dict[str, list[str]] = {
 }
 
 
-def _hit_to_fields(hit, platform: str) -> dict:
-    """A discovery Hit -> the plain field dict `profile_repository.save` expects."""
+def _hit_to_fields(hit, platform: str, plan: "kw.KeywordPlan") -> dict:
+    """A discovery Hit -> the plain field dict `profile_repository.save`
+    expects.
+
+    `plan` is the search that produced this hit (see shared/keywords.py).
+    It matters because the term actually TYPED into the platform's search
+    box is one of the analyst's permutations ("gautamadani"), while the
+    thing this hit must be scored and filed against is that permutation's
+    PARENT ("Gautam Adani") plus that keyword type's asset names. Scoring
+    against the permutation instead would rate a genuine impersonator near
+    zero, and filing under it would scatter one investigation across a
+    dozen keyword buckets in the results grid.
+    """
     username = ""
     url = hit.url or ""
     if platform == "facebook":
@@ -67,22 +80,53 @@ def _hit_to_fields(hit, platform: str) -> dict:
             candidate = parts[-1].lstrip("@")
             if "?" not in candidate and "#" not in candidate:
                 username = candidate
+    # The parent this hit is filed under, and its score against that
+    # parent's own match terms -- NOT against `hit.keyword`, which is the
+    # permutation that found it. See shared/keywords.py::resolve_parent.
+    parent, score = kw.resolve_parent(plan, hit.name or "", name_score)
+    exact_run = kw.match_any(plan, hit.name or "", contiguous_letters_match)
+
+    # A CONTIGUOUS letter-run match is a High Match by this codebase's own
+    # definition (shared/text.py::contiguous_letters_match: "True High
+    # Match ... a literal, explainable reason a profile qualifies"), but
+    # `name_score` is token-based and rates several of those ZERO, because
+    # a run-together handle shares no whole word with the name it is
+    # impersonating:
+    #
+    #     name_score("gautamadani",         "Gautam Adani") == 0
+    #     name_score("GautamAdaniOfficial", "Gautam Adani") == 0
+    #
+    # That matters because the results grid's High/Medium/Low filter bands
+    # on `name_score` alone (profile_repository.list_profiles::match_level),
+    # so without this lift the single most obvious kind of impersonator --
+    # the one that just removed the space -- files as LOW.
+    #
+    # Before parent/child groups those profiles scored 100 by accident, by
+    # being matched against the run-together permutation that found them.
+    # Now that scoring is (correctly) against the real name, the lift is
+    # what keeps them where they belong. It can only ever RAISE a hit that
+    # already contains the full keyword letter-run: "Gawtam Kumar" (a typo
+    # squat, no contiguous run) stays at its token score of 20, and an
+    # unrelated name stays at 0.
+    if exact_run:
+        score = max(score, NAME_THRESHOLD)
     fields = {
-        "url": url, "entity_id": hit.entity_id, "keyword": hit.keyword,
+        "url": url, "entity_id": hit.entity_id, "keyword": parent,
         "username": username, "display_name": hit.name, "entity_type": hit.entity_type,
         "discovery_source": hit.source, "profile_image_url": getattr(hit, "avatar", ""),
         "has_logo": bool(getattr(hit, "has_custom_pic", False)),
-        # how closely the scraped name matches the keyword that found it
-        # seeds the card's Medium/Low match badge; analysis re-scores this
-        # more precisely once a profile is actually visited. This is the
-        # ONLY automated match signal; confidence is scored purely off
-        # what the client actually searched for, not off any independent
-        # handle/username comparison.
-        "name_score": name_score(hit.name or "", hit.keyword or ""),
+        # How closely the scraped name matches the PARENT keyword (and that
+        # keyword type's asset names) -- seeds the card's Medium/Low match
+        # badge; analysis re-scores this more precisely once a profile is
+        # actually visited. This is the ONLY automated match signal, and it
+        # is scored against what the client is actually protecting, not
+        # against the permutation that happened to surface the profile.
+        "name_score": score,
         # High Match's actual criterion, see
         # shared/text.py::contiguous_letters_match / shared/models/row.py's
-        # name_exact_run for the analysis-phase equivalent.
-        "name_exact_run": contiguous_letters_match(hit.name or "", hit.keyword or ""),
+        # name_exact_run for the analysis-phase equivalent. True when ANY of
+        # the plan's match terms matches contiguously.
+        "name_exact_run": exact_run,
     }
     if getattr(hit, "verified", False):
         fields["verified"] = True
@@ -229,14 +273,50 @@ async def run_discovery(job: Job) -> None:
     platform_limits_individual = (client or {}).get("platform_limits_individual") or {}
     platform_limits_domain = (client or {}).get("platform_limits_domain") or {}
     platform_tab_limits = (client or {}).get("platform_tab_limits") or {}
-    individual_keywords, domain_keywords = _split_by_keyword_type(keywords, client or {})
+    # `keywords` above is the list of PARENTS the caller asked for (that is
+    # what the UI shows and what the round-robin engine reads out of
+    # name_keywords/domain_keywords). Expanding it into plans is what turns
+    # each parent into the analyst's own child permutations -- the terms
+    # actually searched -- while keeping the parent as the match target.
+    # A client with no children configured yields one plan per parent
+    # searching itself, i.e. exactly the pre-groups behaviour.
+    # See shared/keywords.py.
+    plans = kw.build_plans(client or {}, keywords)
 
-    await mgr.emit(job, "progress", f"sweeping {len(ready)} platform(s) for {len(keywords)} keyword(s)", total=len(ready))
+    # Optional single-category scope (params["keyword_type"], validated in
+    # discovery_controller). Applied HERE, against each plan's own resolved
+    # category, rather than by trusting the caller to send a pre-filtered
+    # keyword list -- the server is what classifies a keyword for caps and
+    # for the incident category, so this keeps one definition of
+    # "individual" instead of two that can drift.
+    scope = (p.get("keyword_type") or "").strip().lower()
+    if scope:
+        scoped_plans = [pl for pl in plans if pl.kw_type == scope]
+        if not scoped_plans:
+            # Sweeping nothing and reporting success is the one outcome
+            # this must never produce: an analyst who scoped to a category
+            # this client has no keywords in gets told so, rather than a
+            # job that finishes instantly having searched nothing.
+            other = kw.DOMAIN if scope == kw.INDIVIDUAL else kw.INDIVIDUAL
+            raise RuntimeError(
+                f"this client has no {scope} keywords to sweep "
+                f"(it has {len([pl for pl in plans if pl.kw_type == other])} "
+                f"{other} search term(s)) -- add some, or run without the "
+                f"{scope}-only scope"
+            )
+        plans = scoped_plans
+
+    individual_plans = [pl for pl in plans if pl.kw_type == kw.INDIVIDUAL]
+    domain_plans = [pl for pl in plans if pl.kw_type == kw.DOMAIN]
+
+    await mgr.emit(job, "progress", f"sweeping {len(ready)} platform(s) for {len(plans)} search term(s) "
+                    f"across {len(keywords)} keyword(s)"
+                    + (f" -- {scope} keywords only" if scope else ""), total=len(ready))
 
     for platform_id in ready:
         platform_tabs = PLATFORM_TABS.get(platform_id, p.get("tabs") or ["people"])
         await mgr.emit(job, "progress", platform=platform_id, platform_status="pending",
-                        platform_total=max(1, len(keywords) * len(platform_tabs)))
+                        platform_total=max(1, len(plans) * len(platform_tabs)))
 
     total_saved = total_new = 0
     notes: list[str] = []
@@ -251,18 +331,18 @@ async def run_discovery(job: Job) -> None:
     async def _run_one(platform_id: str) -> tuple[str, int, int, str]:
         plat = registry.get(platform_id)
         platform_tabs = PLATFORM_TABS.get(platform_id, p.get("tabs") or ["people"])
-        sweep_units = max(1, len(keywords) * len(platform_tabs))
+        sweep_units = max(1, len(plans) * len(platform_tabs))
         try:
             # A platform absent from the client's individual/domain map falls
             # back to the caller-supplied ad-hoc max_results (a manual
             # POST /discovery override), same as before this cap was split.
             override = p.get("max_results", 0)
-            keyword_groups = [
-                ("individual", individual_keywords, platform_limits_individual.get(platform_id, override)),
-                ("domain", domain_keywords, platform_limits_domain.get(platform_id, override)),
+            plan_groups = [
+                (kw.INDIVIDUAL, individual_plans, platform_limits_individual.get(platform_id, override)),
+                (kw.DOMAIN, domain_plans, platform_limits_domain.get(platform_id, override)),
             ]
             tab_limits = platform_tab_limits.get(platform_id) or {}
-            saved, new, note = await _sweep_platform(job, mgr, plat, keyword_groups, platform_tabs, p, tab_limits)
+            saved, new, note = await _sweep_platform(job, mgr, plat, plan_groups, platform_tabs, p, tab_limits)
             # a sweep that hit a cap or stalled did NOT cover what was asked
             # of it, saying "done" there is the same lie the analysis side
             # used to tell (see analysis_service._run_one)
@@ -362,20 +442,38 @@ async def _resweep_selected(job: Job, mgr) -> None:
     job.message = f"{refreshed} of {len(fb_docs)} refreshed" + (f" -- {skipped} skipped (non-Facebook)" if skipped else "")
 
 
+def _unit_label(plan: "kw.KeywordPlan", tab: str) -> str:
+    """One sweep unit as an analyst reads it in the Live Activity panel.
+
+    Shows the term actually being SEARCHED, and names its parent when the
+    two differ, so "gautamadani -> Gautam Adani - people" is immediately
+    legible as "one of Gautam Adani's permutations is running" rather than
+    an unexplained keyword nobody recognises from the client's config.
+    """
+    if plan.search.strip().lower() == plan.parent.strip().lower():
+        return f"{plan.search} · {tab}"
+    return f"{plan.search} -> {plan.parent} · {tab}"
+
+
 async def _sweep_platform(
-    job: Job, mgr, plat, keyword_groups: list[tuple[str, list[str], int]], tabs: list[str], params: dict,
+    job: Job, mgr, plat, plan_groups: list[tuple[str, list["kw.KeywordPlan"], int]], tabs: list[str], params: dict,
     tab_limits: Optional[dict[str, dict]] = None,
 ) -> tuple[int, int, str]:
-    """`keyword_groups` is `[(kw_type, keywords, cap), ...]`, currently
-    always the client's individual-keyword group and its domain-keyword
-    group, each with its own independently configured cap (see
-    dto/client_dto.py). Both groups share ONE session for this platform
-    (login/cookies are the expensive, ban-risk-bearing part, see stealth/),
-    so splitting by keyword type must never mean starting the session
-    twice; only the per-(keyword, tab) discoverer options differ.
+    """`plan_groups` is `[(kw_type, plans, cap), ...]`, currently always the
+    client's individual-keyword group and its domain-keyword group, each
+    with its own independently configured cap (see dto/client_dto.py). Both
+    groups share ONE session for this platform (login/cookies are the
+    expensive, ban-risk-bearing part, see stealth/), so splitting by
+    keyword type must never mean starting the session twice; only the
+    per-(plan, tab) discoverer options differ.
+
+    Each entry is a `KeywordPlan` (shared/keywords.py), not a bare string:
+    one sweep unit is one SEARCH TERM (an analyst's permutation), but every
+    hit it returns is filed under that term's PARENT. Carrying the plan all
+    the way down to `_hit_to_fields` is what keeps those two separate.
     """
     tab_limits = tab_limits or {}
-    keywords = [kw for _, group, _ in keyword_groups for kw in group]
+    plans = [pl for _, group, _ in plan_groups for pl in group]
 
     def _options_for(cap: int) -> DiscoveryOptions:
         return DiscoveryOptions(
@@ -387,13 +485,13 @@ async def _sweep_platform(
 
     saved = new = 0
     completed_units = 0
-    sweep_units = max(1, len(keywords) * len(tabs))
+    sweep_units = max(1, len(plans) * len(tabs))
     already_saved: set[str] = set()
     all_sweeps: list = []
 
     await mgr.emit(job, "progress", platform=plat.id, platform_status="running", platform_total=sweep_units)
 
-    async def _save_hits(hits: list, label: str) -> None:
+    async def _save_hits(hits: list, label: str, plan: "kw.KeywordPlan") -> None:
         """The ONLY place this sweep writes profiles.
 
         `already_saved` gates the write itself, not just the counting. The
@@ -408,7 +506,7 @@ async def _sweep_platform(
             return
         s, n = await profiles_db.save_many(
             job.client_id, plat.id, "discovery",
-            [_hit_to_fields(h, plat.id) for h in fresh]
+            [_hit_to_fields(h, plat.id, plan) for h in fresh]
         )
         already_saved.update(h.entity_id for h in fresh)
         saved += s
@@ -419,36 +517,36 @@ async def _sweep_platform(
             found=saved, new_profiles=job.new_profiles,
         )
 
-    async def _on_page_hits(keyword: str, tab: str, found_count: int, page_num: int, new_hits: list) -> None:
-        await _save_hits(new_hits, f"{tab} {keyword!r} (page {page_num})")
+    async def _on_page_hits(plan: "kw.KeywordPlan", tab: str, found_count: int, page_num: int, new_hits: list) -> None:
+        await _save_hits(new_hits, f"{tab} {plan.search!r} (page {page_num})", plan)
 
-    async def _on_sweep_done(sweep) -> None:
+    async def _on_sweep_done(sweep, plan: "kw.KeywordPlan") -> None:
         nonlocal completed_units
         all_sweeps.append(sweep)
         # catches whatever the page callbacks never saw: the reconciliation
         # backfill, and every hit at all when the engine has no on_progress
-        await _save_hits(sweep.hits or [], f"{sweep.keyword!r} done")
+        await _save_hits(sweep.hits or [], f"{sweep.keyword!r} done", plan)
         completed_units += 1
         await mgr.emit(
             job, "progress", platform=plat.id, platform_status="running", platform_processed=completed_units,
-            platform_item_done=f"{sweep.keyword} · {sweep.tab}",
+            platform_item_done=_unit_label(plan, sweep.tab),
         )
 
     # Group every (keyword, tab) pair by its resolved cap -- the more
     # restrictive of the keyword's type cap (individual/domain) and that
     # exact (tab, type) cell's cap, so a platform with both set has neither
     # silently ignored. One discoverer instance per distinct cap.
-    groups: dict[int, list[tuple[str, str]]] = {}
-    for kw_type, kw_group, type_cap in keyword_groups:
-        for kw in kw_group:
+    groups: dict[int, list[tuple["kw.KeywordPlan", str]]] = {}
+    for kw_type, plan_group, type_cap in plan_groups:
+        for plan in plan_group:
             for tab in tabs:
                 cap = _effective_cap(type_cap, _tab_type_cap(tab_limits, tab, kw_type))
-                groups.setdefault(cap, []).append((kw, tab))
+                groups.setdefault(cap, []).append((plan, tab))
 
     # what an analyst watching the Live Activity tab sees as "up next" for
-    # this platform, before a single (keyword, tab) sweep has completed
+    # this platform, before a single (plan, tab) sweep has completed
     await mgr.emit(job, "progress", platform=plat.id, platform_pending_seed=[
-        f"{kw} · {tab}" for pairs in groups.values() for kw, tab in pairs
+        _unit_label(plan, tab) for pairs in groups.values() for plan, tab in pairs
     ])
 
     # ── anonymous path ────────────────────────────────────────────────
@@ -709,13 +807,19 @@ async def _historic_yield(client_id: str, platform_id: str) -> int:
         return 0
 
 
-async def _run_incremental(discoverer, jobs: list[tuple[str, str]], on_sweep_done, on_page_hits=None) -> list:
+async def _run_incremental(discoverer, jobs: list[tuple["kw.KeywordPlan", str]], on_sweep_done, on_page_hits=None) -> list:
     """Run sweeps at the discoverer's own concurrency, calling
     on_sweep_done for each completed sweep immediately instead of waiting
     for gather, and on_page_hits for every batch of new results found
-    mid-sweep. `jobs` is already the exact (keyword, tab) pairs to run
+    mid-sweep. `jobs` is already the exact (plan, tab) pairs to run --
     every pair here shares the discoverer's own cap, since caller-side
     grouping (see _sweep_platform) is what put them in the same call.
+
+    A `KeywordPlan` rather than a bare keyword (see shared/keywords.py):
+    `plan.search` is what goes into the platform's search box, but the
+    callbacks need the whole plan to know which PARENT the resulting hits
+    belong to. Both callbacks therefore receive the plan itself, not just
+    the string that was searched.
 
     Each task is guarded individually. A platform's own `sweep()` catches
     everything it can reach and returns stopped="error" rather than
@@ -732,15 +836,16 @@ async def _run_incremental(discoverer, jobs: list[tuple[str, str]], on_sweep_don
     sem = asyncio.Semaphore(max(1, max_conc))
     sweep_cls = _sweep_class_for(discoverer)
 
-    async def one(i: int, keyword: str, tab: str):
+    async def one(i: int, plan: "kw.KeywordPlan", tab: str):
         async with sem:
             await asyncio.sleep(i % max(1, max_conc) * 1.0)
+            keyword = plan.search
 
             async def _progress(found_count: int, page_num: int, new_hits: list) -> None:
                 if not on_page_hits:
                     return
                 try:
-                    await on_page_hits(keyword, tab, found_count, page_num, new_hits)
+                    await on_page_hits(plan, tab, found_count, page_num, new_hits)
                 except Exception:
                     pass
 
@@ -757,10 +862,10 @@ async def _run_incremental(discoverer, jobs: list[tuple[str, str]], on_sweep_don
                 )
                 sweep = sweep_cls(keyword=keyword, tab=tab) if sweep_cls else _FallbackSweep(keyword, tab)
                 sweep.stopped, sweep.error = "error", f"{type(e).__name__}: {e}"
-            await on_sweep_done(sweep)
+            await on_sweep_done(sweep, plan)
             return sweep
 
-    return list(await asyncio.gather(*(one(i, k, t) for i, (k, t) in enumerate(jobs))))
+    return list(await asyncio.gather(*(one(i, pl, t) for i, (pl, t) in enumerate(jobs))))
 
 
 def _sweep_class_for(discoverer) -> Optional[type]:

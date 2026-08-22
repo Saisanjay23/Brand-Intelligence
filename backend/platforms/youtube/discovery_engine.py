@@ -277,21 +277,15 @@ class Discovery:
                     await asyncio.sleep(0.5)
                 page_hits: list[Hit] = []
                 for i, it in enumerate(items):
+                    if self.a.max_results and len(by_id) >= self.a.max_results:
+                        out.stopped = "cap:results"
+                        break
+                    
                     cid = (it.get("id") or {}).get("channelId", "")
                     snip = it.get("snippet") or {}
                     if not cid or cid in by_id:
                         continue
-                    # `description`, `publishedAt` and `customUrl` were read
-                    # off the snippet here and then dropped on the floor --
-                    # `Hit` has no field for any of them (see
-                    # facebook/discovery_engine.py::Hit, the shared shape
-                    # every platform builds), so there was nowhere for them
-                    # to go. Not a wiring gap worth closing either: the
-                    # channel's creation date reaches a profile through
-                    # analysis instead, where youtube/analysis_engine.py
-                    # reads the same `publishedAt` into `row.created_iso`.
-                    # search.list's snippet always carries thumbnails, the
-                    # same response the channel came from, no extra request
+                    
                     thumbs = snip.get("thumbnails") or {}
                     avatar = (thumbs.get("high") or thumbs.get("medium")
                              or thumbs.get("default") or {}).get("url", "")
@@ -319,6 +313,9 @@ class Discovery:
                             await res
                     except Exception:
                         pass
+
+                if out.stopped == "cap:results":
+                    break
 
                 if not token:
                     # the API stopped offering pages: genuinely the end

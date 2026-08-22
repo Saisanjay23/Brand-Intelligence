@@ -21,12 +21,13 @@ from typing import Any, Optional
 
 from bson import ObjectId
 from bson.errors import InvalidId
+from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from backend.config.settings import settings
 from backend.shared.errors import ConflictError, NotFoundError, ValidationError
 from backend.shared.logging import get_logger
-from backend.shared.models.scoring import MEDIUM_MATCH_THRESHOLD
+from backend.shared.models.scoring import MEDIUM_MATCH_THRESHOLD, NAME_THRESHOLD
 from backend.database.connection import db
 
 log = get_logger("repositories.profile_repository")
@@ -59,6 +60,13 @@ ANALYSIS_FIELDS = (
     "followers", "followers_exact", "friends", "location", "profile_image_url",
     "has_logo", "verified", "is_active", "has_name_match", "name_score", "name_exact_run",
     "last_post_date", "risk_score", "priority", "comments", "analysis_status", "sources",
+    # The account's own join date and bio text. Both are read by the
+    # engines on every visit and both used to die at this whitelist -- see
+    # the note in services/analysis_service.py where they are mapped.
+    # save() drops "" on its own, so a platform that genuinely cannot see
+    # one (Facebook and Instagram do not expose a join date) simply never
+    # writes the key, rather than storing a blank over something real.
+    "created_at", "bio",
     # "yes" | "no" -- whether the profile was confirmed to HAVE posts at all.
     # Every engine has always computed this (it is what shared/completeness.py
     # uses to avoid re-queueing an account that genuinely never posted) and
@@ -523,31 +531,15 @@ def _build_query(
     if published is not None:
         q["published"] = False if published is False else {"$ne": False}
     if match_level:
-        # "high" used to require name_score >= 100, effectively unreachable
-        # for real fuzzy-matched names (token_set_ratio rarely lands on a
-        # perfect 100 unless the name is byte-identical to the keyword after
-        # High Match's real criterion is `name_exact_run` (see
-        # shared/text.py::contiguous_letters_match): the keyword's letters
-        # appear in the profile's name as one contiguous run, punctuation/
-        # case/word-order-preserving separators ignored -- a literal,
-        # explainable reason a profile qualifies, not a threshold on a
-        # fuzzy token-overlap ratio nobody could point at. A profile whose
-        # words merely got REORDERED ("Adani Gautam" against keyword
-        # "Gautam Adani") used to score name_score=100 and land in High
-        # too, which is exactly the kind of match this replaces: same
-        # words, but not the keyword's own letter sequence.
-        #
-        # Medium/Low stay on the pre-existing name_score fuzzy bands for
-        # everything that doesn't clear the High bar, so a profile that's
-        # merely similar (not a real contiguous run) still surfaces
-        # somewhere instead of disappearing from every Match Level filter.
+        # Match level thresholds mirror the card badge and NAME_THRESHOLD / MEDIUM_MATCH_THRESHOLD:
+        # - High:   name_score >= 80 (NAME_THRESHOLD)
+        # - Medium: 50 <= name_score < 80
+        # - Low:    name_score < 50
         if match_level == "high":
-            q["name_exact_run"] = True
+            q["name_score"] = {"$gte": NAME_THRESHOLD}
         elif match_level == "medium":
-            q["name_exact_run"] = {"$ne": True}
-            q["name_score"] = {"$gte": MEDIUM_MATCH_THRESHOLD}
+            q["name_score"] = {"$gte": MEDIUM_MATCH_THRESHOLD, "$lt": NAME_THRESHOLD}
         else:
-            q["name_exact_run"] = {"$ne": True}
             q["name_score"] = {"$lt": MEDIUM_MATCH_THRESHOLD, "$exists": True, "$ne": None}
     if keyword_match_type and client_keywords is not None:
         # "was this found under one of the client's INDIVIDUAL-name keywords
@@ -581,6 +573,8 @@ def _build_query(
             clauses.append({"$or": [{"phase": PHASE_DISCOVERY}, {"status": {"$in": ["approved", "rejected"]}}]})
         else:
             q["phase"] = phase
+            if phase == "analysis" and status != "rejected":
+                clauses.append({"status": {"$ne": "rejected"}})
             if not include_held:
                 clauses.append({"$or": [
                     {"published": True},
@@ -735,6 +729,14 @@ async def urls_for(
                 "analysis_attempts": {"$lt": MAX_ANALYSIS_ATTEMPTS},
             },
         ]
+        # An analyst's manual "stop retrying" (see set_retry_state below)
+        # overrides every clause above, including the un-throttled first
+        # one. Without this AND, a profile an analyst had deliberately
+        # given up on (a dead account, a confirmed false positive still
+        # sitting at phase=discovery) would be swept right back in on the
+        # very next catch-up tick -- the retry queue UI's Stop button would
+        # have looked like it worked and done nothing.
+        q["retry_disabled"] = {"$ne": True}
     if not with_keywords:
         return [d["url"] async for d in db()[PROFILES].find(q, {"url": 1, "_id": 0}) if d.get("url")]
     return [
@@ -745,29 +747,125 @@ async def urls_for(
 
 
 async def stuck_analysis(client_id: str, platform: Optional[str] = None) -> list[dict]:
-    """Profiles that exhausted MAX_ANALYSIS_ATTEMPTS and will never be
-    retried automatically. These are exactly the ones an analyst must be
+    """Profiles that will NEVER be retried automatically -- either they
+    exhausted MAX_ANALYSIS_ATTEMPTS, or an analyst manually stopped them
+    (see set_retry_state). These are exactly the ones an analyst must be
     told about, "approved but we could never read it" is a coverage gap,
     not a result, and it is invisible unless something surfaces it."""
     q: dict[str, Any] = {
         "client_id": client_id, "status": "approved",
-        "analysis_attempts": {"$gte": MAX_ANALYSIS_ATTEMPTS},
-        # Either kind of exhaustion is a coverage gap worth an analyst's
-        # attention: never read at all (a retryable status), or read but
-        # permanently missing a field the platform publishes.
         "$or": [
-            {"analysis_status": {"$in": list(RETRYABLE_ANALYSIS_STATUSES)}},
-            {"analysis_complete": False},
+            {
+                "analysis_attempts": {"$gte": MAX_ANALYSIS_ATTEMPTS},
+                # Either kind of exhaustion is a coverage gap worth an
+                # analyst's attention: never read at all (a retryable
+                # status), or read but permanently missing a field the
+                # platform publishes. Nested inside this $or element (not a
+                # second top-level "$or" key, which Python/Mongo would just
+                # overwrite) so it stays scoped to "AND attempts >= max".
+                "$or": [
+                    {"analysis_status": {"$in": list(RETRYABLE_ANALYSIS_STATUSES)}},
+                    {"analysis_complete": False},
+                ],
+            },
+            {"retry_disabled": True},
         ],
     }
     if platform:
         q["platform"] = platform
     out = []
     async for d in db()[PROFILES].find(q, {"url": 1, "platform": 1, "display_name": 1,
-                                            "analysis_status": 1, "analysis_attempts": 1, "comments": 1}):
+                                            "analysis_status": 1, "analysis_attempts": 1,
+                                            "comments": 1, "retry_disabled": 1}):
+        d["id"] = str(d.pop("_id"))
+        # "manually stopped" is the more honest reason when that's why this
+        # row is here, an analyst reading "PARTIAL" or "" as the reason for
+        # a row THEY stopped would reasonably think the scraper is still
+        # the problem.
+        if d.pop("retry_disabled", False):
+            d["reason"] = "manually stopped"
+        out.append(d)
+    return out
+
+
+# Every state `field_report()` (shared/completeness.py) can hand back for
+# one field. Only "MISSED" means real, actionable data loss; the retry
+# queue view filters a row's own field_status down to just these so an
+# analyst sees "last post date: MISSED" and not four other fields that were
+# never expected to have a value in the first place.
+_ACTIONABLE_FIELD_VERDICT = "MISSED"
+
+
+async def retry_queue_profiles(
+    client_id: str, platform: Optional[str] = None, *, limit: int = 500,
+) -> list[dict]:
+    """Every approved profile analysis has not FINISHED with, whether or not
+    it will still be retried automatically -- the full picture behind
+    `urls_for`'s exclude_analysed union and `stuck_analysis`'s "gave up"
+    subset, combined into one list a monitoring UI can render as a single
+    queue instead of an analyst having to reconcile two different partial
+    views by hand.
+
+    Every returned document carries enough of its own state (analysis_
+    attempts, analysis_status, analysis_complete, retry_disabled,
+    field_status) for the caller to classify it as "eligible" (will be
+    retried automatically), "exhausted" (hit MAX_ANALYSIS_ATTEMPTS), or
+    "stopped" (an analyst turned it off) without a second query --
+    services/profile_service.py::retry_queue does exactly that
+    classification, kept there rather than here because "what a row's
+    state MEANS" is a presentation decision, not a storage one.
+
+    `limit` bounds an unbounded query on a large client: this is a live
+    monitoring view meant to be read by a person, not an export, and a
+    person does not review 5,000 rows in one screen either way.
+    """
+    q: dict[str, Any] = {
+        "client_id": client_id, "status": "approved", "phase": PHASE_ANALYSIS,
+        "$or": [
+            {
+                "analysis_status": {"$in": list(RETRYABLE_ANALYSIS_STATUSES)},
+            },
+            {"analysis_complete": False},
+            {"retry_disabled": True},
+        ],
+    }
+    if platform:
+        q["platform"] = platform
+    out = []
+    async for d in (
+        db()[PROFILES]
+        .find(q)
+        .sort("analysed_at", -1)
+        .limit(max(1, limit))
+    ):
         d["id"] = str(d.pop("_id"))
         out.append(d)
     return out
+
+
+async def set_retry_state(profile_id: str, *, disabled: bool, reset_attempts: bool = False) -> Optional[dict]:
+    """The retry queue UI's Stop / Resume action. A profile's own analysis
+    fields (ANALYSIS_FIELDS) are untouched -- this only ever writes
+    `retry_disabled` (+ optionally `analysis_attempts` for Resume), so
+    stopping or resuming a profile can never be mistaken for, or interfere
+    with, an actual re-read of it.
+
+    `reset_attempts=True` is what makes Resume actually resume something
+    that had already hit MAX_ANALYSIS_ATTEMPTS -- clearing `retry_disabled`
+    alone would leave `urls_for`'s attempts<MAX condition still failing, so
+    the profile would silently stay excluded and Resume would look like it
+    did nothing.
+    """
+    fields: dict[str, Any] = {"retry_disabled": disabled}
+    if reset_attempts:
+        fields["analysis_attempts"] = 0
+    res = await db()[PROFILES].find_one_and_update(
+        {"_id": _oid(profile_id)}, {"$set": fields}, return_document=ReturnDocument.AFTER,
+    )
+    if res is None:
+        return None
+    res["id"] = str(res.pop("_id"))
+    return res
 
 
 async def get_by_id(doc_id: str) -> Optional[dict]:

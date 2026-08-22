@@ -433,7 +433,7 @@ function LiveInspectionPane({
       </div>
 
       <div className="inspection-actions-row">
-        {!isAnalysisView ? (
+        {!isAnalysisView && (
           <>
             <button
               className="btn-accept"
@@ -450,7 +450,8 @@ function LiveInspectionPane({
               ✕ Reject (X)
             </button>
           </>
-        ) : (
+        )}
+        {isAnalysisView && (
           <button
             className="action-btn"
             onClick={() => onEdit(profile.id)}
@@ -459,6 +460,7 @@ function LiveInspectionPane({
             ✏️ Edit Finding (E)
           </button>
         )}
+
       </div>
     </div>
   );
@@ -3917,21 +3919,18 @@ export function ResultsGrid({
                       />
                     </th>
                     <th></th>
-                    <th>Name</th>
+                    {!isAnalysisView && <th>Name</th>}
                     <th>Platform</th>
                     {isAnalysisView && <th>Screenshot</th>}
+                    {isAnalysisView && <th>Username Match</th>}
+                    {isAnalysisView && <th>Logo Match</th>}
                     {isAnalysisView && <th>AssetName</th>}
                     {isAnalysisView && <th>Risk</th>}
-                    {isAnalysisView && <th>Category</th>}
-                    {isAnalysisView && <th>Domain</th>}
                     {isAnalysisView && <th>Followers</th>}
                     {isAnalysisView && <th>Location</th>}
                     {isAnalysisView && <th>Last Post</th>}
-                    {isAnalysisView && <th>Username Match</th>}
-                    {isAnalysisView && <th>Logo Match</th>}
                     {isAnalysisView && <th>Active</th>}
                     {isAnalysisView && <th>Date</th>}
-                    {isAnalysisView && <th style={{ textAlign: "center" }}>Risk Score</th>}
                     {!isAnalysisView && <th>Status</th>}
                     <th className="core_table-actions-cell">Actions</th>
                   </tr>
@@ -3947,7 +3946,7 @@ export function ResultsGrid({
                     ))
                   ) : displayed.length === 0 ? (
                     <tr>
-                      <td colSpan={isAnalysisView ? 16 : 6} style={{ textAlign: "center", padding: "40px", color: "var(--text-dim)" }}>
+                      <td colSpan={isAnalysisView ? 15 : 6} style={{ textAlign: "center", padding: "40px", color: "var(--text-dim)" }}>
                         No profiles match the current filters.
                       </td>
                     </tr>
@@ -3981,46 +3980,36 @@ export function ResultsGrid({
 
                         </div>
                       </td>
-                      <td style={{ maxWidth: "220px", position: "relative" }}>
-                        <a
-                          href={isAnalysisView && inc ? inc.source : r.url}
-                          target="_blank" rel="noreferrer" style={{ color: "var(--text-main)" }}
-                          title={isAnalysisView && inc ? inc.title : r.profile_name || r.username || r.url}
-                          className="table-name-truncate"
-                        >
-                          {isAnalysisView && inc ? inc.title : r.profile_name || r.username || r.url}
-                        </a>
-                        {r.verified && <VerifiedBadgeIcon size={14} style={{ marginLeft: "4px" }} />}
-                        {r.has_logo && <TagIcon size={12} color="var(--cyan)" style={{ marginLeft: "4px" }} />}
-                        <div className="row-quick-actions">
-                          <button
-                            type="button"
-                            className="row-quick-action-btn"
-                            title="Copy profile URL"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              const targetUrl = isAnalysisView && inc ? inc.source : r.url;
-                              navigator.clipboard.writeText(targetUrl);
-                              toast.success("Profile URL copied!", { duration: 2000, id: `copy-${r.id}` });
-                            }}
+                      {!isAnalysisView && (
+                        <td style={{ maxWidth: "220px", position: "relative" }}>
+                          <a
+                            href={isAnalysisView && inc ? inc.source : r.url}
+                            target="_blank" rel="noreferrer" style={{ color: "var(--text-main)" }}
+                            title={isAnalysisView && inc ? inc.title : r.profile_name || r.username || r.url}
+                            className="table-name-truncate"
                           >
-                            📋
-                          </button>
-                          {isAnalysisView && inc && (
+                            {isAnalysisView && inc ? inc.title : r.profile_name || r.username || r.url}
+                          </a>
+                          {r.verified && <VerifiedBadgeIcon size={14} style={{ marginLeft: "4px" }} />}
+                          {r.has_logo && <TagIcon size={12} color="var(--cyan)" style={{ marginLeft: "4px" }} />}
+                          <div className="row-quick-actions">
                             <button
                               type="button"
                               className="row-quick-action-btn"
-                              title="Edit incident details"
+                              title="Copy profile URL"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setEditingId(r.id);
+                                const targetUrl = isAnalysisView && inc ? inc.source : r.url;
+                                navigator.clipboard.writeText(targetUrl);
+                                toast.success("Profile URL copied!", { duration: 2000, id: `copy-${r.id}` });
                               }}
                             >
-                              ✏️
+                              📋
                             </button>
-                          )}
-                        </div>
-                      </td>
+
+                          </div>
+                        </td>
+                      )}
                       <td><PlatformIcon platform={r.platform} size={16} /></td>
                       {isAnalysisView && (
                         <td
@@ -4029,61 +4018,6 @@ export function ResultsGrid({
                           onPointerDown={(e) => e.stopPropagation()}
                         >
                           <ScreenshotCell r={r} />
-                        </td>
-                      )}
-                      {isAnalysisView && (
-                        <td title={inc?.assetName ?? ""} style={{ maxWidth: "140px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#ffffff" }}>
-                          {inc?.assetName || "—"}
-                        </td>
-                      )}
-                      {isAnalysisView && (
-                        <td>
-                          {(() => {
-                            const risk = getRiskBadgeDetails(inc?.riskRating);
-                            if (risk.label === "—") return "—";
-                            return (
-                              <span
-                                className="risk-capsule-badge"
-                                style={{
-                                  background: risk.color,
-                                  color: "#ffffff",
-                                  padding: "3px 12px",
-                                  borderRadius: "14px",
-                                  fontSize: "11px",
-                                  fontWeight: 700,
-                                  display: "inline-block",
-                                  letterSpacing: "0.4px",
-                                  boxShadow: `0 2px 8px ${risk.color}40`,
-                                  textTransform: "capitalize",
-                                }}
-                              >
-                                {risk.label}
-                              </span>
-                            );
-                          })()}
-                        </td>
-                      )}
-                      {isAnalysisView && (
-                        <td style={{ fontSize: "11px", color: "#ffffff" }}>
-                          {inc ? `${inc.category}${inc.subCategory ? ` · ${inc.subCategory}` : ""}` : "—"}
-                        </td>
-                      )}
-                      {isAnalysisView && (
-                        <td style={{ fontSize: "11px", color: "#ffffff" }}>{inc?.domain || "—"}</td>
-                      )}
-                      {isAnalysisView && (
-                        <td style={{ fontSize: "11px", color: "#ffffff" }}>
-                          {inc?.socialProfileInfo.numberOfFollowers ?? r.followers ?? emptyLabel(r, r.platform, "followers")}
-                        </td>
-                      )}
-                      {isAnalysisView && (
-                        <td style={{ fontSize: "11px", color: "#ffffff" }}>
-                          {inc?.socialProfileInfo.location || r.location || emptyLabel(r, r.platform, "location")}
-                        </td>
-                      )}
-                      {isAnalysisView && (
-                        <td style={{ fontSize: "11px", color: "#ffffff", whiteSpace: "nowrap" }}>
-                          {inc?.socialProfileInfo.lastPostDate || r.last_post_date || emptyLabel(r, r.platform, "last_post_date")}
                         </td>
                       )}
                       {isAnalysisView && (
@@ -4096,7 +4030,7 @@ export function ResultsGrid({
                               cursor: savingId === r.id ? "default" : "pointer",
                               opacity: savingId === r.id ? 0.6 : 1,
                               background: usernameMatchOf(r) ? "var(--success, #10B981)" : "rgba(156, 163, 175, 0.2)",
-                              color: usernameMatchOf(r) ? "#fff" : "#ffffff",
+                              color: "#ffffff",
                               border: "1px solid " + (usernameMatchOf(r) ? "transparent" : "var(--border-color)"),
                               padding: "4px 10px",
                               borderRadius: "14px",
@@ -4127,7 +4061,7 @@ export function ResultsGrid({
                               cursor: savingId === r.id ? "default" : "pointer",
                               opacity: savingId === r.id ? 0.6 : 1,
                               background: logoMatchOf(r) ? "var(--success, #10B981)" : "rgba(156, 163, 175, 0.2)",
-                              color: logoMatchOf(r) ? "#fff" : "#ffffff",
+                              color: "#ffffff",
                               border: "1px solid " + (logoMatchOf(r) ? "transparent" : "var(--border-color)"),
                               padding: "4px 10px",
                               borderRadius: "14px",
@@ -4149,6 +4083,54 @@ export function ResultsGrid({
                         </td>
                       )}
                       {isAnalysisView && (
+                        <td title={inc?.assetName ?? ""} style={{ maxWidth: "140px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-main)" }}>
+                          {inc?.assetName || "—"}
+                        </td>
+                      )}
+                      {isAnalysisView && (
+                        <td>
+                          {(() => {
+                            const risk = getRiskBadgeDetails(inc?.riskRating);
+                            if (risk.label === "—") return "—";
+                            return (
+                              <span
+                                className="risk-capsule-badge"
+                                title={`Risk Score: ${risk.score}/10 (${risk.label})`}
+                                style={{
+                                  background: risk.color,
+                                  color: "#ffffff",
+                                  padding: "3px 12px",
+                                  borderRadius: "14px",
+                                  fontSize: "11px",
+                                  fontWeight: 700,
+                                  display: "inline-block",
+                                  letterSpacing: "0.4px",
+                                  boxShadow: `0 2px 8px ${risk.color}40`,
+                                  textTransform: "capitalize",
+                                }}
+                              >
+                                {risk.label} · {risk.score}
+                              </span>
+                            );
+                          })()}
+                        </td>
+                      )}
+                      {isAnalysisView && (
+                        <td style={{ fontSize: "11px", color: "var(--text-main)" }}>
+                          {inc?.socialProfileInfo.numberOfFollowers ?? r.followers ?? emptyLabel(r, r.platform, "followers")}
+                        </td>
+                      )}
+                      {isAnalysisView && (
+                        <td style={{ fontSize: "11px", color: "var(--text-main)" }}>
+                          {inc?.socialProfileInfo.location || r.location || emptyLabel(r, r.platform, "location")}
+                        </td>
+                      )}
+                      {isAnalysisView && (
+                        <td style={{ fontSize: "11px", color: "var(--text-main)", whiteSpace: "nowrap" }}>
+                          {inc?.socialProfileInfo.lastPostDate || r.last_post_date || emptyLabel(r, r.platform, "last_post_date")}
+                        </td>
+                      )}
+                      {isAnalysisView && (
                         <td>
                           {/* Two states only, by explicit product decision
                               (see incident_publisher.py::_is_recent).
@@ -4162,7 +4144,7 @@ export function ResultsGrid({
                             const undated = !inc?.socialProfileInfo.lastPostDate;
                             return (
                               <span
-                                style={{ color: active ? "var(--success)" : "#ffffff" }}
+                                style={{ color: active ? "var(--success)" : "var(--text-main)" }}
                                 title={
                                   active
                                     ? "Posted within the last 6 months"
@@ -4178,36 +4160,7 @@ export function ResultsGrid({
                         </td>
                       )}
                       {isAnalysisView && (
-                        <td style={{ fontSize: "11px", color: "#ffffff", whiteSpace: "nowrap" }}>{inc?.date || "—"}</td>
-                      )}
-                      {isAnalysisView && (
-                        <td style={{ textAlign: "center", padding: "8px 4px" }}>
-                          {(() => {
-                            const risk = getRiskBadgeDetails(inc?.riskRating);
-                            return (
-                              <span
-                                className="risk-score-circle"
-                                title={`Risk Score: ${risk.score}/10 (${risk.label})`}
-                                style={{
-                                  background: risk.color,
-                                  color: "#ffffff",
-                                  width: "24px",
-                                  height: "24px",
-                                  borderRadius: "50%",
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  justifyContent: "center",
-                                  fontSize: "11px",
-                                  fontWeight: 800,
-                                  boxShadow: `0 2px 8px ${risk.color}66`,
-                                  margin: "0 auto",
-                                }}
-                              >
-                                {risk.score}
-                              </span>
-                            );
-                          })()}
-                        </td>
+                        <td style={{ fontSize: "11px", color: "var(--text-main)", whiteSpace: "nowrap" }}>{inc?.date || "—"}</td>
                       )}
                       {!isAnalysisView && (
                         <td>
@@ -4291,7 +4244,7 @@ export function ResultsGrid({
                               className="table-btn-publish"
                               style={{
                                 background: "linear-gradient(135deg, rgba(136, 56, 221, 0.25), rgba(0, 229, 255, 0.2))",
-                                color: "#fff",
+                                color: "var(--text-main)",
                                 border: "1px solid rgba(0, 229, 255, 0.6)",
                                 borderRadius: "8px",
                                 padding: "6px 14px",

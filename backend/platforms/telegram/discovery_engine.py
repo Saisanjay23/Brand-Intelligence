@@ -113,7 +113,6 @@ class TelegramEntity:
     scam: bool = False
     restricted: bool = False
     fake: bool = False
-    is_bot: bool = False
     premium: bool = False
     avatar: str = ""
     has_photo: bool = False
@@ -121,19 +120,28 @@ class TelegramEntity:
 
     @property
     def url(self) -> str:
+        """The public t.me link, or a private-channel link by numeric id
+        when there is no @username to link through."""
         if self.username:
             return f"https://t.me/{self.username}"
         return f"https://t.me/c/{self.entity_id}" if self.entity_id else ""
 
 
 def _iso(value: Any) -> str:
+    """A Telethon datetime -> 'YYYY-MM-DD' (UTC), "" for anything else."""
     if isinstance(value, datetime):
         return value.astimezone(timezone.utc).date().isoformat()
     return ""
 
 
 def entity_from(obj: Any) -> Optional[TelegramEntity]:
-    """Telethon User/Channel/Chat -> TelegramEntity."""
+    """WHAT: one `TelegramEntity` out of a raw Telethon User/Channel/Chat
+    object. HOW: distinguishes profile/channel/group by whether the
+    object has a `title` (channels/groups) and its `broadcast` flag
+    (channel vs group); reads every flag Telethon exposes directly (bot
+    accounts read this too -- see the note on `is_bot` having been removed
+    as dead code, 2026-08-22). LINKED TO: called by `Telegram.search()`/
+    `resolve()` below, the shared builder both use."""
     if obj is None:
         return None
     username = getattr(obj, "username", "") or ""
@@ -161,7 +169,6 @@ def entity_from(obj: Any) -> Optional[TelegramEntity]:
         scam=bool(getattr(obj, "scam", False)),
         restricted=bool(getattr(obj, "restricted", False)),
         fake=bool(getattr(obj, "fake", False)),
-        is_bot=bool(getattr(obj, "bot", False)),
         premium=bool(getattr(obj, "premium", False)),
         avatar=f"https://t.me/i/userpic/320/{username}.jpg" if username and has_photo else "",
         has_photo=has_photo,
@@ -169,9 +176,20 @@ def entity_from(obj: Any) -> Optional[TelegramEntity]:
 
 
 class Telegram:
-    """A connected MTProto session. One at a time, the session file is a lock."""
+    """A connected MTProto session. One at a time, the session file is a
+    lock. LINKED TO: constructed by Discovery/Scraper in this file and
+    analysis_engine.py alike -- this is Telegram's counterpart to the
+    browser platforms' `stealth/browser.py::Session`, but talking raw
+    MTProto instead of driving a browser (see this module's own top
+    docstring for why that makes it the most accurate of the six
+    platforms)."""
 
     def __init__(self, options=None):
+        """`options` is a ScanOptions/DiscoveryOptions-shaped object
+        (scan_options.py); the actual credentials come from
+        TELEGRAM_API_ID/TELEGRAM_API_HASH in the environment (set by
+        sessions/manager.py::session_for_job before this is constructed),
+        not from `options` itself."""
         if not HAVE_TELETHON:
             raise RuntimeError("pip install telethon")
         self.o = options
@@ -183,6 +201,13 @@ class Telegram:
         self.client: Any = None
 
     async def start(self) -> None:
+        """WHAT: connects the MTProto client against the saved session
+        file, raising `NotAuthorised` if credentials are missing or the
+        session isn't logged in. HOW: `connect()`, deliberately never
+        `client.start()` -- Telethon's start() prompts for a phone code on
+        stdin, which would hang a headless job forever the first time a
+        session needs (re-)authenticating; see this module's own top
+        docstring on why login is never attempted here."""
         if not (self.api_id and self.api_hash):
             raise NotAuthorised("TELEGRAM_API_ID / TELEGRAM_API_HASH not set -- not authenticated")
         self.client = TelegramClient(self.session_file, self.api_id, self.api_hash)
@@ -201,6 +226,9 @@ class Telegram:
             )
 
     async def stop(self) -> None:
+        """Disconnects and releases the MTProto client, freeing the local
+        session file's lock (see Discovery.stop() below for the real
+        "database is locked" incident this matters for)."""
         if self.client is not None:
             try:
                 await self.client.disconnect()
@@ -239,7 +267,11 @@ class Telegram:
         return True
 
     async def _call(self, request):
-        """Every request goes through here so FloodWait is handled in one place."""
+        """Every raw Telethon RPC request goes through here so FloodWait
+        is caught and re-raised as this module's own `FloodWait` in one
+        place, rather than every call site duplicating the same
+        try/except. LINKED TO: used by `search()` and (for the "full"
+        detail calls) `resolve()` below."""
         try:
             return await self.client(request)
         except FloodWaitError as e:
@@ -300,6 +332,9 @@ class Telegram:
         return _iso(getattr(msgs[0], "date", None))
 
     async def pause(self, seconds: float) -> None:
+        """Plain pacing sleep -- MTProto has no per-page/scroll rhythm to
+        wait on, so unlike the browser platforms this is a flat delay,
+        not a wait-for-a-real-signal poll."""
         if seconds > 0:
             await asyncio.sleep(seconds)
 
@@ -312,10 +347,15 @@ SEARCH_LIMIT = 100
 
 @dataclass
 class Sweep:
+    """One keyword's search sweep, and how it ended. Simpler than the
+    browser platforms' Sweep: Telegram's global search returns a single
+    capped page with no cursor (see this module's own top docstring), so
+    there is no pagination state to carry -- `stopped` is always
+    "exhausted" (a clean single-page result) or "flood-wait"/"error"."""
+
     keyword: str
     tab: str = "all"
     hits: list[Hit] = field(default_factory=list)
-    entities: list[TelegramEntity] = field(default_factory=list)
     pages: int = 0
     stopped: str = ""
     complete: bool = False
@@ -347,6 +387,13 @@ class Discovery:
         self._connect_lock = asyncio.Lock()
 
     async def _ensure_connected(self) -> None:
+        """WHAT: connects `self.tg` on first use, idempotent after that.
+        HOW: double-checked locking against `self._connect_lock`, since
+        discovery_service.py's shared harness fires several keyword
+        sweeps concurrently and Telethon's own connect() is not safe to
+        race (see this class's own docstring). LINKED TO: called at the
+        top of `sweep()` below; every keyword sweep for one Discovery
+        instance shares the same connection once established."""
         if self.tg is not None:
             return
         async with self._connect_lock:
@@ -378,13 +425,20 @@ class Discovery:
             self.tg = None
 
     async def sweep(self, keyword: str, tab: str = "all") -> Sweep:
+        """One keyword, one request -- the simplest of the six platforms'
+        sweep() methods, since Telegram's global search has no pagination
+        to loop over (see this module's top docstring). WHAT IT RETURNS:
+        a `Sweep` of every Hit `Telegram.search()` found, "exhausted" the
+        moment that one request returns, or "flood-wait"/"error" if it
+        didn't. LINKED TO: called by discovery_service.py's shared
+        harness directly per keyword (not via `run()` below, which
+        predates that harness -- see this class's own docstring)."""
         out = Sweep(keyword=keyword, tab=tab)
         started = time.time()
         try:
             await self._ensure_connected()
             found = await self.tg.search(keyword, SEARCH_LIMIT)
             out.pages = 1
-            out.entities = found
             out.hits = [
                 Hit(
                     entity_id=e.entity_id or e.username,

@@ -31,6 +31,14 @@ BAD_SEGMENTS = {"s", "c", "joinchat", "addstickers", "share", "proxy", "i"}
 
 
 def normalize_url(url: str) -> str:
+    """WHAT: one canonical `https://t.me/<slug>` form for any Telegram
+    reference -- a t.me/telegram.me/telegram.dog URL, a bare `@handle`, or
+    a `tg://` deep link. HOW: an `@handle` is a special case (Telegram
+    renders it nowhere as a URL), everything else goes through
+    shared/text.py::parse_normalized_url with `tg://` added to the
+    accepted schemes. LINKED TO: the one normalizer this file uses;
+    discovery_engine.py has none of its own since it never receives raw
+    user-typed URLs, only entities it resolved itself."""
     stripped = (url or "").strip().strip("\"'")
     if stripped.startswith("@"):
         return f"https://t.me/{stripped[1:]}"
@@ -44,6 +52,11 @@ def normalize_url(url: str) -> str:
 
 
 def username_of(url: str) -> str:
+    """WHAT: the account's @username, out of a normalized t.me URL. HOW:
+    the first non-BAD_SEGMENTS path segment, with one special case:
+    `t.me/s/<name>` is the web-preview URL for the same channel `name`,
+    so it resolves through to the real segment rather than being rejected
+    outright. LINKED TO: Scraper.process()'s row.profile_id."""
     seg = [s for s in urlparse(normalize_url(url)).path.split("/") if s]
     if not seg:
         return ""
@@ -55,7 +68,15 @@ def username_of(url: str) -> str:
 
 
 class Scraper:
-    """Same surface as the browser scanners; MTProto behind it."""
+    """Same surface as the browser scanners; MTProto behind it.
+
+    LINKED TO: `analysis_path` in backend/platforms/registry.py names
+    this class (loaded dynamically), and backend/services/
+    analysis_service.py is the actual caller -- it constructs and drives
+    every platform's Scraper identically, which is why this class's
+    `__init__` accepts the same (args, cookies, session_id, proxy) shape
+    even though MTProto uses none of the last three.
+    """
 
     normalize_url = staticmethod(normalize_url)
 
@@ -66,15 +87,24 @@ class Scraper:
         self.tg = Telegram(args)
 
     async def start(self):
+        """Connects the MTProto client (delegates to Telegram.start())."""
         await self.tg.start()
 
     async def stop(self):
+        """Disconnects the MTProto client, releasing the session file's
+        lock (see discovery_engine.py's Discovery.stop() for the "database
+        is locked" incident this half of the pairing exists to prevent)."""
         await self.tg.stop()
 
     async def pause(self, mult: float = 1.0):
+        """Between-profile pacing -- a flat delay (MTProto has no
+        page/scroll rhythm to wait on, see Telegram.pause())."""
         await self.tg.pause(getattr(self.a, "delay", 2.0) * mult)
 
     async def check_session(self) -> bool:
+        """Is this MTProto session still authenticated? Delegates to
+        Telegram.check_session(), catching NotAuthorised (missing
+        credentials) as a plain False rather than letting it propagate."""
         from backend.shared.logging import get_logger as _gl
         try:
             return await self.tg.check_session()

@@ -21,6 +21,8 @@ interface Props {
   platformCount: number;
   liveResultsCount?: number;
   error: string;
+  theme: "light" | "dark";
+  onThemeToggle: () => void;
   children: ReactNode;
 }
 

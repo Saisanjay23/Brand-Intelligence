@@ -13,6 +13,24 @@ export type Priority = "High" | "Medium" | "Low";
 export type JobStatus = "queued" | "running" | "done" | "failed" | "cancelled";
 export type JobKind = "discovery" | "analysis";
 
+// One protected name and the search terms an analyst generated for it.
+//
+// `parent` is the real name -- it is NEVER searched. It is what discovered
+// profiles are scored against (name_score / the High-Low match badge) and
+// the keyword bucket every result is filed under, so filtering the results
+// grid by the parent shows everything all of its children turned up.
+//
+// `children` are the analyst's own permutations ("gautamadani",
+// "gautam adani official", ...) -- these ARE what gets typed into each
+// platform's search box, and are never scored against.
+//
+// A parent with no children searches itself, which is exactly how every
+// client behaved before this existed. See backend/shared/keywords.py.
+export interface KeywordGroup {
+  parent: string;
+  children: string[];
+}
+
 export interface Client {
   client_id: string;
   name: string;
@@ -20,8 +38,15 @@ export interface Client {
   // optional URL of the brand's own real logo, shown side-by-side with a
   // discovered profile's avatar during analysis triage.
 
+  // The flat PARENT lists. Derived server-side from `keyword_groups` when
+  // that is sent, so the two can never disagree. Every existing consumer
+  // (filters, incident category, per-type caps) reads these unchanged.
   name_keywords: string[];
   domain_keywords: string[];
+  // {"individual": KeywordGroup[], "domain": KeywordGroup[]}. Always
+  // returned by the API -- synthesised from the flat lists above (one
+  // childless parent each) for a client saved before this existed.
+  keyword_groups?: Record<string, KeywordGroup[]>;
   asset_name_individual_keywords?: string[];
   asset_name_domain_keywords?: string[];
   // platform id -> max results to scrape for this client, scoped
@@ -195,6 +220,20 @@ export interface Profile {
   // null when the client record is gone. Editable pre-publish via
   // ProfilePatch.incident_overrides.
   incident?: PublishedIncidentPreview | null;
+  // Retry-queue view only (GET /profiles/retry-queue), absent everywhere
+  // else. "eligible" -- will be revisited automatically (catch-up sweep or
+  // round-robin); "exhausted" -- hit the server's attempt cap
+  // (MAX_ANALYSIS_ATTEMPTS) and needs Resume; "stopped" -- an analyst
+  // turned retry off for this profile via the Stop action. See
+  // backend/services/profile_service.py::_retry_state.
+  retry_state?: "eligible" | "exhausted" | "stopped";
+  // One line explaining why this row is in the queue at all: either the
+  // analysis run never actually reached the profile ("never reached
+  // (CHECKPOINT)") or it did and came back short of a field the platform
+  // publishes ("missing: last_post_date, screenshot"). See
+  // backend/services/profile_service.py::_retry_reason.
+  retry_reason?: string;
+  retry_disabled?: boolean;
 }
 
 export interface PublishedIncidentSocialProfileInfo {

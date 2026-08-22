@@ -39,3 +39,19 @@ class DiscoveryIn(BaseModel):
     # name/photo step to re-run); an id for any other platform is simply
     # skipped, not an error.
     profile_ids: list[str] = []
+    # Scope the sweep to ONE keyword category, or leave it out for both.
+    #
+    #   "individual"  only the client's executive/individual names
+    #   "domain"      only its brand/domain keywords
+    #   None/blank    both -- the default, and what every caller that
+    #                 predates this field keeps getting
+    #
+    # Applied SERVER-side against each keyword's own resolved category
+    # (shared/keywords.py::KeywordPlan.kw_type) rather than by the caller
+    # sending a shorter keyword list: the server is what classifies a
+    # keyword in the first place -- for caps, for the incident category --
+    # so scoping anywhere else would let the two disagree about what
+    # "individual" means. Validated in discovery_controller.py; an
+    # unrecognised value is a 400, not a silently-ignored typo that sweeps
+    # everything.
+    keyword_type: Optional[str] = None

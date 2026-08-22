@@ -25,7 +25,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Iterator, Optional
 from urllib.parse import quote
 
@@ -53,7 +53,17 @@ RE_GONE = re.compile(
 
 
 class TwitterSession(Session):
+    """The X/Twitter-specific half of `Session` (backend/stealth/
+    browser.py): owns nothing but whether a cookie set is still logged
+    in. Loaded dynamically by backend/platforms/registry.py's
+    `session_path` entry for "twitter", constructed by session_for_job()
+    (backend/sessions/manager.py) whenever a job needs a live browser
+    context."""
+
     async def check_session(self) -> bool:  # type: ignore[override]
+        # WHAT/HOW: visits /home (an authenticated-only destination) and
+        # asks Session.check_session() to confirm the browser landed
+        # there rather than a login/checkpoint wall.
         # deny_paths is load-bearing, not decoration: confirmed live
         # (2026-08-13, a fresh no-cookie context) that a logged-out
         # `/home` lands on `https://x.com/` with a body reading "Happening
@@ -109,10 +119,19 @@ USER_QUERIES = ("UserByScreenName", "UserByRestId")
 # Both names are kept: the old one still appears on some account types and
 # costs nothing to keep matching. Add to this tuple rather than replacing
 # it when the name moves again.
-TWEETS_QUERIES = ("UserTweets", "UserOriginalsTimeline")
-
-# Back-compat alias; prefer TWEETS_QUERIES.
-TWEETS_QUERY = TWEETS_QUERIES[0]
+# `UserRepliesTimeline` is the /with_replies tab's own query, and it is not
+# a duplicate of the two above: `UserOriginalsTimeline` serves ORIGINAL
+# posts only. An account whose entire output is replies therefore has a
+# genuinely EMPTY originals timeline while `tweet_counts.tweets` still
+# reports a non-zero total, because that counter includes replies.
+#
+# Confirmed live (2026-08-22) on real stored rows that had come away with no
+# date: @MBS_4_U reports 7 posts, its profile tab's UserOriginalsTimeline
+# response carries no tweet objects at all (only who-to-follow entries and
+# cursors), and its /with_replies tab's UserRepliesTimeline response yields
+# 2020-01-17 -- the same date its rendered timeline shows. The date was
+# always reachable; nothing was asking the tab that had it.
+TWEETS_QUERIES = ("UserTweets", "UserOriginalsTimeline", "UserRepliesTimeline")
 
 # the default egg avatar; anything else is a real upload
 RE_DEFAULT_PIC = re.compile(
@@ -122,6 +141,12 @@ RE_DEFAULT_PIC = re.compile(
 
 @dataclass
 class TwitterUser:
+    """One X account, flattened from whichever payload shape found it
+    (SearchTimeline, UserByScreenName, or the DOM fallback). LINKED TO:
+    the universal per-platform result type -- built by
+    `_user_from_result`/`dom_users` below, consumed by
+    analysis_engine.py's Scraper.fill()."""
+
     entity_id: str = ""
     handle: str = ""
     name: str = ""
@@ -139,10 +164,13 @@ class TwitterUser:
 
     @property
     def url(self) -> str:
+        """The canonical profile URL, built from `handle`."""
         return f"https://x.com/{self.handle}" if self.handle else ""
 
     @property
     def has_custom_pic(self) -> bool:
+        """Is `avatar` a real upload, not X's own default egg avatar (see
+        RE_DEFAULT_PIC above)."""
         return bool(self.avatar) and not RE_DEFAULT_PIC.search(self.avatar)
 
 
@@ -217,7 +245,10 @@ async def dom_users(page) -> list[TwitterUser]:
 
 
 def parse_created(raw: str) -> str:
-    """'Wed Jun 01 12:00:00 +0000 2016' -> '2016-06-01'."""
+    """WHAT: X's own join-date string -> 'YYYY-MM-DD'. HOW: a fixed
+    strptime format ('Wed Jun 01 12:00:00 +0000 2016' -> '2016-06-01'),
+    "" on anything that doesn't match. LINKED TO: `_user_from_result`
+    below, for `created_iso`."""
     try:
         return datetime.strptime(raw, "%a %b %d %H:%M:%S %z %Y").date().isoformat()
     except (ValueError, TypeError):
@@ -225,6 +256,13 @@ def parse_created(raw: str) -> str:
 
 
 def _user_from_result(res: dict) -> Optional[TwitterUser]:
+    """WHAT: one `TwitterUser` out of a raw `user_results.result`-shaped
+    payload node, or None if it carries neither a handle nor an id. HOW:
+    checks the LEGACY location for every field first, falls back to the
+    field's new home under a sibling object -- see the module comment
+    above this function for the live-confirmed migration this defends
+    against. LINKED TO: called by `iter_users` below, the shared builder
+    every parser in this file uses once it has located a user node."""
     if not isinstance(res, dict):
         return None
     legacy = res.get("legacy")
@@ -304,8 +342,89 @@ def _user_from_result(res: dict) -> Optional[TwitterUser]:
     )
 
 
+ABOUT_QUERY = "AboutAccountQuery"
+
+
+@dataclass
+class AboutAccount:
+    """X's "About this account" panel, which is a real navigable page at
+    `https://x.com/<handle>/about` -- not only a click-to-open modal
+    (confirmed live 2026-08-22: navigating straight there fires
+    AboutAccountQuery and renders the panel, so no click is needed).
+
+    It is the ONLY place X publishes the country it believes an account
+    operates from, which matters because `legacy.location` / the profile's
+    own location field is free text the account holder typed and left blank
+    on 52% of stored rows.
+
+    `username_changes` is the other reason to read this panel. An
+    impersonator that has recycled one account through many handles is
+    exactly what a rename count exposes, and nothing else in any payload
+    this project reads carries it (live example: 19 changes, last in
+    November 2024, on an account passing itself off as a chairman).
+
+    The panel also carries `location_accurate`, `created_country_accurate`,
+    and `source` (e.g. "India Android App") -- confirmed live in the same
+    capture as everything below -- deliberately not kept here: nothing in
+    this project reads any of the three yet, and a field nobody consumes is
+    exactly the kind of thing that quietly rots (see this project's own
+    `TWEETS_QUERY` alias, removed 2026-08-22 for the identical reason). Add
+    them back with their consumer in the same change if a real use for them
+    shows up.
+    """
+
+    account_based_in: str = ""
+    username_changes: Optional[int] = None
+    last_username_change_iso: str = ""
+
+
+def about_account_from(blob: Any) -> Optional[AboutAccount]:
+    """Parse an AboutAccountQuery response.
+
+    Shape (live capture, 2026-08-22):
+        data.user_result_by_screen_name.result.about_profile
+            .account_based_in           "India"
+            .username_changes.count               "19"   (a STRING)
+            .username_changes.last_changed_at_msec "1732173166140"
+
+    Found structurally rather than by walking that path literally: every
+    other payload shape in this file has migrated at least once (see the
+    module docstring on `legacy` fields moving to sibling objects), and a
+    hardcoded path is the thing that breaks when it does.
+    """
+    for d in iter_dicts(blob):
+        about = d.get("about_profile")
+        if not isinstance(about, dict):
+            continue
+        changes = about.get("username_changes")
+        changes = changes if isinstance(changes, dict) else {}
+        count = changes.get("count")
+        try:
+            count = int(count) if count is not None else None
+        except (TypeError, ValueError):
+            count = None
+        last_iso = ""
+        raw_ms = changes.get("last_changed_at_msec")
+        try:
+            if raw_ms:
+                last_iso = datetime.fromtimestamp(
+                    int(raw_ms) / 1000, tz=timezone.utc).date().isoformat()
+        except (TypeError, ValueError, OSError, OverflowError):
+            last_iso = ""
+        return AboutAccount(
+            account_based_in=str(about.get("account_based_in") or "").strip(),
+            username_changes=count,
+            last_username_change_iso=last_iso,
+        )
+    return None
+
+
 def iter_users(blob: Any) -> Iterator[TwitterUser]:
-    """Every user object in a payload, deduped by id, in document order."""
+    """Every user object in a payload, deduped by id, in document order.
+    LINKED TO: `search_state()` below (a search-results sweep) and
+    analysis_engine.py's `process()` (the profile-visit UserByScreenName/
+    UserByRestId responses), the two places a raw payload needs turning
+    into TwitterUsers."""
     seen: set[str] = set()
     for d in iter_dicts(blob):
         res = d.get("result") if isinstance(d.get("result"), dict) else None
@@ -410,6 +529,11 @@ class SearchState:
 
 
 def search_state(blob: Any) -> SearchState:
+    """WHAT: one SearchTimeline response's cursor + user list, combined.
+    HOW: scans for the bottom pagination cursor (both the legacy
+    entryType and the current __typename spelling, since this too has
+    migrated) and the users via `iter_users()`. LINKED TO: called from
+    Discovery.sweep()'s on_response handler, once per response."""
     st = SearchState()
     for d in iter_dicts(blob):
         if (
@@ -425,7 +549,10 @@ def search_state(blob: Any) -> SearchState:
 
 
 def parse_lines(text: str) -> Iterator[Any]:
-    """Most responses are a single JSON object; some stream as JSON lines."""
+    """WHAT: yields every JSON object in `text`. HOW: whole-text parse
+    first, per-line fallback for a streamed response. LINKED TO: every
+    response handler in this file and analysis_engine.py, the same shape
+    Instagram/Facebook/Telegram's own `parse_lines` provide."""
     text = text.strip()
     if not text:
         return
@@ -450,6 +577,12 @@ SEARCH_URL = "https://x.com/search?q={q}&src=typed_query&f=user"
 
 @dataclass
 class Sweep:
+    """One keyword's search sweep, and how it ended. LINKED TO: built and
+    returned by Discovery.sweep() below; every platform's discovery
+    engine defines its own Sweep with this shape (hits, pages, stopped,
+    complete, source, extraction) rather than a shared base class -- see
+    instagram/discovery_engine.py's Sweep docstring for why."""
+
     keyword: str
     tab: str = "people"
     hits: list[Hit] = field(default_factory=list)
@@ -474,13 +607,45 @@ class Sweep:
 
 
 class Discovery:
-    """Runs keyword sweeps on an already-started browser session."""
+    """Runs keyword sweeps on an already-started browser session.
+
+    LINKED TO: `discovery_path` in backend/platforms/registry.py names
+    this class (loaded dynamically, by import path string), and
+    backend/services/discovery_service.py is the actual caller.
+    """
 
     def __init__(self, args, ctx):
+        """`args` is a DiscoveryOptions-shaped object (scan_options.py)
+        carrying pacing/cap knobs; `ctx` is the already-started
+        Playwright BrowserContext this class drives pages inside of."""
         self.a = args
         self.ctx = ctx
 
     async def sweep(self, keyword: str, tab: str = "people") -> Sweep:
+        """One keyword's People-search sweep, start to finish -- the
+        counterpart to facebook/discovery_engine.py's Discovery.sweep(),
+        but X only has one search surface (`tab` is accepted for
+        interface symmetry with other platforms but always "people").
+
+        WHAT IT RETURNS: a `Sweep` carrying every hit, which completeness
+        signal stopped it (exhausted / stalled / cap:results / cap:seconds
+        / error), and which extraction tier answered (network:
+        SearchTimeline or the dom:UserCell fallback).
+
+        HOW, roughly in order:
+          1. A short randomised delay before the first request (see the
+             inline comment just below for the live-measured reason: near-
+             simultaneous requests across concurrent sweeps trip X's
+             anti-automation throttling).
+          2. Navigate to the search URL, absorb each SearchTimeline
+             response into `by_id` via `search_state()`.
+          3. Scroll-paginate until the bottom cursor repeats with no new
+             users, a cap fires, or the sweep stalls past `self.a.patience`.
+          4. Run the extraction chain (network first, DOM fallback
+             second -- see `run_strategies` in shared/extraction.py).
+
+        LINKED TO: called by `run()` below (one call per keyword).
+        """
         out = Sweep(keyword=keyword, tab=tab)
         started = time.time()
         # A client's keyword groups run concurrently (discovery_service.py's

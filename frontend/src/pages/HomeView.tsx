@@ -4,7 +4,7 @@ import { analysisApi } from "../api/analysisApi";
 import { clientsApi } from "../api/clientsApi";
 import { discoveryApi } from "../api/discoveryApi";
 import { jobsApi } from "../api/jobsApi";
-import type { Client, Job, PlatformHealth } from "../api/types";
+import type { Client, Job, KeywordGroup, PlatformHealth } from "../api/types";
 import { PlatformIcon } from "../components/PlatformIcon";
 import { GlobalSearchModal } from "../components/GlobalSearchModal";
 import { confirmAction } from "../utils/confirmAction";
@@ -379,15 +379,159 @@ function KeywordGeneratorModal({
   );
 }
 
+// Parent/child keyword editor.
+//
+// The distinction it exists to express (see backend/shared/keywords.py):
+//   PARENT   the real name being protected. NEVER searched. It is what
+//            discovered profiles are scored against and the bucket they are
+//            filed under, so filtering results by it shows everything all of
+//            its children turned up.
+//   CHILDREN the analyst's own permutations. These ARE what gets searched on
+//            every platform, and are never scored against.
+//
+// A parent with no children searches itself, which is what every client did
+// before this existed -- so an analyst who adds a parent and stops is in
+// exactly the old behaviour, not a broken half-state. The row says so
+// explicitly rather than leaving that to be guessed.
+function KeywordGroupEditor({
+  groups,
+  onChange,
+  parentPlaceholder,
+  childPlaceholder,
+  accent,
+  disabled,
+}: {
+  groups: KeywordGroup[];
+  onChange: (next: KeywordGroup[]) => void;
+  parentPlaceholder: string;
+  childPlaceholder: string;
+  accent: string;
+  disabled?: boolean;
+}) {
+  const [parentInput, setParentInput] = useState("");
+
+  const addParent = () => {
+    const trimmed = parentInput.trim();
+    if (!trimmed) return;
+    if (groups.some((g) => g.parent.toLowerCase() === trimmed.toLowerCase())) {
+      toast(`⚠️ "${trimmed}" already exists`, { id: `dup-parent-${trimmed.toLowerCase()}` });
+      setParentInput("");
+      return;
+    }
+    onChange([...groups, { parent: trimmed, children: [] }]);
+    setParentInput("");
+  };
+
+  const removeParent = (idx: number) =>
+    onChange(groups.filter((_, i) => i !== idx));
+
+  const setChildren = (idx: number, children: string[]) =>
+    onChange(groups.map((g, i) => (i === idx ? { ...g, children } : g)));
+
+  const totalSearchTerms = groups.reduce(
+    (n, g) => n + (g.children.length || 1), 0,
+  );
+
+  return (
+    <div>
+      <div style={{ fontSize: "12px", color: "var(--text-dim)", marginBottom: "10px", lineHeight: 1.5 }}>
+        The <strong style={{ color: accent }}>parent</strong> is the real name — it is never searched,
+        it is what results are matched against and grouped under. Its{" "}
+        <strong style={{ color: accent }}>search terms</strong> are the permutations actually
+        searched on every platform. A parent with no search terms searches itself.
+      </div>
+
+      <div className="chips-input-container" style={{ marginBottom: "12px" }}>
+        <input
+          value={parentInput}
+          onChange={(e) => setParentInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addParent();
+            }
+          }}
+          onBlur={addParent}
+          placeholder={parentPlaceholder}
+          disabled={disabled}
+          style={{ flex: 1, minWidth: "220px", background: "transparent", border: "none", outline: "none", color: "var(--text-main)", fontSize: "13px" }}
+        />
+      </div>
+
+      {!groups.length ? (
+        <div style={{ padding: "18px", textAlign: "center", fontSize: "12px", color: "var(--text-dim)", border: "1px dashed var(--border-subtle)", borderRadius: "10px" }}>
+          No names configured yet. Add one above to get started.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          {groups.map((g, idx) => (
+            <div
+              key={`${g.parent}-${idx}`}
+              style={{
+                border: "1px solid var(--border-subtle)",
+                borderLeft: `3px solid ${accent}`,
+                borderRadius: "10px",
+                padding: "10px 12px",
+                background: "var(--bg-inner, rgba(255,255,255,0.02))",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", marginBottom: "8px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0 }}>
+                  <span style={{ fontSize: "13px", fontWeight: 700, color: "var(--text-main)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {g.parent}
+                  </span>
+                  <span style={{ fontSize: "10px", fontWeight: 600, color: accent, background: "rgba(255,255,255,0.05)", padding: "2px 7px", borderRadius: "20px", whiteSpace: "nowrap" }}>
+                    {g.children.length
+                      ? `${g.children.length} search term${g.children.length === 1 ? "" : "s"}`
+                      : "searches itself"}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => removeParent(idx)}
+                  disabled={disabled}
+                  title="Remove this name and all its search terms"
+                  style={{ background: "transparent", border: "none", color: "var(--danger, #e95053)", cursor: "pointer", fontSize: "13px", padding: "2px 4px", flexShrink: 0 }}
+                >
+                  ✕
+                </button>
+              </div>
+              <ChipInput
+                chips={g.children}
+                onAdd={(v) => setChildren(idx, [...g.children, v])}
+                onRemove={(i) => setChildren(idx, g.children.filter((_, j) => j !== i))}
+                placeholder={childPlaceholder}
+                disabled={disabled}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {groups.length > 0 && (
+        <div style={{ fontSize: "11px", color: "var(--text-dim)", marginTop: "10px" }}>
+          <strong style={{ color: "var(--text-main)" }}>{groups.length}</strong> name
+          {groups.length === 1 ? "" : "s"} ·{" "}
+          <strong style={{ color: accent }}>{totalSearchTerms}</strong> search
+          {totalSearchTerms === 1 ? "" : "es"} per platform
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 function KeywordTabs({
   activeTab,
   onTab,
   nameKeywords,
   domainKeywords,
+  nameGroups,
+  domainGroups,
+  onNameGroups,
+  onDomainGroups,
   onAddName,
-  onRemoveName,
   onAddDomain,
-  onRemoveDomain,
   assetNameIndividualKw,
   assetNameDomainKw,
   onAddAssetIndividual,
@@ -398,12 +542,18 @@ function KeywordTabs({
 }: {
   activeTab: KeywordTab;
   onTab: (t: KeywordTab) => void;
+  // Derived parent lists -- still used for the tab counts and by the
+  // threat-keyword generator, which reads the real names to build
+  // permutations from.
   nameKeywords: string[];
   domainKeywords: string[];
+  nameGroups: KeywordGroup[];
+  domainGroups: KeywordGroup[];
+  onNameGroups: (next: KeywordGroup[]) => void;
+  onDomainGroups: (next: KeywordGroup[]) => void;
+  // Adds a new PARENT (what the generator modal produces).
   onAddName: (kw: string) => void;
-  onRemoveName: (i: number) => void;
   onAddDomain: (kw: string) => void;
-  onRemoveDomain: (i: number) => void;
   assetNameIndividualKw: string[];
   assetNameDomainKw: string[];
   onAddAssetIndividual: (kw: string) => void;
@@ -461,21 +611,23 @@ function KeywordTabs({
       </div>
 
       <div style={{ display: activeTab === "names" ? "block" : "none" }}>
-        <ChipInput
-          chips={nameKeywords}
-          onAdd={onAddName}
-          onRemove={onRemoveName}
-          placeholder="Type an executive/individual name and press Enter…"
+        <KeywordGroupEditor
+          groups={nameGroups}
+          onChange={onNameGroups}
+          parentPlaceholder="Type an executive/individual name and press Enter…"
+          childPlaceholder="Add a search term for this name and press Enter…"
+          accent="var(--cyan, #00E5FF)"
           disabled={disabled}
         />
       </div>
 
       <div style={{ display: activeTab === "domain" ? "block" : "none" }}>
-        <ChipInput
-          chips={domainKeywords}
-          onAdd={onAddDomain}
-          onRemove={onRemoveDomain}
-          placeholder="Type a brand/product keyword and press Enter…"
+        <KeywordGroupEditor
+          groups={domainGroups}
+          onChange={onDomainGroups}
+          parentPlaceholder="Type a brand/product keyword and press Enter…"
+          childPlaceholder="Add a search term for this keyword and press Enter…"
+          accent="var(--purple, #8838DD)"
           disabled={disabled}
         />
       </div>
@@ -698,6 +850,22 @@ function platformScope(sel: Set<string>): { platform?: string; platforms?: strin
 
 const EMPTY_FORM = { id: "", name: "", domain: "", nameKw: [] as string[], domainKw: [] as string[], cron: "" };
 
+// A loaded client's groups for one keyword type. The API always returns
+// `keyword_groups` (synthesising childless parents from the flat lists for
+// a client saved before the feature existed), but this falls back to the
+// flat list anyway so the form still populates against an older API build
+// or a partially-cached response rather than silently showing no keywords.
+function groupsOf(c: Client | null, type: "individual" | "domain", flat: string[]): KeywordGroup[] {
+  const fromApi = c?.keyword_groups?.[type];
+  if (Array.isArray(fromApi) && fromApi.length) {
+    return fromApi.map((g) => ({
+      parent: g.parent,
+      children: Array.isArray(g.children) ? [...g.children] : [],
+    }));
+  }
+  return (flat || []).map((parent) => ({ parent, children: [] }));
+}
+
 export function HomeView({
   clientId,
   platforms,
@@ -738,8 +906,29 @@ export function HomeView({
   const [nameInput, setNameInput] = useState(EMPTY_FORM.name);
   const [domainInput, setDomainInput] = useState(EMPTY_FORM.domain);
 
-  const [nameKeywords, setNameKeywords] = useState<string[]>(EMPTY_FORM.nameKw);
-  const [domainKeywords, setDomainKeywords] = useState<string[]>(EMPTY_FORM.domainKw);
+  // Parent/child groups are the SOURCE OF TRUTH here; the flat parent
+  // lists below are derived from them, never edited independently, so the
+  // form physically cannot produce a client whose groups and flat keywords
+  // disagree (the server re-derives them again on save for the same
+  // reason). See backend/shared/keywords.py.
+  const [nameGroups, setNameGroups] = useState<KeywordGroup[]>([]);
+  const [domainGroups, setDomainGroups] = useState<KeywordGroup[]>([]);
+  const nameKeywords = useMemo(() => nameGroups.map((g) => g.parent), [nameGroups]);
+  const domainKeywords = useMemo(() => domainGroups.map((g) => g.parent), [domainGroups]);
+
+  // Adding a bare PARENT (what the threat-keyword generator produces). A
+  // parent with no children searches itself, so a generated permutation
+  // added this way behaves exactly as it did before groups existed.
+  const addNameParent = (v: string) =>
+    setNameGroups((prev) =>
+      prev.some((g) => g.parent.toLowerCase() === v.toLowerCase())
+        ? prev
+        : [...prev, { parent: v, children: [] }]);
+  const addDomainParent = (v: string) =>
+    setDomainGroups((prev) =>
+      prev.some((g) => g.parent.toLowerCase() === v.toLowerCase())
+        ? prev
+        : [...prev, { parent: v, children: [] }]);
   const [assetNameIndividualKw, setAssetNameIndividualKw] = useState<string[]>([]);
   const [assetNameDomainKw, setAssetNameDomainKw] = useState<string[]>([]);
   const [platformLimitsIndividual, setPlatformLimitsIndividual] = useState<Record<string, string>>({});
@@ -780,8 +969,8 @@ export function HomeView({
     setIdInput(c.client_id);
     setNameInput(c.name);
     setDomainInput(c.domain || "");
-    setNameKeywords(c.name_keywords || []);
-    setDomainKeywords(c.domain_keywords || []);
+    setNameGroups(groupsOf(c, "individual", c.name_keywords || []));
+    setDomainGroups(groupsOf(c, "domain", c.domain_keywords || []));
     setAssetNameIndividualKw(c.asset_name_individual_keywords || []);
     setAssetNameDomainKw(c.asset_name_domain_keywords || []);
     setPlatformLimitsIndividual(
@@ -814,8 +1003,8 @@ export function HomeView({
     setIdInput(EMPTY_FORM.id);
     setNameInput(EMPTY_FORM.name);
     setDomainInput(EMPTY_FORM.domain);
-    setNameKeywords(EMPTY_FORM.nameKw);
-    setDomainKeywords(EMPTY_FORM.domainKw);
+    setNameGroups([]);
+    setDomainGroups([]);
     setAssetNameIndividualKw([]);
     setAssetNameDomainKw([]);
     setPlatformLimitsIndividual({});
@@ -885,8 +1074,8 @@ export function HomeView({
     setIdInput(`${c.client_id}-copy`);
     setNameInput(`${c.name || c.client_id} (Copy)`);
     setDomainInput(c.domain || "");
-    setNameKeywords([...(c.name_keywords || [])]);
-    setDomainKeywords([...(c.domain_keywords || [])]);
+    setNameGroups(groupsOf(c, "individual", c.name_keywords || []));
+    setDomainGroups(groupsOf(c, "domain", c.domain_keywords || []));
     setAssetNameIndividualKw([...(c.asset_name_individual_keywords || [])]);
     setAssetNameDomainKw([...(c.asset_name_domain_keywords || [])]);
     setPlatformLimitsIndividual(
@@ -898,7 +1087,17 @@ export function HomeView({
     toast.success(`Cloned configuration from "${c.name || c.client_id}". Review and save!`, { icon: "📋" });
   };
 
-  const activeKeywordCount = (activeClient?.name_keywords?.length || 0) + (activeClient?.domain_keywords?.length || 0);
+  const activeIndividualCount = activeClient?.name_keywords?.length || 0;
+  const activeDomainCount = activeClient?.domain_keywords?.length || 0;
+  const activeKeywordCount = activeIndividualCount + activeDomainCount;
+
+  // Which keyword category a discovery sweep should cover. "" is BOTH --
+  // the default, and what every sweep did before this control existed.
+  // The full keyword list is still sent either way; the server scopes it
+  // by each keyword's own resolved category (see
+  // backend/services/discovery_service.py), so this and the per-category
+  // caps can never disagree about what "individual" means.
+  const [sweepKeywordType, setSweepKeywordType] = useState<"" | "individual" | "domain">("");
 
   const saveConfig = async (): Promise<Client | null> => {
     const id = idInput.trim();
@@ -933,8 +1132,12 @@ export function HomeView({
         client_id: id,
         name,
         domain: domainInput.trim(),
+        // Sent for older/other consumers, but the server treats
+        // `keyword_groups` as authoritative and re-derives these from its
+        // parents anyway -- see backend/shared/keywords.py.
         name_keywords: nameKeywords,
         domain_keywords: domainKeywords,
+        keyword_groups: { individual: nameGroups, domain: domainGroups },
         asset_name_individual_keywords: assetNameIndividualKw,
         asset_name_domain_keywords: assetNameDomainKw,
         platform_limits_individual: parsedLimitsIndividual,
@@ -965,6 +1168,17 @@ export function HomeView({
       onError("This client has no keywords yet — head to the Keywords tab to add executive names or brand keywords.");
       return;
     }
+    // The server rejects this too (discovery_service raises rather than
+    // sweeping nothing and reporting success), but catching it here means
+    // the analyst finds out on click instead of via a failed job.
+    if (sweepKeywordType === "individual" && !activeIndividualCount) {
+      onError("This client has no individual names configured — switch the scope back to Both or Domain, or add some in the Keywords tab.");
+      return;
+    }
+    if (sweepKeywordType === "domain" && !activeDomainCount) {
+      onError("This client has no domain keywords configured — switch the scope back to Both or Individual, or add some in the Keywords tab.");
+      return;
+    }
     try {
       const { job_id } = await discoveryApi.discover({
         client_id: activeClient.client_id,
@@ -973,6 +1187,7 @@ export function HomeView({
           ...(activeClient.domain_keywords || []),
         ]),
         ...platformScope(sweepPlatforms),
+        ...(sweepKeywordType ? { keyword_type: sweepKeywordType } : {}),
       });
       const job = await jobsApi.job(job_id);
       onJobs([job]);
@@ -1233,10 +1448,12 @@ export function HomeView({
                   onTab={setActiveTab}
                   nameKeywords={nameKeywords}
                   domainKeywords={domainKeywords}
-                  onAddName={(v) => setNameKeywords((prev) => (prev.some((k) => k.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]))}
-                  onRemoveName={(i) => setNameKeywords((prev) => prev.filter((_, idx) => idx !== i))}
-                  onAddDomain={(v) => setDomainKeywords((prev) => (prev.some((k) => k.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]))}
-                  onRemoveDomain={(i) => setDomainKeywords((prev) => prev.filter((_, idx) => idx !== i))}
+                  nameGroups={nameGroups}
+                  domainGroups={domainGroups}
+                  onNameGroups={setNameGroups}
+                  onDomainGroups={setDomainGroups}
+                  onAddName={addNameParent}
+                  onAddDomain={addDomainParent}
                   assetNameIndividualKw={assetNameIndividualKw}
                   assetNameDomainKw={assetNameDomainKw}
                   onAddAssetIndividual={(v) => setAssetNameIndividualKw((prev) => (prev.some((k) => k.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]))}
@@ -1441,6 +1658,38 @@ export function HomeView({
                     })}
                   </div>
 
+                  {/* Which KEYWORD CATEGORY the sweep covers, independent of
+                      the platform chips above. Scopes discovery only --
+                      analysis re-reads whatever discovery already stored, so
+                      it has no keyword scope of its own to set. */}
+                  <div className="unified-platform-selector" style={{ marginTop: "8px" }}>
+                    <span style={{ fontSize: "11px", color: "var(--text-dim)", fontWeight: 600, alignSelf: "center", marginRight: "2px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                      Keywords
+                    </span>
+                    {([
+                      { id: "" as const, label: "Both", count: activeKeywordCount,
+                        title: "Sweep both individual names and domain keywords (default)" },
+                      { id: "individual" as const, label: "Individual", count: activeIndividualCount,
+                        title: "Sweep only this client's executive/individual names" },
+                      { id: "domain" as const, label: "Domain", count: activeDomainCount,
+                        title: "Sweep only this client's brand/domain keywords" },
+                    ]).map((opt) => (
+                      <button
+                        key={opt.id || "both"}
+                        type="button"
+                        className={`unified-platform-btn ${sweepKeywordType === opt.id ? "active" : ""}`}
+                        onClick={() => setSweepKeywordType(opt.id)}
+                        disabled={opt.id !== "" && opt.count === 0}
+                        title={opt.id !== "" && opt.count === 0
+                          ? `This client has no ${opt.label.toLowerCase()} keywords configured`
+                          : opt.title}
+                      >
+                        <span>{opt.label}</span>
+                        <span className="kw-tab-count">{opt.count}</span>
+                      </button>
+                    ))}
+                  </div>
+
                   {/* Discover/Analyse stay available while something is
                       already in flight -- including a sweep the round-robin
                       scheduler started for this client, which the app adopts
@@ -1466,9 +1715,14 @@ export function HomeView({
                       >
                         <DiscoverIcon size={17} color="#fff" />
                         <span>
-                          {sweepPlatformName
-                            ? `Discover (${sweepPlatformName})`
-                            : "Discover"}
+                          {(() => {
+                            const bits = [
+                              sweepPlatformName,
+                              sweepKeywordType === "individual" ? "Individual"
+                                : sweepKeywordType === "domain" ? "Domain" : "",
+                            ].filter(Boolean);
+                            return bits.length ? `Discover (${bits.join(" · ")})` : "Discover";
+                          })()}
                         </span>
                       </button>
                       {busy && onStopDiscovery && (
@@ -1571,10 +1825,12 @@ export function HomeView({
                   onTab={setActiveTab}
                   nameKeywords={nameKeywords}
                   domainKeywords={domainKeywords}
-                  onAddName={(v) => setNameKeywords((prev) => (prev.some((k) => k.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]))}
-                  onRemoveName={(i) => setNameKeywords((prev) => prev.filter((_, idx) => idx !== i))}
-                  onAddDomain={(v) => setDomainKeywords((prev) => (prev.some((k) => k.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]))}
-                  onRemoveDomain={(i) => setDomainKeywords((prev) => prev.filter((_, idx) => idx !== i))}
+                  nameGroups={nameGroups}
+                  domainGroups={domainGroups}
+                  onNameGroups={setNameGroups}
+                  onDomainGroups={setDomainGroups}
+                  onAddName={addNameParent}
+                  onAddDomain={addDomainParent}
                   assetNameIndividualKw={assetNameIndividualKw}
                   assetNameDomainKw={assetNameDomainKw}
                   onAddAssetIndividual={(v) => setAssetNameIndividualKw((prev) => (prev.some((k) => k.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]))}

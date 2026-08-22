@@ -70,7 +70,8 @@ from backend.shared.models.row import Row
 from backend.shared.text import (MONTHS, name_score,
                                    normalized_host, parse_count,
                                    parse_normalized_url)
-from backend.platforms.instagram.discovery_engine import (DEFAULT_PIC_HINTS,
+from backend.platforms.instagram.discovery_engine import (ABOUT_PANEL_APPID,
+                                                           DEFAULT_PIC_HINTS,
                                                            MOBILE_UA,
                                                            PROFILE_ENDPOINTS,
                                                            PROFILE_INFO_API,
@@ -78,13 +79,39 @@ from backend.platforms.instagram.discovery_engine import (DEFAULT_PIC_HINTS,
                                                            RE_GONE, RE_LOGIN,
                                                            InstagramSession,
                                                            InstagramUser,
+                                                           about_country,
                                                            parse_lines,
-                                                           profile_from)
+                                                           profile_from,
+                                                           timeline_latest_post)
 
 BAD_SEGMENTS = {"p", "reel", "reels", "explore", "stories", "accounts", "direct", "tv"}
 
+# How long to let the profile's timeline response land before giving up on
+# reading a post date from it. Measured live: the profile payload answers at
+# ~1s and the timeline at ~9s on the same visit, so this has to clear that
+# gap or the cheap tier never gets a chance. Generous on purpose and bounded
+# either way -- the cost of waiting is a few seconds on profiles that have
+# no date yet, and the cost of reading too early is a false "no posts",
+# which feeds the activity classification and the risk score.
+_TIMELINE_WAIT_S = 12.0
+
+# The About panel is two clicks and a Bloks round-trip. Short, explicit
+# budgets: it is a bonus field, and must never be what makes a profile slow.
+_ABOUT_CLICK_MS = 4000
+_ABOUT_RENDER_MS = 6000
+
 
 def normalize_url(url: str) -> str:
+    """WHAT: one canonical `https://www.instagram.com/<slug>/` form for
+    any Instagram URL variant. HOW: delegates host/path parsing to
+    shared/text.py::parse_normalized_url, folds every instagram host
+    variant onto www.instagram.com, and always keeps the trailing slash
+    (Instagram's own canonical form). LINKED TO: unlike Facebook/Twitter
+    (whose discovery_engine.py defines the shared normalizer for both
+    phases), Instagram's discovery_engine.py has no normalize_url of its
+    own -- this is the only one, used by Scraper below and exposed as
+    `Scraper.normalize_url` for callers that don't know which platform
+    they're holding."""
     p = parse_normalized_url(url)
     if p is None:
         return ""
@@ -96,6 +123,10 @@ def normalize_url(url: str) -> str:
 
 
 def username_of(url: str) -> str:
+    """WHAT: the account's username, out of a normalized profile URL.
+    HOW: the first non-BAD_SEGMENTS path segment (rejecting reserved
+    routes like /p/, /explore/, /accounts/ that are not profile URLs at
+    all). LINKED TO: Scraper.process()'s row.profile_id."""
     seg = [s for s in urlparse(normalize_url(url)).path.split("/") if s]
     if not seg:
         return ""
@@ -104,7 +135,13 @@ def username_of(url: str) -> str:
 
 
 class Scraper:
-    """One logged-in Instagram session, driven over a list of profiles."""
+    """One logged-in Instagram session, driven over a list of profiles.
+
+    LINKED TO: `analysis_path` in backend/platforms/registry.py names
+    this class (loaded dynamically, by import path string), and
+    backend/services/analysis_service.py is the actual caller, one
+    Scraper per analysis run.
+    """
 
     normalize_url = staticmethod(normalize_url)
 
@@ -115,6 +152,10 @@ class Scraper:
         session_id: str = "",
         proxy: dict | None = None,
     ):
+        """WHAT: binds this Scraper to one InstagramSession built from
+        `cookies`. HOW: `args` is a ScanOptions-shaped object
+        (scan_options.py); images load only when evidence capture is on
+        (a screenshot with images blocked is useless as proof)."""
         self.a = args
         self.evidence = args.evidence or None  # GridFS key prefix, not a path
         self.session = InstagramSession(
@@ -127,18 +168,24 @@ class Scraper:
 
     @property
     def ctx(self):
+        """The live Playwright BrowserContext, once `start()` has run."""
         return self.session.ctx
 
     async def start(self):
+        """Launches the browser context."""
         await self.session.start()
 
     async def stop(self):
+        """Closes the browser context and its Playwright driver."""
         await self.session.stop()
 
     async def pause(self, mult: float = 1.0):
+        """Between-profile pacing (jittered, fatigue-aware) -- see
+        stealth/human.py."""
         await self.session.pause(mult)
 
     async def check_session(self) -> bool:
+        """Is this cookie set still logged in and unchallenged?"""
         return await self.session.check_session()
 
     # ─────────────────────────── direct API call ───────────────────────── #
@@ -217,6 +264,13 @@ class Scraper:
     """
 
     async def read_dom(self, page, username: str) -> dict:
+        """WHAT: the last-resort header read (name/posts/followers/
+        following/avatar/verified/isPrivate) when neither the direct API
+        call nor passive interception produced a profile. HOW: runs
+        JS_HEADER above against the rendered page. LINKED TO: called from
+        process() only when `fetch_via_api()` and the intercepted
+        response both came up empty; result consumed by `fill_from_dom()`
+        below."""
         try:
             return await page.evaluate(self.JS_HEADER, username) or {}
         except Exception:
@@ -348,9 +402,187 @@ class Scraper:
                 continue
         return max(found) if found else ""
 
+    # ────────────────────── About this account ────────────────────────── #
+
+    # The panel renders each field as a label line followed by its value
+    # line: "Date joined" then "April 2025", "Account based in" then
+    # "India". Matching the label and taking the NEXT line is what survives
+    # Instagram restyling the panel, which it does often; the labels
+    # themselves are the stable part.
+    JS_ABOUT_PANEL = """
+    () => {
+      const lines = (document.body.innerText || "").split("\\n")
+        .map(s => s.trim()).filter(Boolean);
+      const after = (label) => {
+        const i = lines.findIndex(l => l.toLowerCase() === label.toLowerCase());
+        return i >= 0 && i + 1 < lines.length ? lines[i + 1] : "";
+      };
+      return {
+        joined: after("Date joined"),
+        based_in: after("Account based in"),
+        open: lines.some(l => /^about this account$/i.test(l)),
+      };
+    }
+    """
+
+    # "April 2025" -> "2025-04". MONTH precision, and deliberately not
+    # padded out to a day: the panel simply does not publish one, and
+    # writing "2025-04-01" would put a date in the record that Instagram
+    # never said.
+    _RE_MONTH_YEAR = re.compile(r"^([A-Za-z]+)\s+(\d{4})$")
+
+    @classmethod
+    def _parse_joined(cls, text: str) -> str:
+        m = cls._RE_MONTH_YEAR.match((text or "").strip())
+        if not m:
+            return ""
+        name, year = m.groups()
+        month = next((i for i, mon in enumerate(MONTHS, start=1)
+                      if mon.lower() == name.lower()), None)
+        if not month:
+            return ""
+        y = int(year)
+        if not (2010 <= y <= datetime.now(timezone.utc).year):
+            return ""  # Instagram launched in 2010
+        return f"{y:04d}-{month:02d}"
+
+    async def read_about_panel(self, username: str) -> dict:
+        """Instagram's "About this account" -> {country, joined}.
+
+        Two fields this engine could not otherwise report AT ALL: location
+        is blank on 100% of stored Instagram rows, and the creation date
+        has always been documented here as not exposed. The panel publishes
+        both.
+
+        It has to be CLICKED open -- it is not fetchable. Confirmed live
+        2026-08-22: `/api/v1/users/<pk>/about_this_account/` is a 404,
+        `/api/v1/users/<pk>/info/` answers 200 but carries no country, and
+        the panel itself is a POST to a Bloks endpoint carrying ~1.8KB of
+        session-derived tokens. Driving the page is what keeps those tokens
+        correct without this engine forging any of them.
+
+        Runs on its OWN page: the panel is a modal over the profile, so
+        opening it on the caller's page would put a dialog across the
+        evidence screenshot.
+
+        Returns {} on anything short of a clean read -- never a guess.
+        """
+        page = await self.ctx.new_page()
+        bodies: list[str] = []
+
+        async def on_response(resp):
+            try:
+                if ABOUT_PANEL_APPID not in resp.url:
+                    return
+                bodies.append(await resp.text())
+            except Exception:
+                pass
+
+        page.on("response", lambda r: asyncio.create_task(on_response(r)))
+        try:
+            await page.goto(
+                f"https://www.instagram.com/{quote(username)}/",
+                wait_until="domcontentloaded", timeout=self.a.timeout * 1000,
+            )
+            # The Options button is NOT on the page at domcontentloaded --
+            # measured live, it first exists somewhere between 0 and 3
+            # seconds in. Clicking without this wait is why the panel
+            # silently produced nothing on every profile: the locator
+            # matched zero elements, the loop fell through to `else` and
+            # returned {} without any error to explain it.
+            try:
+                await page.wait_for_selector(
+                    'svg[aria-label="Options"], svg[aria-label="More options"]',
+                    timeout=_ABOUT_RENDER_MS,
+                )
+            except Exception:
+                return {}
+            for selector in (
+                'svg[aria-label="Options"]',
+                'div[role="button"]:has(svg[aria-label="Options"])',
+                'svg[aria-label="More options"]',
+            ):
+                try:
+                    el = page.locator(selector).first
+                    if await el.count():
+                        await el.click(timeout=_ABOUT_CLICK_MS)
+                        break
+                except Exception:
+                    continue
+            else:
+                return {}
+            try:
+                await page.get_by_text("About this account", exact=False).first.click(
+                    timeout=_ABOUT_CLICK_MS)
+            except Exception:
+                return {}
+            # the panel paints from the Bloks response, so wait on the
+            # rendered label rather than a fixed sleep
+            try:
+                await page.wait_for_function(
+                    "() => /account based in|date joined/i.test(document.body.innerText)",
+                    timeout=_ABOUT_RENDER_MS,
+                )
+            except Exception:
+                pass
+
+            dom = {}
+            try:
+                dom = await page.evaluate(self.JS_ABOUT_PANEL) or {}
+            except Exception:
+                dom = {}
+
+            # The payload's own named state key first (a contract), the
+            # rendered label/value pair second (a layout decision).
+            country = ""
+            for body in bodies:
+                if country := about_country(body):
+                    break
+            if not country:
+                country = (dom.get("based_in") or "").strip()
+
+            return {
+                "country": country,
+                "joined": self._parse_joined(dom.get("joined") or ""),
+            }
+        except Exception:
+            return {}
+        finally:
+            try:
+                await page.close()
+            except Exception:
+                pass
+
     # ───────────────────────────── per URL ────────────────────────────── #
 
     async def process(self, raw_url: str, target: str, feed: str) -> Row:
+        """One profile URL, start to finish -- the counterpart to
+        facebook/analysis_engine.py's Scraper.process().
+
+        WHAT IT RETURNS: a scored `Row`, status OK/PARTIAL/GONE/ERROR/
+        CHECKPOINT/LOGIN_REQUIRED, every field tagged with `row.mark()`.
+
+        HOW, roughly in order:
+          1. Call `fetch_via_api()` directly (fires in parallel with the
+             page visit below, since it costs nothing when it fails).
+          2. Navigate to the profile; if the direct API call already had a
+             usable result, skip waiting for passive interception.
+          3. Pick the richest of (api result, intercepted result) via
+             `fill()`, or fall through to session/gone detection and then
+             the DOM header (`read_dom()`/`fill_from_dom()`) as the last
+             resort.
+          4. Capture the evidence screenshot BEFORE the last-post
+             fallback below, since that fallback can navigate this same
+             page to a permalink (see the inline comment at that call
+             site for the live incident this ordering fixes).
+          5. If no last-post date yet: try the already-intercepted
+             timeline response first (`timeline_latest_post`, free), then
+             `read_last_post_date()`'s grid-alt/permalink-visit tiers.
+          6. If location or join date are still blank: `read_about_panel()`
+             (the About-this-account panel, a click-driven visit).
+
+        LINKED TO: called by `one()` below.
+        """
         url = normalize_url(raw_url)
         row = Row(url=url, target=target, original_feed=feed)
         row.profile_id = username_of(url)
@@ -360,9 +592,29 @@ class Scraper:
         # even when it comes up empty and we fall through to interception/DOM.
         api_user = await self.fetch_via_api(row.profile_id) if row.profile_id else None
 
+        # Pinned ONCE, before any listener can run. `fill()` reassigns
+        # row.profile_id to the numeric pk (`u.entity_id or u.username`),
+        # and the response callbacks below close over the row -- so a
+        # listener that read row.profile_id would silently start matching
+        # against "73877322700" instead of "adaniparivar" the moment the
+        # profile payload landed, which is mid-visit and races the timeline
+        # response. Confirmed live: that is exactly what stopped
+        # timeline_latest_post() from ever matching an owner, sending every
+        # profile down to the expensive permalink tier instead. The URL's
+        # username is the stable thing here; the same reason
+        # twitter/analysis_engine.py pins `wanted` up front.
+        wanted = row.profile_id
         page = await self.ctx.new_page()
         found: list[InstagramUser] = []
+        # Post dates read straight off the timeline response. Kept separate
+        # from `found` on purpose: the payload carrying the timestamps is
+        # NOT the payload carrying the profile record, and it cannot pass
+        # profile_from()'s gate (see timeline_latest_post's docstring).
+        # Collecting it here is what stopped the last-post date being
+        # discarded from a response we had already intercepted and parsed.
+        post_dates: list[str] = []
         got = asyncio.Event()
+        timeline_got = asyncio.Event()
 
         async def on_response(resp):
             try:
@@ -372,9 +624,12 @@ class Scraper:
             except Exception:
                 return
             for blob in parse_lines(text):
-                if user := profile_from(blob, row.profile_id):
+                if user := profile_from(blob, wanted):
                     found.append(user)
                     got.set()
+                if iso := timeline_latest_post(blob, wanted):
+                    post_dates.append(iso)
+                    timeline_got.set()
 
         page.on("response", lambda r: asyncio.create_task(on_response(r)))
 
@@ -453,6 +708,41 @@ class Scraper:
             # to -- silently, on every row that fell through to it.
             await self.screenshot(page, row)
 
+            # Tier order for the last-post date, cheapest first:
+            #   1. the profile payload itself (fill(), above)
+            #   2. the timeline response already intercepted during this
+            #      same visit -- free, no extra navigation
+            #   3. read_last_post_date()'s grid-alt read, then up to three
+            #      permalink visits
+            # Tier 2 is new and is the one that matters: it was previously
+            # parsed and thrown away, so every profile whose payload
+            # carried no date paid for tier 3's page visits (or came away
+            # blank when those failed too -- 93 of 310 stored rows).
+            # The profile payload and the timeline are two SEPARATE
+            # responses, and the profile one wins the race every time:
+            # measured live, `api/graphql` answers in about a second while
+            # the timeline's `graphql/query` (a 421KB body) lands around
+            # nine seconds in. `got` is set by the profile payload, so
+            # without this second wait process() had always moved on before
+            # the timestamps existed -- the date was extractable and simply
+            # was not there yet when it was looked for.
+            #
+            # Only paid for when it can actually help: the profile said
+            # this account HAS posts, and no date has been established from
+            # any earlier source. An account with no posts, a private one,
+            # or one whose payload already carried a date never waits.
+            if not row.last_post_iso and not post_dates and row.posts_seen != "no" and not private:
+                try:
+                    await asyncio.wait_for(
+                        timeline_got.wait(), timeout=_TIMELINE_WAIT_S)
+                except asyncio.TimeoutError:
+                    pass
+
+            if not row.last_post_iso and post_dates:
+                row.last_post_iso = max(post_dates)
+                row.posts_seen = "yes"
+                row.mark("last_post", "graphql-timeline")
+
             if not row.last_post_iso:
                 last_post = await self.read_last_post_date(
                     page, private, row.posts_seen != "no"
@@ -460,6 +750,24 @@ class Scraper:
                 if last_post:
                     row.last_post_iso = last_post
                     row.mark("last_post", "post-page")
+            # "About this account" -- the only source for two fields this
+            # engine could not otherwise report at all. Runs when at least
+            # one of them is still missing, and never for a row we could
+            # not read in the first place (no name and no id means there is
+            # no profile there to ask about).
+            if (not row.location or not row.created_iso) and (row.profile_name or row.profile_id):
+                about = await self.read_about_panel(wanted)
+                if about.get("country") and not row.location:
+                    row.location = about["country"]
+                    row.mark("location", "about-panel")
+                if about.get("joined") and not row.created_iso:
+                    row.created_iso = about["joined"]
+                    row.mark("created", "about-panel")
+                    # Month precision, because that is all the panel gives.
+                    # Said out loud so a YYYY-MM here is never mistaken for
+                    # a truncated full date.
+                    row.note("join date is month-precision (Instagram publishes no day)")
+
             row.status = "OK" if row.profile_name or row.profile_id else "PARTIAL"
             return row
         finally:
@@ -470,6 +778,13 @@ class Scraper:
 
     @staticmethod
     def fill(row: Row, u: InstagramUser) -> None:
+        """WHAT: every field an InstagramUser (from the direct API call
+        or passive interception) carries, written onto `row` and tagged
+        "api". HOW: a straight field-by-field copy, each guarded so a
+        field the payload didn't carry is left untouched rather than
+        blanked. LINKED TO: called from process() once it has picked the
+        richest available InstagramUser candidate; `fill_from_dom()`
+        below is the equivalent for the DOM-header last resort."""
         row.profile_id = u.entity_id or u.username
         # the display name is what an impersonator copies; fall back to handle
         row.profile_name = u.full_name or u.username
@@ -494,12 +809,25 @@ class Scraper:
         elif u.posts == 0:
             row.posts_seen = "no"
             row.mark("last_post", "api-no-posts")
+        elif u.posts:
+            # The payload states a post count but carries no timestamps.
+            # Recording "yes" is what makes a later blank date honest:
+            # shared/completeness.py reads posts_seen to tell "this account
+            # never posted" apart from "we failed to read when it last
+            # did", and leaving this unset made a real miss look like the
+            # former. The date itself comes from the timeline tier below.
+            row.posts_seen = "yes"
+        if u.city_name:
+            row.location = u.city_name
+            row.mark("location", "api")
+        if u.biography:
+            row.bio = u.biography
+            row.mark("bio", "api")
         if u.verified:
             row.verified = True
             row.note("verified account")
         if u.private:
             row.note("private account -- posts not visible")
-        row.note("creation date not exposed by Instagram")
 
     @staticmethod
     def fill_from_dom(row: Row, dom: dict) -> None:
@@ -547,9 +875,15 @@ class Scraper:
             row.note("verified account")
         if dom.get("isPrivate"):
             row.note("private account -- posts not visible")
-        row.note("creation date not exposed by Instagram")
 
     async def screenshot(self, page, row: Row) -> None:
+        """WHAT: captures evidence (a GridFS-stored PNG) for `row`, when
+        evidence capture is enabled for this run. HOW: waits for a real
+        grid tile to paint (not just the header) before shooting, so the
+        capture proves the account is in use, not just that it exists --
+        see stealth/browser.py::Session.wait_for_visible_content. LINKED
+        TO: called from process() after fields are filled but before the
+        last-post fallback tiers (which can navigate this page away)."""
         if not self.evidence:
             return
         # DETERMINISTIC key, no timestamp: re-analysing a profile must
@@ -565,7 +899,10 @@ class Scraper:
             # before the page has visually painted anything, a screenshot
             # taken right after would capture the loading state, not the
             # profile.
-            await self.session.wait_for_visible_content(page)
+            # A grid tile is Instagram's "the posts have painted" signal.
+            # Without it the capture is a correct header above a spinner.
+            await self.session.wait_for_visible_content(
+                page, content_selector='a[href*="/p/"], a[href*="/reel/"]')
             data = await page.screenshot(full_page=False)
             from backend.database.repositories import evidence_repository
             await evidence_repository.save(key, data)
@@ -576,6 +913,9 @@ class Scraper:
     # ─────────────────────────── orchestration ────────────────────────── #
 
     async def one(self, u: str, tgt: str, feed: str) -> Row:
+        """process() with a failed profile turned into a reportable ERROR
+        row instead of raising -- so one bad URL never crashes the whole
+        batch `run()`/`run_parallel()` is driving."""
         try:
             return await self.process(u, tgt, feed)
         except Exception as e:
@@ -587,6 +927,9 @@ class Scraper:
 
     @staticmethod
     def report(i: int, total: int, u: str, row: Row) -> None:
+        """One progress line to the platform's own logger after each
+        profile -- name/followers/active/risk, enough to eyeball a run
+        without opening the database."""
         from backend.shared.logging import get_logger as _gl
         _gl("platforms.instagram.analysis").info(
             f"[{i}/{total}] {u} | {row.status} name={row.profile_name[:22]} "
@@ -595,6 +938,10 @@ class Scraper:
         )
 
     async def run(self, jobs: list[tuple[str, str, str]]) -> list[Row]:
+        """Every (url, target, feed) job in `jobs`, sequentially, pausing
+        between profiles and aborting the batch on a CHECKPOINT (unless
+        `self.a.keep_going`) to protect the session. LINKED TO: called by
+        analysis_service.py; one Row per job, in order."""
         rows: list[Row] = []
         for i, (u, tgt, feed) in enumerate(jobs, 1):
             row = await self.one(u, tgt, feed)

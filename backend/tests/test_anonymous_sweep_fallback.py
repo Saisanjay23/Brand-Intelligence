@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from backend.services import discovery_service as svc
+from backend.shared import keywords as kw
 
 
 class _Mgr:
@@ -119,9 +120,14 @@ def _reset():
 
 
 async def _run(plat):
+    # One childless parent, i.e. a plan that searches itself -- the shape
+    # every client had before parent/child keyword groups existed, so this
+    # test stays about the anonymous-session fallback and nothing else.
+    # See backend/shared/keywords.py.
+    plans = kw.build_plans({"name_keywords": ["acme"]})
     return await svc._sweep_platform(
         _Job(), _Mgr(), plat,
-        keyword_groups=[("individual", ["acme"], 0)],
+        plan_groups=[(kw.INDIVIDUAL, plans, 0)],
         tabs=["people"], params={},
     )
 

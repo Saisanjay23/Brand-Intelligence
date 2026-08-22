@@ -32,6 +32,23 @@ def _validated_platform(platform_id: str) -> str:
     return platform_id
 
 
+def _validated_keyword_type(value: str) -> str:
+    """"individual" or "domain", or a 400.
+
+    Rejected rather than ignored: a typo'd scope that silently fell back
+    to "both" would run the exact sweep the caller was trying to avoid,
+    and there is nothing in the result to reveal that it did."""
+    from backend.shared import keywords as kw
+
+    cleaned = (value or "").strip().lower()
+    if cleaned not in kw.KEYWORD_TYPES:
+        raise ValidationError(
+            f"unknown keyword_type {value!r} -- expected one of "
+            f"{', '.join(kw.KEYWORD_TYPES)}, or omit it to sweep both"
+        )
+    return cleaned
+
+
 def _resolve_platforms(
     platforms: "list[str] | None", platform: "str | None",
 ) -> tuple["str | None", "list[str] | None"]:
@@ -91,6 +108,8 @@ async def start_discovery(body: DiscoveryIn) -> dict:
     platform, scoped = _resolve_platforms(body.platforms, body.platform)
 
     params: dict = {"keywords": body.keywords, "tabs": body.tabs, "max_results": body.max_results}
+    if body.keyword_type:
+        params["keyword_type"] = _validated_keyword_type(body.keyword_type)
     if scoped:
         params["platforms"] = scoped
     if body.max_seconds is not None:

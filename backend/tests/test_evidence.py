@@ -120,3 +120,52 @@ def test_screenshot_is_an_analysis_owned_field():
 
     assert "screenshot" in repo.ANALYSIS_FIELDS
     assert "screenshot_at" in repo.ANALYSIS_FIELDS
+
+
+@pytest.mark.asyncio
+async def test_evidence_retention_deletes_older_files(monkeypatch):
+    from backend.database.repositories import evidence_repository
+    from datetime import datetime, timezone, timedelta
+
+    deleted_ids = []
+
+    class FakeFile:
+        def __init__(self, file_id, upload_date):
+            self._id = file_id
+            self.uploadDate = upload_date
+
+    class FakeBucket:
+        def __init__(self, files):
+            self.files = files
+
+        def find(self, query):
+            cutoff = query.get("uploadDate", {}).get("$lt")
+            class AsyncIter:
+                def __init__(self, items):
+                    self.items = [f for f in items if cutoff is None or f.uploadDate < cutoff]
+                def __aiter__(self):
+                    self._i = 0
+                    return self
+                async def __anext__(self):
+                    if self._i >= len(self.items):
+                        raise StopAsyncIteration
+                    item = self.items[self._i]
+                    self._i += 1
+                    return item
+            return AsyncIter(self.files)
+
+        async def delete(self, file_id):
+            deleted_ids.append(file_id)
+
+    now = datetime.now(timezone.utc)
+    old_file = FakeFile("old_1", now - timedelta(days=10))
+    new_file = FakeFile("new_1", now - timedelta(days=2))
+
+    fake_bucket = FakeBucket([old_file, new_file])
+    monkeypatch.setattr(evidence_repository, "_bucket_for", lambda: fake_bucket)
+
+    deleted_count = await evidence_repository.delete_older_than(7)
+    assert deleted_count == 1
+    assert "old_1" in deleted_ids
+    assert "new_1" not in deleted_ids
+

@@ -10,6 +10,7 @@ from typing import Optional
 
 from backend.shared.errors import NotFoundError
 from backend.database.connection import db
+from backend.shared import keywords as _keywords
 
 CLIENTS = "clients"
 
@@ -34,6 +35,12 @@ def _to_out(doc: dict) -> dict:
         # independently. Combined at search time, never merged in storage.
         "name_keywords": doc.get("name_keywords", []),
         "domain_keywords": doc.get("domain_keywords", []),
+        # The parent/child structure behind those two flat lists. A document
+        # saved before this existed has no `keyword_groups` at all, so this
+        # synthesises one childless parent per existing keyword -- which
+        # searches itself, i.e. the exact pre-groups behaviour, with nothing
+        # to migrate. See shared/keywords.py::groups_for_client.
+        "keyword_groups": _keywords.groups_for_client(doc),
         "asset_name_individual_keywords": doc.get("asset_name_individual_keywords", []),
         "asset_name_domain_keywords": doc.get("asset_name_domain_keywords", []),
         # per-platform discovery cap, keyed by platform id, scoped
@@ -102,20 +109,36 @@ async def upsert(
     # keyword arguments above already declare theirs.
     asset_name_individual_keywords: Optional[list[str]] = None,
     asset_name_domain_keywords: Optional[list[str]] = None,
+    keyword_groups: Optional[dict] = None,
 ) -> dict:
     """`cron` is optional, a client with keywords but no cron only ever
     gets swept when `POST /discovery` is called for it explicitly; setting
     cron additionally schedules an automatic recurring sweep (see
     sessions/manager.py / services/scheduler_service.py)."""
     now = datetime.now(timezone.utc)
-    name_kw = name_keywords or []
-    domain_kw = domain_keywords or []
+    # `keyword_groups` is authoritative when supplied: the flat parent
+    # lists are DERIVED from it rather than trusted from the request, so
+    # the two physically cannot drift apart no matter what a caller sends.
+    # Without groups (an older caller, or a client genuinely using only
+    # flat keywords) the flat lists are taken as given and groups are
+    # synthesised from them -- one childless parent each, which searches
+    # itself. See shared/keywords.py.
+    groups = _keywords.normalize_groups(keyword_groups)
+    if any(groups[t] for t in _keywords.KEYWORD_TYPES):
+        flat = _keywords.flat_keywords(groups)
+        name_kw = flat["name_keywords"]
+        domain_kw = flat["domain_keywords"]
+    else:
+        name_kw = name_keywords or []
+        domain_kw = domain_keywords or []
+        groups = _keywords.groups_from_flat(name_kw, domain_kw)
     await db()[CLIENTS].update_one(
         {"_id": client_id},
         {
             "$set": {
                 "name": name, "domain": domain,
                 "name_keywords": name_kw, "domain_keywords": domain_kw,
+                "keyword_groups": groups,
                 "platform_limits_individual": platform_limits_individual or {},
                 "platform_limits_domain": platform_limits_domain or {},
                 "platform_tab_limits": platform_tab_limits or {},
@@ -160,16 +183,38 @@ async def reorder(client_ids: list[str]) -> None:
 
 
 async def add_keyword(client_id: str, keyword: str, kind: str) -> None:
-    """Appends `keyword` to a client's name_keywords (kind="name") or
-    domain_keywords (kind="domain") without touching the rest of the
-    document, unlike `upsert` this never replaces the array wholesale, so
-    it's safe to call from a flow (e.g. add_manual_urls) that only knows
-    about the one new keyword, not the client's full configured set.
-    `$addToSet` makes it idempotent: adding the same keyword twice is a
-    no-op, not a duplicate entry."""
+    """Appends `keyword` as a new PARENT to a client's name_keywords
+    (kind="name") or domain_keywords (kind="domain") without touching the
+    rest of the document. Unlike `upsert` this never replaces the array
+    wholesale, so it's safe to call from a flow (e.g. add_manual_urls) that
+    only knows about the one new keyword, not the client's full configured
+    set. `$addToSet` makes it idempotent: adding the same keyword twice is
+    a no-op, not a duplicate entry.
+
+    The new parent is added to `keyword_groups` too, with NO children --
+    it searches itself, which is exactly right for a keyword an analyst
+    just introduced by pasting a URL rather than by curating permutations
+    for it. Skipping this would leave the flat list and the groups
+    disagreeing, and `groups_for_client` treats non-empty groups as
+    authoritative, so the new keyword would be stored but never actually
+    swept. Read-modify-write rather than a `$addToSet` on a nested array
+    because groups are objects keyed by `parent`, which `$addToSet` cannot
+    dedupe on.
+    """
     field = "name_keywords" if kind == "name" else "domain_keywords"
+    kw_type = _keywords.INDIVIDUAL if kind == "name" else _keywords.DOMAIN
+
+    doc = await db()[CLIENTS].find_one({"_id": client_id})
+    if doc is None:
+        return
+    groups = _keywords.groups_for_client(doc)
+    if not any(g["parent"].strip().lower() == keyword.strip().lower()
+               for g in groups.get(kw_type, [])):
+        groups.setdefault(kw_type, []).append({"parent": keyword, "children": []})
+
     await db()[CLIENTS].update_one(
-        {"_id": client_id}, {"$addToSet": {field: keyword}},
+        {"_id": client_id},
+        {"$addToSet": {field: keyword}, "$set": {"keyword_groups": groups}},
     )
 
 

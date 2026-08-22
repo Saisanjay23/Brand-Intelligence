@@ -168,7 +168,14 @@ def _row_to_fields(row: Row, platform: str, evidence_root: Optional[Path]) -> di
         "is_active": _tri(row.active_yes),
         "has_name_match": _tri(row.name_yes), "name_score": row.name_score,
         "name_exact_run": row.name_exact_run,
-        "last_post_date": row.last_post_iso, "created": row.created_iso,
+        # `created_at`, not `created`: the name the service mapping, the
+        # profiles collection and ANALYSIS_FIELDS all use. This copy was
+        # the odd one out, so the standalone engine wrote a join date under
+        # a key nothing downstream reads. Nothing consumed the old spelling
+        # (sinks.py appends unlisted keys alphabetically), so aligning it
+        # only makes the column reachable.
+        "last_post_date": row.last_post_iso, "created_at": row.created_iso,
+        "bio": row.bio,
         "risk_score": row.risk, "priority": row.priority,
         "comments": row.notes, "analysis_status": row.status, "sources": dict(row.src),
         "screenshot": shot,

@@ -310,7 +310,7 @@ export function SessionPanel({ sessions, onChanged }: Props) {
                     padding: "1px 6px",
                     borderRadius: "999px",
                     background: tab === "pool" ? "var(--cyan, #8838dd)" : "var(--bg-surface-3, #344054)",
-                    color: "#ffffff",
+                    color: "var(--text-main)",
                     fontSize: "10px",
                     fontWeight: 700
                   }}>

@@ -16,6 +16,7 @@ async def upsert_client(body: ClientIn) -> dict:
         body.client_id, body.name, body.domain, body.name_keywords, body.domain_keywords,
         body.asset_name_individual_keywords, body.asset_name_domain_keywords,
         body.platform_limits_individual, body.platform_limits_domain, body.platform_tab_limits, body.cron,
+        body.keyword_groups,
     )
     scheduler.sync()
     return out

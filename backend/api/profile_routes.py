@@ -11,8 +11,8 @@ from fastapi import APIRouter, Query
 
 from backend.controllers import profile_controller
 from backend.dto.profile_dto import (
-    BulkDeleteRequest, BulkPatchRequest, DeletePlatformDataRequest, ExportXlsxRequest, ManualUrlsRequest,
-    ProfilePatch, PublishAllRequest,
+    BulkDeleteRequest, BulkPatchRequest, BulkStopRetryRequest, DeletePlatformDataRequest, ExportXlsxRequest,
+    ManualUrlsRequest, ProfilePatch, PublishAllRequest,
 )
 from backend.shared.pagination import DEFAULT_LIMIT, MAX_LIMIT
 
@@ -183,6 +183,41 @@ async def profile_coverage(client_id: str, platform: Optional[str] = None) -> di
     """"Did we actually check everything?", approved vs analysed vs still
     owed vs permanently blocked. See profile_service.coverage."""
     return await profile_controller.coverage(client_id, platform)
+
+
+@router.get("/profiles/retry-queue")
+async def profile_retry_queue(client_id: str, platform: Optional[str] = None) -> dict:
+    """Every approved profile analysis has not finished with: still
+    eligible for an automatic re-read, already exhausted its attempt
+    budget, or manually stopped by an analyst. See
+    profile_service.retry_queue for how each row's `retry_state` is
+    decided; the Stop/Resume actions below are the only two things that
+    change what shows up here besides analysis itself running again."""
+    return await profile_controller.retry_queue(client_id, platform)
+
+
+@router.post("/profiles/{profile_id}/stop-retry")
+async def stop_profile_retry(profile_id: str) -> dict:
+    """Turns OFF automatic retry for one profile -- catch-up sweeps and the
+    round-robin engine both skip it from this call onward (see
+    profile_repository.urls_for's retry_disabled guard). Does not touch
+    any already-scraped field; a stopped profile keeps whatever it read
+    last time and can still be published like any other."""
+    return await profile_controller.stop_retry(profile_id)
+
+
+@router.post("/profiles/{profile_id}/resume-retry")
+async def resume_profile_retry(profile_id: str) -> dict:
+    """The undo for stop-retry. Also resets analysis_attempts to 0, so a
+    profile that had already hit MAX_ANALYSIS_ATTEMPTS before being stopped
+    is genuinely eligible again rather than immediately re-excluded by the
+    same cap that was true before it was stopped."""
+    return await profile_controller.resume_retry(profile_id)
+
+
+@router.post("/profiles/bulk-stop-retry")
+async def bulk_stop_profile_retry(body: BulkStopRetryRequest) -> dict:
+    return await profile_controller.bulk_stop_retry(body)
 
 
 # Storage-cost maintenance, operator-triggered (or wire into your own

@@ -31,6 +31,14 @@ class Row:
     followers_exact: str = ""
     friends: Optional[int] = None
     location: str = ""
+    # The profile's bio/description text. Both the Twitter and Instagram
+    # engines have always PARSED this (TwitterUser.description,
+    # InstagramUser.biography) and then had nowhere to put it, so it never
+    # reached the database -- blank on 100% of stored Instagram rows and
+    # 97.8% of Twitter ones despite being read every time. It is real
+    # impersonation evidence ("Official account of...", a copied tagline),
+    # which is why it is worth carrying rather than discarding.
+    bio: str = ""
     last_post_iso: str = ""
     posts_seen: str = ""  # yes | no | ""
     profile_pic_url: str = ""

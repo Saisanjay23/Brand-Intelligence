@@ -97,6 +97,19 @@ def _row_to_fields(
         "name_exact_run": row.name_exact_run,
         "last_post_date": row.last_post_iso, "risk_score": row.risk, "priority": row.priority,
         "comments": row.notes, "analysis_status": row.status, "sources": dict(row.src),
+        # Two fields the engines have always read and this mapping has
+        # always dropped. Confirmed live (2026-08-22): every Twitter
+        # profile visit resolves a real join date (`created=2021-12-21`,
+        # `2022-06-30`, `2024-04-06` on three unrelated accounts) and
+        # row.created_iso was set on 100% of stored rows -- yet only 5 of
+        # 179 carried a `created_at` in the database, because the value
+        # stopped here. `bio` is the same story on both platforms.
+        #
+        # Account age is one of the strongest impersonation signals there
+        # is: a three-week-old account using a brand's name and logo is a
+        # very different finding from a nine-year-old one, and the analyst
+        # could not see the difference.
+        "created_at": row.created_iso, "bio": row.bio,
     }
     if shot:
         fields["screenshot"] = shot
@@ -262,11 +275,16 @@ async def _run_targets(
             # any non-exception return, including the early `break`) told an
             # analyst 200/200 when 12 profiles had been visited, and there
             # was nothing anywhere to contradict it.
+            #
+            # This sets the STATUS only. The counts are owned by
+            # _analyse_platform, which counts visits against a total that
+            # grows with the re-attempt passes and emits a final reconciling
+            # progress event before returning; writing `attempted` back here
+            # would undo that and finish a completed run on "10/13 done".
             complete = attempted >= len(urls)
             await mgr.emit(
                 job, "progress", platform=platform_id,
                 platform_status="done" if complete else "partial",
-                platform_processed=attempted,
             )
             note = "" if complete else f"{attempted}/{len(urls)} analysed -- stopped early ({reason})"
             return saved, new, note
@@ -355,6 +373,28 @@ async def _analyse_platform(
     # the progress report and the caller's own
     # `complete = attempted >= len(urls)` check both go wrong.
     done: set[str] = set()
+    # Progress is counted in VISITS, not in unique URLs, and the announced
+    # total grows when a re-attempt pass is queued.
+    #
+    # THE BUG THIS FIXES
+    #     `done` is a set, so re-adding a URL during a completeness
+    #     re-attempt pass left len(done) unchanged. A run therefore reported
+    #     "10/10" the moment every URL had been visited once, and then kept
+    #     that saturated count on screen for the whole of the re-attempt
+    #     phase -- up to `_COMPLETENESS_PASSES` further passes, deliberately
+    #     run ONE TAB AT A TIME with a pause between each, so the slowest
+    #     part of the run is exactly the part that looked finished.
+    #
+    #     To anyone watching, the platform sat at 10/10 with status
+    #     "running" and nothing to explain why, which reads as a hung job
+    #     rather than as the extra work it actually is.
+    #
+    #     Counting visits and growing the total keeps the number honest and
+    #     monotonic: 10/10 becomes 10/13 when three profiles are queued for
+    #     a re-read, then climbs to 13/13 and lands on "done" exactly when
+    #     the work actually ends.
+    visits = 0
+    announced_total = len(urls)
     want_screenshot = bool(options.evidence)
     # URLs whose row came back readable but short of a field the platform
     # does publish (see shared/completeness.py). Re-visited after the main
@@ -555,7 +595,8 @@ async def _analyse_platform(
                         consecutive_timeouts = 0
                     remaining.remove(url)
                     done.add(url)
-                    i = len(done)
+                    visits += 1
+                    i = visits
 
                     # Did this visit actually READ the profile, or only
                     # reach it? Status OK with no last-post date and no
@@ -569,6 +610,13 @@ async def _analyse_platform(
                         platform_id, row, want_screenshot=want_screenshot)
                     if missing and pass_no < _COMPLETENESS_PASSES and url not in deferred:
                         deferred.append(url)
+                        # Counted the INSTANT the re-read is queued, which is
+                        # before this visit's own progress event is emitted a
+                        # few lines below. That ordering is what stops the
+                        # counter ever touching processed == total while more
+                        # work is still to come: the extra visit is already
+                        # in the total by the time the number is shown.
+                        announced_total += 1
                         log.info(
                             f"[{platform_id}] {url}: incomplete ({', '.join(missing)}) "
                             f"-- queued for re-attempt {pass_no + 1}/{_COMPLETENESS_PASSES}"
@@ -594,8 +642,9 @@ async def _analyse_platform(
                         pass
                     try:
                         await mgr.emit(
-                            job, "item", f"[{platform_id}] {i}/{len(urls)} {row.profile_name or url} [{row.priority}]",
-                            found=i, platform=platform_id, platform_status="running", platform_processed=i,
+                            job, "item", f"[{platform_id}] {i}/{announced_total} {row.profile_name or url} [{row.priority}]",
+                            found=i, platform=platform_id, platform_status="running",
+                            platform_processed=i, platform_total=announced_total,
                             platform_item_done=url,
                         )
                     except Exception:
@@ -629,6 +678,9 @@ async def _analyse_platform(
                     try:
                         await mgr.emit(
                             job, "progress", platform=platform_id,
+                            platform_status="running",
+                            platform_processed=visits, platform_total=announced_total,
+                            platform_pending_seed=list(remaining),
                             message=f"[{platform_id}] re-reading {len(remaining)} "
                                     f"incomplete profile(s) "
                                     f"(pass {pass_no}/{_COMPLETENESS_PASSES})",
@@ -646,6 +698,17 @@ async def _analyse_platform(
 
     if remaining and not stop_reason:
         stop_reason = "session rotation exhausted"
+    # Land the counter on the truth before the caller stamps a terminal
+    # status on it. Without this the caller's own emit would write back the
+    # UNIQUE-url count against a total that has since grown to include the
+    # re-attempt passes, finishing a completed run on "10/13 done".
+    try:
+        await mgr.emit(
+            job, "progress", platform=platform_id,
+            platform_processed=visits, platform_total=announced_total,
+        )
+    except Exception:
+        pass
     _report_incomplete(platform_id, job, rows, want_screenshot)
     _check_last_post_extraction_health(platform_id, job, rows)
     await _check_field_extraction_health(platform_id, job, rows, mgr)

@@ -136,6 +136,30 @@ export const profilesApi = {
   // matching) AND add it to the client's own name_keywords/domain_keywords
   // list, so it shows up in the client's Settings tab too and future
   // discovery sweeps pick it up, not just this batch.
+  // GET /profiles/retry-queue -- every approved profile analysis has not
+  // finished with (still eligible for auto-retry, exhausted its attempt
+  // budget, or manually stopped), plus a per-state count for the tab
+  // badge. See backend/services/profile_service.py::retry_queue.
+  retryQueue: (client_id: string, platform?: string) => {
+    const p = new URLSearchParams({ client_id });
+    if (platform) p.set("platform", platform);
+    return fetch(url(`/profiles/retry-queue?${p}`)).then(
+      json<{ items: Profile[]; total: number; counts: { eligible: number; exhausted: number; stopped: number } }>,
+    );
+  },
+  // Turns OFF automatic retry for one profile -- catch-up sweeps and the
+  // round-robin engine both skip it from this call onward. Does not touch
+  // any already-scraped field. See profile_repository.urls_for's
+  // retry_disabled guard for the actual enforcement.
+  stopRetry: (id: string) => fetch(url(`/profiles/${id}/stop-retry`), { method: "POST" }).then(json<Profile>),
+  // The undo for stopRetry. Also resets the attempt counter server-side,
+  // so a profile that had already hit the cap before being stopped is
+  // genuinely eligible again, not immediately re-excluded by the same cap.
+  resumeRetry: (id: string) => fetch(url(`/profiles/${id}/resume-retry`), { method: "POST" }).then(json<Profile>),
+  bulkStopRetry: (profileIds: string[]) =>
+    post("/profiles/bulk-stop-retry", { profile_ids: profileIds }).then(
+      json<{ succeeded: string[]; failed: string[] }>,
+    ),
   addManualUrls: (
     client_id: string,
     opts: { urls?: string[]; individualUrls?: string[]; domainUrls?: string[]; individualKeyword?: string; domainKeyword?: string },

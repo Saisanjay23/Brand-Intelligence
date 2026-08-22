@@ -8,6 +8,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from backend.services.analysis_service import _row_to_fields
+from backend.shared import keywords as kw
 from backend.services.discovery_service import _hit_to_fields
 from backend.shared.models.row import Row
 
@@ -35,7 +36,11 @@ def test_hit_to_fields_is_identity_only_not_scored():
         entity_type="profile", keyword="Brand", tab="people", source="graphql",
         avatar="", has_custom_pic=False,
     )
-    fields = _hit_to_fields(hit, "instagram")
+    # A childless parent searches itself, which is the shape every client
+    # had before parent/child keyword groups existed -- so this stays the
+    # exact pre-groups case. See backend/shared/keywords.py.
+    plan = kw.build_plans({"domain_keywords": ["Brand"]})[0]
+    fields = _hit_to_fields(hit, "instagram", plan)
 
     assert fields["has_logo"] is False  # not scored yet -- discovery never scores
     assert fields["username"] == "fake"  # last URL segment for handle-based platforms

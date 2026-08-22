@@ -208,6 +208,9 @@ export function filterResults(
         // stay visible here too or it silently disappears from the
         // Rejected tab the moment it's reversed post-analysis.
         if (r.phase !== "discovery" && r.status !== "approved" && r.status !== "rejected") return false;
+      } else if (filters.phase === "analysis") {
+        if (r.phase !== "analysis") return false;
+        if (r.status === "rejected") return false;
       } else {
         if (r.phase !== filters.phase) return false;
       }

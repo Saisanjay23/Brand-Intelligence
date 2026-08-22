@@ -21,6 +21,13 @@ export const discoveryApi = {
     // Two or more platform ids to sweep together (the Run hub's
     // multi-select). Takes precedence over `platform` when both are sent.
     platforms?: string[];
+    // Scope the sweep to one keyword category. Omitted/undefined sweeps
+    // BOTH, which is the default and what every caller predating this got.
+    //   "individual" -- only the client's executive/individual names
+    //   "domain"     -- only its brand/domain keywords
+    // Applied server-side against each keyword's own resolved category, so
+    // the caller still sends the full keyword list either way.
+    keyword_type?: "individual" | "domain";
   }) => post("/discovery", body).then(json<{ job_id: string; status: JobStatus }>),
   // Re-resolves name/photo for a hand-picked set of already-discovered
   // profile ids, no keyword search, just a targeted refresh (Facebook

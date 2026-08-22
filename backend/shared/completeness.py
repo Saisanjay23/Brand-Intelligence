@@ -52,14 +52,24 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 # instagram is not a miss to chase, it is a field this pipeline never claims
 # to collect there. Without this, 320 rows read as "data missing" forever
 # and no amount of re-analysis would ever change one of them.
-PLATFORMS_WITH_LOCATION = frozenset({"facebook", "twitter", "youtube"})
-
-# Fields whose absence is never, on its own, evidence the scraper failed --
-# the platform publishes them only if the account holder filled them in.
-# Kept out of `missing_fields` deliberately (it drives retry): re-visiting a
-# profile that simply has no location set would burn its retry budget on
-# something no visit can ever produce.
-OPTIONAL_FIELDS = ("location",)
+#
+# Instagram JOINED this set on 2026-08-22. It was correctly excluded before:
+# the engine genuinely had no location reader, so 309/309 blank rows were
+# honestly "not-collected". It now reads `city_name` off the same
+# `data.user` object it reads followers and biography from (confirmed live
+# -- the key is present on every profile payload, populated on
+# professional/business accounts and empty on most personal ones). A blank
+# location on Instagram therefore now means what it already meant on
+# Facebook and Twitter: the account holder did not set one. That changes how
+# a blank is EXPLAINED (see field_report below), not whether it triggers a
+# retry -- location is never one of the fields `missing_fields` checks for
+# on ANY platform, cookie-authed or not, because its absence is never, on
+# its own, evidence the scraper failed: a platform publishes it only if the
+# account holder filled it in. Re-visiting a profile that simply has no
+# location set would burn its retry budget on something no visit could ever
+# produce, so it is left out of that function entirely rather than gated by
+# a lookup table.
+PLATFORMS_WITH_LOCATION = frozenset({"facebook", "twitter", "youtube", "instagram"})
 
 # Statuses where re-reading cannot help: the profile is gone, so there is
 # nothing further to scrape and its blank fields are the honest answer.
@@ -70,6 +80,20 @@ TERMINAL_STATUSES = ("GONE",)
 # visible"; instagram: private accounts), and both mean the posts are
 # hidden from this session by the platform, not missed by the scraper.
 _HIDDEN_TIMELINE_MARKERS = ("protected", "private")
+
+# A note meaning the platform publishes no audience number for this profile
+# at all -- not that we failed to read one. Set by
+# facebook/analysis_engine.py::read_counts (see NO_AUDIENCE_NOTE there)
+# only after every count tier came up empty on a profile whose entity DID
+# resolve, which live checking showed to be a real, permanent property of
+# brand-new locked-down personal profiles rather than a scraping failure:
+# the number is absent from the timeline, from /friends, from /about, from
+# /about_profile_transparency, and from the GraphQL payload.
+#
+# Without this, 28 such rows counted as missing their followers on every
+# single sweep -- permanently re-queued for a retry that could never
+# succeed, and permanently reported to the analyst as data loss.
+_NO_AUDIENCE_MARKERS = ("publishes no audience count",)
 
 
 def _blank(value) -> bool:
@@ -86,6 +110,11 @@ def _blank(value) -> bool:
 def _timeline_hidden(row: "Row") -> bool:
     notes = (row.notes or "").lower()
     return any(m in notes for m in _HIDDEN_TIMELINE_MARKERS)
+
+
+def _no_audience_published(row: "Row") -> bool:
+    notes = (row.notes or "").lower()
+    return any(m in notes for m in _NO_AUDIENCE_MARKERS)
 
 
 def missing_fields(platform_id: str, row: "Row", *, want_screenshot: bool) -> list[str]:
@@ -109,7 +138,12 @@ def missing_fields(platform_id: str, row: "Row", *, want_screenshot: bool) -> li
     # `friends`; every other entity publishes one of the two (a Page its
     # followers, a personal profile its friends -- see
     # facebook/analysis_engine.py::followers_from_friends).
-    if row.entity_type != "group" and _blank(row.followers) and _blank(row.friends):
+    if (
+        row.entity_type != "group"
+        and _blank(row.followers)
+        and _blank(row.friends)
+        and not _no_audience_published(row)
+    ):
         missing.append("followers")
 
     # "no posts at all" (posts_seen == "no") is a real, extracted answer,
@@ -180,6 +214,9 @@ def field_report(platform_id: str, row: "Row", *, want_screenshot: bool) -> dict
             row.followers if not _blank(row.followers) else row.friends,
             # Facebook groups publish a member count under neither field.
             collected=row.entity_type != "group",
+            # A profile the platform publishes no audience number for is
+            # confirmed-absent at the source, not missed by the scraper.
+            none_exist=_no_audience_published(row),
         ),
         "last_post_date": verdict(
             "last post date", row.last_post_iso,

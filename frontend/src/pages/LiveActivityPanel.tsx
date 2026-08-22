@@ -25,6 +25,9 @@ import {
   DatabaseIcon,
   AlertTriangleIcon,
   DownloadIcon,
+  RefreshIcon,
+  StopIcon,
+  PlayIcon,
 } from "../components/AppIcons";
 
 const JOBS_REFRESH_MS = 4_000;
@@ -100,6 +103,20 @@ const PROFILE_STATUS_BADGE: Record<string, string> = {
   pending:  "var(--warn-yellow, #fdb71b)",
   approved: "var(--success, #36b5a0)",
   rejected: "var(--danger, #e95053)",
+};
+
+// A profile analysis has not finished with, three states:
+//   eligible  -- will be revisited automatically on the next catch-up
+//               sweep or round-robin pass, nothing for an analyst to do
+//   exhausted -- hit the server's attempt cap (MAX_ANALYSIS_ATTEMPTS);
+//               needs either Resume or to just be left as a known gap
+//   stopped   -- an analyst turned retry off for this one on purpose
+// See backend/services/profile_service.py::_retry_state, which computes
+// exactly this enum server-side; this map only decides how it LOOKS.
+const RETRY_STATE_LOOK: Record<string, { color: string; label: string }> = {
+  eligible:  { color: "var(--accent, #7c5cff)",     label: "Eligible" },
+  exhausted: { color: "var(--warn-yellow, #fdb71b)", label: "Exhausted" },
+  stopped:   { color: "var(--danger, #e95053)",      label: "Stopped" },
 };
 
 // ─── Embedded CSS ─────────────────────────────────────────────────────────────
@@ -573,7 +590,7 @@ const LA_SELECT_STYLE: React.CSSProperties = {
 };
 
 export function LiveActivityPanel() {
-  const [activeTab,   setActiveTab]   = useState<"live" | "history" | "records">("live");
+  const [activeTab,   setActiveTab]   = useState<"live" | "history" | "records" | "retry">("live");
   const [jobs,        setJobs]        = useState<Job[]>([]);
   const [clients,     setClients]     = useState<Client[]>([]);
   const [error,       setError]       = useState("");
@@ -592,6 +609,21 @@ export function LiveActivityPanel() {
   const [selected,        setSelected]        = useState<Set<string>>(new Set());
   const [browseLoading,   setBrowseLoading]   = useState(false);
   const [deleting,        setDeleting]        = useState(false);
+
+  // Retry Queue state. Independent of Record Manager's own client/platform
+  // filters above on purpose: an analyst watching "what's stuck" for one
+  // client and browsing raw records for another at the same time is a
+  // completely reasonable thing to want mid-triage, and coupling the two
+  // filters would silently reset one when the other changes tabs.
+  const [retryClientId, setRetryClientId] = useState("");
+  const [retryPlatform, setRetryPlatform] = useState("");
+  const [retryStateFilter, setRetryStateFilter] = useState<"" | "eligible" | "exhausted" | "stopped">("");
+  const [retryItems,   setRetryItems]   = useState<Profile[]>([]);
+  const [retryCounts,  setRetryCounts]  = useState({ eligible: 0, exhausted: 0, stopped: 0 });
+  const [retryLoading, setRetryLoading] = useState(false);
+  const [retrySelected, setRetrySelected] = useState<Set<string>>(new Set());
+  const [retryActingId, setRetryActingId] = useState("");
+  const [retryBulkBusy, setRetryBulkBusy] = useState(false);
 
   useEffect(() => {
     clientsApi.listClients().then((r) => setClients(r.items)).catch(() => {});
@@ -671,10 +703,87 @@ export function LiveActivityPanel() {
   const toggleAll = () =>
     setSelected((prev) => prev.size === profiles.length ? new Set() : new Set(profiles.map((p) => p.id)));
 
-  const TABS: Array<{ id: "live" | "history" | "records"; label: string; icon: React.ReactNode; badge?: number }> = [
+  // ── Retry Queue: load, filter, act ──────────────────────────────────────
+  //
+  // Polls only while this tab is the active one and a client is picked --
+  // a background poll for a screen nobody is looking at would just be
+  // wasted requests, the same restraint Job History/Record Manager already
+  // apply by scoping their own effects to what's actually visible.
+  const loadRetryQueue = () => {
+    if (!retryClientId) { setRetryItems([]); setRetryCounts({ eligible: 0, exhausted: 0, stopped: 0 }); return; }
+    setRetryLoading(true);
+    profilesApi.retryQueue(retryClientId, retryPlatform || undefined)
+      .then((r) => {
+        setRetryItems(r.items);
+        setRetryCounts(r.counts);
+        setRetrySelected((prev) => {
+          const stillPresent = new Set(r.items.map((i) => i.id));
+          const next = new Set<string>();
+          prev.forEach((id) => { if (stillPresent.has(id)) next.add(id); });
+          return next;
+        });
+      })
+      .catch((e) => setError((e as Error).message))
+      .finally(() => setRetryLoading(false));
+  };
+
+  useEffect(() => {
+    if (activeTab !== "retry" || !retryClientId) return;
+    loadRetryQueue();
+    const t = setInterval(loadRetryQueue, JOBS_REFRESH_MS);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, retryClientId, retryPlatform]);
+
+  const visibleRetryItems = retryItems.filter(
+    (i) => !retryStateFilter || i.retry_state === retryStateFilter,
+  );
+
+  const stopOne = async (id: string) => {
+    setRetryActingId(id);
+    try { await profilesApi.stopRetry(id); loadRetryQueue(); }
+    catch (e) { setError((e as Error).message); }
+    finally { setRetryActingId(""); }
+  };
+
+  const resumeOne = async (id: string) => {
+    setRetryActingId(id);
+    try { await profilesApi.resumeRetry(id); loadRetryQueue(); }
+    catch (e) { setError((e as Error).message); }
+    finally { setRetryActingId(""); }
+  };
+
+  const toggleRetrySelected = (id: string) =>
+    setRetrySelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleRetrySelectedAll = () =>
+    setRetrySelected((prev) =>
+      prev.size === visibleRetryItems.length ? new Set() : new Set(visibleRetryItems.map((i) => i.id)),
+    );
+
+  const stopSelectedRetries = async () => {
+    if (retrySelected.size === 0) return;
+    if (!(await confirmAction(
+      `Stop automatic retry for ${retrySelected.size} profile(s)? They keep whatever they already read and can still be Resumed later, but no future sweep will revisit them until you do.`,
+    ))) return;
+    setRetryBulkBusy(true);
+    try {
+      const res = await profilesApi.bulkStopRetry(Array.from(retrySelected));
+      if (res.failed.length) setError(`${res.failed.length} profile(s) could not be stopped.`);
+      loadRetryQueue();
+    } catch (e) { setError((e as Error).message); }
+    finally { setRetryBulkBusy(false); }
+  };
+
+  const TABS: Array<{ id: "live" | "history" | "records" | "retry"; label: string; icon: React.ReactNode; badge?: number }> = [
     { id: "live",    label: "In-Flight Runs", icon: <ZapIcon size={14} />, badge: activeJobs.length || undefined },
     { id: "history", label: "Job History",   icon: <ClockIcon size={14} />, badge: terminalJobs.length || undefined },
     { id: "records", label: "Record Manager", icon: <DatabaseIcon size={14} /> },
+    // Badge counts only "exhausted" + "stopped" -- the two states that
+    // actually need a human's attention. "eligible" rows will resolve
+    // themselves, badging on the full total would make the tab look
+    // permanently alarming on a perfectly healthy pipeline that just has
+    // a normal in-flight backlog.
+    { id: "retry",   label: "Retry Queue",   icon: <RefreshIcon size={14} />, badge: (retryCounts.exhausted + retryCounts.stopped) || undefined },
   ];
 
   return (
@@ -727,7 +836,7 @@ export function LiveActivityPanel() {
             {tab.icon}
             <span>{tab.label}</span>
             {tab.badge !== undefined && (
-              <span style={{ padding: "1px 7px", borderRadius: 999, fontSize: 10, fontWeight: 800, background: activeTab === tab.id ? "var(--accent,#7c5cff)" : "var(--bg-surface-3,#344054)", color: "#fff" }}>{tab.badge}</span>
+              <span style={{ padding: "1px 7px", borderRadius: 999, fontSize: 10, fontWeight: 800, background: activeTab === tab.id ? "var(--accent,#7c5cff)" : "var(--bg-surface-3,#344054)", color: activeTab === tab.id ? "#fff" : "var(--text-main)" }}>{tab.badge}</span>
             )}
           </button>
         ))}
@@ -886,6 +995,122 @@ export function LiveActivityPanel() {
                 <button type="button" onClick={() => setOffset(Math.max(0, offset - BROWSE_PAGE_SIZE))} disabled={offset === 0} style={{ ...LA_SELECT_STYLE, cursor: offset === 0 ? "not-allowed" : "pointer" }}>← Prev</button>
                 <span style={{ fontSize: 12, color: "var(--text-dim)" }}>{offset + 1}–{Math.min(offset + BROWSE_PAGE_SIZE, profilesTotal)} of {profilesTotal}</span>
                 <button type="button" onClick={() => setOffset(offset + BROWSE_PAGE_SIZE)} disabled={offset + BROWSE_PAGE_SIZE >= profilesTotal} style={{ ...LA_SELECT_STYLE, cursor: offset + BROWSE_PAGE_SIZE >= profilesTotal ? "not-allowed" : "pointer" }}>Next →</button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* == TAB 4: RETRY QUEUE == */}
+      {activeTab === "retry" && (
+        <div>
+          <div style={{ marginBottom: 16 }}>
+            <h3 style={{ fontSize: 15, fontWeight: 700, color: "var(--text-primary,#fff)", margin: "0 0 4px 0", display: "flex", alignItems: "center", gap: 8 }}>
+              <RefreshIcon size={18} color="var(--cyan)" />
+              <span>Retry Queue</span>
+            </h3>
+            <p style={{ fontSize: 12, color: "var(--text-muted,#98a2b3)", margin: 0 }}>
+              Every approved profile analysis has not finished with -- reached but incomplete, never reached at
+              all, or manually stopped. Eligible rows are picked up automatically by the next catch-up sweep;
+              Exhausted and Stopped rows need Resume, or are a known, accepted coverage gap.
+            </p>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+            <select value={retryClientId} onChange={(e) => setRetryClientId(e.target.value)} style={LA_SELECT_STYLE}>
+              <option value="">Select a client...</option>
+              {clients.map((c) => <option key={c.client_id} value={c.client_id}>{c.name || c.client_id}</option>)}
+            </select>
+            <select value={retryPlatform} onChange={(e) => setRetryPlatform(e.target.value)} style={LA_SELECT_STYLE}>
+              <option value="">All platforms</option>
+              {["facebook", "instagram", "twitter", "youtube", "telegram", "tiktok"].map((p) => (
+                <option key={p} value={p}>{p}</option>
+              ))}
+            </select>
+            <select value={retryStateFilter} onChange={(e) => setRetryStateFilter(e.target.value as typeof retryStateFilter)} style={LA_SELECT_STYLE}>
+              <option value="">Every state</option>
+              <option value="eligible">Eligible only</option>
+              <option value="exhausted">Exhausted only</option>
+              <option value="stopped">Stopped only</option>
+            </select>
+            <button type="button" onClick={loadRetryQueue} disabled={!retryClientId || retryLoading} style={{ ...LA_SELECT_STYLE, cursor: retryClientId ? "pointer" : "not-allowed", fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <RefreshIcon size={12} /> Refresh
+            </button>
+          </div>
+
+          {!retryClientId ? (
+            <EmptyState icon="[refresh]" text="Select a client above to see which of its approved profiles analysis has not finished with." />
+          ) : (
+            <>
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14, padding: "12px 16px", background: "var(--bg-surface,#1e2837)", border: "1px solid rgba(124,92,255,0.2)", borderRadius: 12 }}>
+                {([
+                  { key: "eligible" as const,  label: "Eligible (auto-retrying)" },
+                  { key: "exhausted" as const, label: "Exhausted (needs Resume)" },
+                  { key: "stopped" as const,   label: "Stopped (by an analyst)" },
+                ]).map((stat) => (
+                  <div key={stat.key} style={{ flex: "1 1 160px", display: "flex", flexDirection: "column", gap: 2 }}>
+                    <span style={{ fontSize: 10, color: "var(--text-dim)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" }}>{stat.label}</span>
+                    <span style={{ fontSize: 17, fontWeight: 800, color: RETRY_STATE_LOOK[stat.key].color }}>{retryCounts[stat.key]}</span>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
+                  {retryLoading ? "Loading..." : `${visibleRetryItems.length} row(s)`}{retrySelected.size > 0 && ` · ${retrySelected.size} selected`}
+                </span>
+                <button
+                  type="button"
+                  onClick={stopSelectedRetries}
+                  disabled={retrySelected.size === 0 || retryBulkBusy}
+                  style={{ padding: "6px 14px", borderRadius: 8, background: retrySelected.size ? "rgba(233,80,83,0.15)" : "var(--bg-surface-3,#1d2939)", border: `1px solid ${retrySelected.size ? "rgba(233,80,83,0.4)" : "rgba(255,255,255,0.1)"}`, color: retrySelected.size ? "var(--danger,#e95053)" : "var(--text-dim)", fontSize: 12, fontWeight: 700, cursor: retrySelected.size ? "pointer" : "not-allowed", display: "inline-flex", alignItems: "center", gap: 5 }}
+                >
+                  <StopIcon size={13} /> Stop selected{retrySelected.size > 0 ? ` (${retrySelected.size})` : ""}
+                </button>
+              </div>
+
+              <div style={{ overflowX: "auto" }}>
+                <table className="core_table">
+                  <thead>
+                    <tr>
+                      <th><input type="checkbox" checked={visibleRetryItems.length > 0 && retrySelected.size === visibleRetryItems.length} onChange={toggleRetrySelectedAll} /></th>
+                      <th>Platform</th><th>Name</th><th>URL</th><th>State</th><th>Why</th><th>Attempts</th><th>Last attempt</th><th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleRetryItems.length === 0 ? (
+                      <tr><td colSpan={9} style={{ textAlign: "center", padding: 24, color: "var(--text-dim)" }}>{retryLoading ? "Loading..." : "Nothing in the retry queue for this client -- every approved profile is either fully read or still on its first pass."}</td></tr>
+                    ) : visibleRetryItems.map((p) => {
+                      const look = RETRY_STATE_LOOK[p.retry_state ?? "eligible"];
+                      const acting = retryActingId === p.id;
+                      return (
+                        <tr key={p.id}>
+                          <td><input type="checkbox" checked={retrySelected.has(p.id)} onChange={() => toggleRetrySelected(p.id)} /></td>
+                          <td style={{ textTransform: "capitalize" }}>{PLATFORM_ICON[p.platform] || ""} {p.platform}</td>
+                          <td style={{ maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.profile_name || "—"}</td>
+                          <td style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            <a href={p.url} target="_blank" rel="noreferrer" style={{ color: "var(--accent,#7c5cff)" }}>{p.url}</a>
+                          </td>
+                          <td><Badge color={look.color}>{look.label}</Badge></td>
+                          <td style={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, color: "var(--text-dim)" }} title={p.retry_reason}>{p.retry_reason || "—"}</td>
+                          <td style={{ fontSize: 12, color: "var(--text-dim)" }}>{p.analysis_attempts ?? 0}</td>
+                          <td title={exactTime(p.analysed_at)}>{relativeTime(p.analysed_at) !== "—" ? relativeTime(p.analysed_at) : "—"}</td>
+                          <td>
+                            {p.retry_state === "stopped" ? (
+                              <button type="button" onClick={() => resumeOne(p.id)} disabled={acting} style={{ fontSize: 11, padding: "4px 10px", borderRadius: 6, cursor: acting ? "wait" : "pointer", background: "rgba(54,181,160,0.1)", border: "1px solid rgba(54,181,160,0.3)", color: "var(--success,#36b5a0)", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 }}>
+                                <PlayIcon size={11} /> {acting ? "..." : "Resume"}
+                              </button>
+                            ) : (
+                              <button type="button" onClick={() => stopOne(p.id)} disabled={acting} style={{ fontSize: 11, padding: "4px 10px", borderRadius: 6, cursor: acting ? "wait" : "pointer", background: "rgba(233,80,83,0.1)", border: "1px solid rgba(233,80,83,0.3)", color: "var(--danger,#e95053)", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 }}>
+                                <StopIcon size={11} /> {acting ? "..." : "Stop"}
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             </>
           )}

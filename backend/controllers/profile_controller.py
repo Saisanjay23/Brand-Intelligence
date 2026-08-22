@@ -8,8 +8,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-from backend.dto.profile_dto import (BulkDeleteRequest, BulkPatchRequest, DeletePlatformDataRequest,
-                                      ManualUrlsRequest, ProfilePatch, PublishAllRequest)
+from backend.dto.profile_dto import (BulkDeleteRequest, BulkPatchRequest, BulkStopRetryRequest,
+                                      DeletePlatformDataRequest, ManualUrlsRequest, ProfilePatch,
+                                      PublishAllRequest)
 from backend.services import profile_service
 
 
@@ -32,6 +33,22 @@ async def list_profiles(
 
 async def coverage(client_id: str, platform: Optional[str] = None) -> dict:
     return await profile_service.coverage(client_id, platform)
+
+
+async def retry_queue(client_id: str, platform: Optional[str] = None) -> dict:
+    return await profile_service.retry_queue(client_id, platform)
+
+
+async def stop_retry(profile_id: str) -> dict:
+    return await profile_service.stop_retry(profile_id)
+
+
+async def resume_retry(profile_id: str) -> dict:
+    return await profile_service.resume_retry(profile_id)
+
+
+async def bulk_stop_retry(body: BulkStopRetryRequest) -> dict:
+    return await profile_service.bulk_stop_retry(body.profile_ids)
 
 
 async def screenshot(profile_id: str) -> tuple[bytes, str]:
