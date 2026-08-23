@@ -77,6 +77,27 @@ const EXPORT_MAX_ROWS = 10000;
 // never becomes a second, confusing source of truth for a profile's status
 const UNDO_WINDOW_MS = 8000;
 
+function HighlightedText({ text, highlight }: { text: string; highlight?: string }) {
+  if (!highlight || !text) return <>{text}</>;
+  
+  // Use case-insensitive split with capture group to keep the match
+  const parts = text.split(new RegExp(`(${highlight})`, "gi"));
+  const lowerHighlight = highlight.toLowerCase();
+  
+  return (
+    <>
+      {parts.map((part, i) =>
+        part.toLowerCase() === lowerHighlight ? (
+          <span key={i} className="keyword-highlight">
+            {part}
+          </span>
+        ) : (
+          <span key={i}>{part}</span>
+        )
+      )}
+    </>
+  );
+}
 // "5s" / "2m 30s" / "1h 5m", never both units at zero, never blank.
 function formatEta(seconds: number | null): string {
   if (seconds === null || seconds < 0) return "";
@@ -1032,7 +1053,7 @@ function ProfileCard({
       <div className="profile-card-body">
         <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
           <a href={linkUrl} target="_blank" rel="noreferrer" className="profile-display-name" style={{ color: "var(--text-main)" }} title={name}>
-            {name}
+            <HighlightedText text={name} highlight={r.keyword} />
           </a>
           {r.verified && <VerifiedBadgeIcon size={15} />}
         </div>
@@ -1561,6 +1582,8 @@ export function ResultsGrid({
     [profiles, status, priority, phase, keywordFilter, matchLevel, entityType, keywordMatchType, clientKeywordSets, debouncedSearch, sortOrder, platform, isAnalysisView],
   );
 
+  const [animatingIds, setAnimatingIds] = useState<Set<string>>(new Set());
+
   const decide = async (id: string, next: Status) => {
     const prev = profiles.find((r) => r.id === id);
     if (prev) {
@@ -1568,9 +1591,19 @@ export function ResultsGrid({
         { id: prev.id, prevStatus: prev.status },
       ]);
     }
+    
+    // Trigger CSS animation first
+    setAnimatingIds((prev) => new Set(prev).add(id));
+    await new Promise((r) => setTimeout(r, 300));
+    
     setProfiles((rows) => {
       const updated = rows.map((r) => (r.id === id ? { ...r, status: next } : r));
       return !isAnalysisView && status ? updated.filter((r) => r.status === status) : updated;
+    });
+    setAnimatingIds((prev) => {
+      const nextSet = new Set(prev);
+      nextSet.delete(id);
+      return nextSet;
     });
     setSavingId(id);
     try {
@@ -1650,9 +1683,12 @@ export function ResultsGrid({
         );
       }
       await load(false);
-    } catch (e) {
-      if (prev) setProfiles((rows) => [...rows.filter((r) => r.id !== prev.id), prev]);
-      onError?.((e as Error).message);
+    } catch (e: any) {
+      toast.error(`Failed to update profile: ${e.message}`);
+      setProfiles((rows) => {
+        const updated = rows.map((r) => (r.id === id && prev ? { ...r, status: prev.status } : r));
+        return !isAnalysisView && status ? updated.filter((r) => r.status === status) : updated;
+      });
     } finally {
       setSavingId(null);
     }
@@ -1665,6 +1701,11 @@ export function ResultsGrid({
         { id: prev.id, prevStatus: prev.status },
       ]);
     }
+    
+    // Trigger CSS animation first
+    setAnimatingIds((prev) => new Set(prev).add(id));
+    await new Promise((r) => setTimeout(r, 300));
+    
     setProfiles((rows) => {
       const updated = rows.map((r) =>
         r.id === id ? { ...r, status: "approved" as Status } : r,
@@ -3946,8 +3987,16 @@ export function ResultsGrid({
                     ))
                   ) : displayed.length === 0 ? (
                     <tr>
-                      <td colSpan={isAnalysisView ? 15 : 6} style={{ textAlign: "center", padding: "40px", color: "var(--text-dim)" }}>
-                        No profiles match the current filters.
+                      <td colSpan={isAnalysisView ? 15 : 6} style={{ textAlign: "center", padding: "80px 20px" }}>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "16px", color: "var(--text-dim)" }}>
+                          <div style={{ width: "64px", height: "64px", borderRadius: "50%", background: "rgba(0, 229, 255, 0.05)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            <SearchIcon size={32} color="rgba(0, 229, 255, 0.6)" />
+                          </div>
+                          <div>
+                            <h3 style={{ margin: 0, fontSize: "16px", color: "var(--text-main)" }}>No profiles found</h3>
+                            <p style={{ margin: "4px 0 0", fontSize: "13px" }}>Try adjusting your filters or search terms.</p>
+                          </div>
+                        </div>
                       </td>
                     </tr>
                   ) : (
@@ -3959,7 +4008,7 @@ export function ResultsGrid({
                         key={r.id}
                         {...dragSelectHandlers(r.id)}
                         onClick={() => setFocusedIndex(i)}
-                        className={focusedIndex === i ? "row-focused" : undefined}
+                        className={`${focusedIndex === i ? "row-focused" : ""} ${animatingIds.has(r.id) ? "row-animating-out" : ""}`.trim() || undefined}
                         style={selectedIds.has(r.id) ? { outline: "2px solid var(--primary)", outlineOffset: "-2px", boxShadow: "0 0 12px rgba(136, 56, 221, 0.35)", background: "rgba(136, 56, 221, 0.08)" } : undefined}
                       >
                       <td>
@@ -3988,10 +4037,39 @@ export function ResultsGrid({
                             title={isAnalysisView && inc ? inc.title : r.profile_name || r.username || r.url}
                             className="table-name-truncate"
                           >
-                            {isAnalysisView && inc ? inc.title : r.profile_name || r.username || r.url}
+                            <HighlightedText text={isAnalysisView && inc ? (inc.title || "") : (r.profile_name || r.username || r.url)} highlight={r.keyword} />
                           </a>
                           {r.verified && <VerifiedBadgeIcon size={14} style={{ marginLeft: "4px" }} />}
                           {r.has_logo && <TagIcon size={12} color="var(--cyan)" style={{ marginLeft: "4px" }} />}
+                          {r.name_score !== null && r.name_score !== undefined && (
+                            <span
+                              style={{
+                                marginLeft: "8px",
+                                fontSize: "10px",
+                                fontWeight: 600,
+                                padding: "2px 6px",
+                                borderRadius: "4px",
+                                background: r.name_score >= MATCH_EXACT_THRESHOLD 
+                                  ? "rgba(54,181,160,0.2)" 
+                                  : r.name_score >= MATCH_MEDIUM_THRESHOLD 
+                                    ? "rgba(255,165,0,0.2)" 
+                                    : "rgba(255,80,80,0.2)",
+                                color: r.name_score >= MATCH_EXACT_THRESHOLD 
+                                  ? "var(--success)" 
+                                  : r.name_score >= MATCH_MEDIUM_THRESHOLD 
+                                    ? "var(--warn-yellow)" 
+                                    : "var(--danger)",
+                                whiteSpace: "nowrap"
+                              }}
+                              title={`Name-to-keyword match score: ${r.name_score}/100`}
+                            >
+                              {r.name_score >= MATCH_EXACT_THRESHOLD 
+                                ? "🎯 High Match" 
+                                : r.name_score >= MATCH_MEDIUM_THRESHOLD 
+                                  ? "🎯 Med Match" 
+                                  : "🎯 Low Match"}
+                            </span>
+                          )}
                           <div className="row-quick-actions">
                             <button
                               type="button"
