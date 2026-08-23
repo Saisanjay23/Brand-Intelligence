@@ -31,7 +31,27 @@ export interface SchedulerClientStatus {
   // 0-based place in the admin-controlled queue, null when the client is
   // only in the normal rotation
   queue_position: number | null;
+  // Per-platform outcome of this client's last turn. The aggregate
+  // last_run_status cannot express the case that matters most -- Instagram
+  // and X finished but Facebook lost its session halfway -- which is
+  // neither a success nor a failure, and this is what says which.
+  // Optional on purpose: a server older than this field (a rolling deploy,
+  // or a UI pointed at a not-yet-restarted backend) simply omits both, and
+  // the UI must render rather than crash. Verified against a live
+  // pre-change /scheduler/status, which returns neither.
+  last_run_platforms?: Record<string, PlatformOutcome>;
+  // The subset of the above that still owes work, i.e. exactly what a
+  // resume turn would re-run. Server-derived so the UI never has to know
+  // which outcomes count as unfinished.
+  unfinished_platforms?: string[];
 }
+
+// "interrupted" = a sweep that started and lost its session partway.
+// "skipped" = its session was already dead when the turn began. Both leave
+// the client half-swept and are retried; "failed" is a real error that a
+// fresh session will not fix, so it is NOT retried early.
+export type PlatformOutcome =
+  | "done" | "partial" | "interrupted" | "failed" | "skipped" | "running" | "pending";
 
 // One live job the engine is running or waiting to run. `source` says who
 // started it: both the engine and an analyst's manual run share the same

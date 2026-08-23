@@ -353,8 +353,25 @@ async def run_discovery(job: Job) -> None:
             )
             return platform_id, saved, new, note
         except Exception as e:
-            log.error(f"job {job.id}: {platform_id} sweep failed: {type(e).__name__}: {e}")
-            await mgr.emit(job, "progress", platform=platform_id, platform_status="failed")
+            # A sweep that died because its SESSION died is a different
+            # thing from a sweep that hit a bug, and they need opposite
+            # follow-ups. An INTERRUPTED platform's work is unfinished
+            # rather than wrong: nothing about the keywords, the parsers or
+            # this client is at fault, and re-running it once the pool has
+            # a healthy session will simply complete it. A FAILED one will
+            # fail again the same way until someone looks at it.
+            #
+            # The scheduler acts on that difference -- see
+            # round_robin_service._unfinished_platforms, which brings a
+            # client with interrupted platforms back to the front of the
+            # rotation and re-runs ONLY those platforms.
+            reason = classify_failure(e)
+            status = "interrupted" if reason else "failed"
+            log.error(
+                f"job {job.id}: {platform_id} sweep {status}: {type(e).__name__}: {e}")
+            await mgr.emit(job, "progress", platform=platform_id, platform_status=status)
+            if reason:
+                return platform_id, 0, 0, f"INTERRUPTED (session {reason} mid-sweep -- will resume)"
             return platform_id, 0, 0, f"FAILED ({type(e).__name__}: {e})"
 
     results = await asyncio.gather(*(_run_one(pid) for pid in ready))

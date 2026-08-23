@@ -245,17 +245,34 @@ async def list_all() -> list[dict]:
 
 async def record_run_result(
     client_id: str, status: str, note: str = "", duration_s: Optional[float] = None,
+    platforms: Optional[dict] = None,
 ) -> None:
     """Called by the round-robin engine after every turn it takes on this
     client, feeds the Scheduler admin tab's last-run/status/duration
     columns and its running total. `status` is "success" | "failed" |
     "skipped". A plain `update_one`, not an upsert: the round-robin engine
-    only ever processes clients that already exist."""
+    only ever processes clients that already exist.
+
+    `platforms` is the per-platform breakdown of that turn --
+    {platform_id: "done" | "partial" | "interrupted" | "failed" |
+    "skipped"} -- taken from the finished job's own `platform_progress`.
+
+    It is stored because the aggregate `status` cannot express the case
+    this exists for: a turn where Instagram and X finished cleanly and
+    Facebook died halfway through its session is neither a success nor a
+    failure, and calling it either one loses the only fact that matters --
+    WHICH platform still owes this client work. Persisting the breakdown is
+    what lets the engine come back and re-run just that platform (see
+    round_robin_service._unfinished_platforms) instead of re-sweeping
+    everything or, worse, quietly leaving the gap.
+    """
     fields: dict = {
         "last_run_at": datetime.now(timezone.utc),
         "last_run_status": status,
         "last_run_note": note,
     }
+    if platforms is not None:
+        fields["last_run_platforms"] = platforms
     if duration_s is not None:
         fields["last_run_duration_s"] = round(duration_s, 1)
     await db()[CLIENTS].update_one(

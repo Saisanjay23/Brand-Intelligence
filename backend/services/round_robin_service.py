@@ -185,6 +185,45 @@ async def notify_unavailable_platforms(ready: list[str], unavailable: dict[str, 
         )
 
 
+# A per-platform outcome meaning that platform still owes this client work
+# from its last turn. "interrupted" is a sweep that started and lost its
+# session partway; "skipped" is one whose session was already dead when the
+# turn began. Both leave the client half-swept, and both are fixed by the
+# same thing -- coming back once the pool has a healthy session for that
+# platform. A "failed" platform is deliberately NOT here: it broke for a
+# reason a fresh session will not change, so re-running it early would just
+# spend budget reproducing the same error.
+UNFINISHED_PLATFORM_STATES = ("interrupted", "skipped")
+
+
+def _unfinished_platforms(client: dict) -> set[str]:
+    """Platforms whose last turn on this client did not finish.
+
+    Read from `last_run_platforms`, the breakdown
+    `client_repository.record_run_result` stores after every turn. Empty
+    for a client that has never run, or whose last turn covered everything
+    -- so a client is only ever prioritised on positive evidence that
+    something is outstanding, never on missing data.
+    """
+    outcomes = client.get("last_run_platforms") or {}
+    if not isinstance(outcomes, dict):
+        return set()
+    return {p for p, st in outcomes.items() if st in UNFINISHED_PLATFORM_STATES}
+
+
+def _resumable_platforms(client: dict, ready: list[str]) -> list[str]:
+    """The unfinished platforms that could actually be swept RIGHT NOW.
+
+    Intersected with the currently-ready pool on purpose. Without that a
+    client whose Facebook session is dead and stays dead would be
+    prioritised, skip Facebook again, record "skipped" again, and be
+    prioritised again -- a hot loop that starves every other client and
+    never accomplishes anything. Requiring the platform to be usable means
+    the client jumps the queue exactly when jumping it will help.
+    """
+    return sorted(_unfinished_platforms(client) & set(ready))
+
+
 def _due_for_discovery(client: dict) -> bool:
     """Has DISCOVERY_INTERVAL_HOURS passed since this client last ran?
 
@@ -194,6 +233,14 @@ def _due_for_discovery(client: dict) -> bool:
     silently parking the client forever -- the failure mode of the guard
     itself must be "sweeps too often", never "stops sweeping".
     """
+    # Half-swept beats the clock. A client whose Facebook turn died mid-way
+    # has a real, known gap in its coverage, and making it wait out the full
+    # DISCOVERY_INTERVAL_HOURS before closing that gap is the opposite of
+    # what the interval is for -- the interval exists to stop re-sweeping
+    # work that is already DONE.
+    if _unfinished_platforms(client):
+        return True
+
     last = client.get("last_run_at")
     if not last:
         return True
@@ -323,14 +370,48 @@ async def _next_client_id() -> Optional[str]:
                 return client_id
         if not _rotation:
             from backend.database.repositories import client_repository as clients_db
+            from backend.platforms import registry
 
             clients = await clients_db.list_all()
-            _rotation = [
-                c["client_id"] for c in clients
+            eligible = [
+                c for c in clients
                 if (c.get("name_keywords") or c.get("domain_keywords"))
                 and c.get("scheduler_enabled", True)
                 and _due_for_discovery(c)
             ]
+            # Clients carrying unfinished platform work go to the FRONT of
+            # the lap, ahead of clients whose last turn completed. A gap in
+            # coverage that someone is already watching in Live Activity is
+            # worth closing before starting fresh work elsewhere. Ordering
+            # within each group keeps the analyst's own drag-to-reorder
+            # sequence (client_repository.list_all is sorted by it).
+            #
+            # Readiness is only consulted when some client actually claims
+            # unfinished work -- the common lap has none, and asking the
+            # registry every time would make rotation-building depend on the
+            # session pool being reachable to do something it does not need
+            # the pool for.
+            _rotation = [c["client_id"] for c in eligible]
+            if any(_unfinished_platforms(c) for c in eligible):
+                try:
+                    ready, _unavailable = await registry.ready_platforms()
+                except Exception as e:
+                    # Prioritisation is an optimisation; the rotation is
+                    # not. If readiness cannot be determined, sweep in the
+                    # ordinary order rather than not sweeping at all.
+                    log.warning(
+                        "round-robin: could not rank resumable clients "
+                        f"({type(e).__name__}: {e}) -- using plain order")
+                else:
+                    resumable = [c for c in eligible if _resumable_platforms(c, ready)]
+                    if resumable:
+                        rest = [c for c in eligible if c not in resumable]
+                        log.info(
+                            "round-robin: %d client(s) resume first -- %s"
+                            % (len(resumable), ", ".join(
+                                f"{c['client_id']}({'+'.join(_resumable_platforms(c, ready))})"
+                                for c in resumable[:5])))
+                        _rotation = [c["client_id"] for c in resumable + rest]
             _cursor = 0
         if not _rotation:
             return None
@@ -388,13 +469,30 @@ async def _process_client(slot: int, client_id: str) -> Optional[str]:
         log.info(f"round-robin resumed: {', '.join(ready)} usable again")
 
     keywords = (client.get("name_keywords") or []) + (client.get("domain_keywords") or [])
+
+    # A RESUME turn re-runs only the platforms that did not finish last
+    # time, not the whole set. Re-sweeping platforms that already completed
+    # would spend a second full session budget to rediscover profiles
+    # already stored -- the expensive half of the work, for nothing -- and
+    # on a pool this thin that is the difference between closing the gap
+    # and causing another one.
+    resume_platforms = _resumable_platforms(client, ready)
+    params: dict = {
+        "keywords": keywords, "tabs": ["people", "pages", "groups"],
+        "max_results": 0, "max_seconds": 1800,
+    }
+    if resume_platforms:
+        params["platforms"] = resume_platforms
+        log.info(
+            f"round-robin: {client_id} resuming {'+'.join(resume_platforms)} "
+            "(unfinished last turn)")
+
     discovery_ok = True
     aborted = False
     _slot_state[slot]["phase"] = "discovery"
+    job = None
     try:
-        job = job_manager.create(DISCOVERY, client_id, {
-            "keywords": keywords, "tabs": ["people", "pages", "groups"], "max_results": 0, "max_seconds": 1800,
-        })
+        job = job_manager.create(DISCOVERY, client_id, params)
         _engine_job_ids.add(job.id)
         try:
             job_status = await _await_job(job)
@@ -421,6 +519,22 @@ async def _process_client(slot: int, client_id: str) -> Optional[str]:
     # profiles an analyst ALREADY approved -- it retries the analyst's
     # decision, it does not make one.
 
+    # The finished job's own per-platform breakdown, carried through to the
+    # client record so the next lap (and Live Activity) can see WHICH
+    # platforms finished and which still owe work. Merged over the previous
+    # turn's outcomes rather than replacing them, because a resume turn only
+    # covers the platforms it re-ran -- overwriting would erase the "done"
+    # standing of every platform that completed on the earlier turn.
+    outcomes = dict(client.get("last_run_platforms") or {})
+    if job is not None:
+        # getattr: a job object that never reached the discovery service
+        # (created and then cancelled, or a stand-in in tests) has no
+        # breakdown to read, and that must not fail the turn's bookkeeping.
+        for pid, prog in (getattr(job, "platform_progress", None) or {}).items():
+            st = (prog or {}).get("status")
+            if st:
+                outcomes[pid] = st
+
     if aborted:
         # A human pressing Stop is not a symptom of anything, so it must not
         # feed _consecutive_failures -- five deliberate aborts in a row would
@@ -432,8 +546,23 @@ async def _process_client(slot: int, client_id: str) -> Optional[str]:
     else:
         status = "success" if discovery_ok else "failed"
         note = "" if status == "success" else "discovery did not complete cleanly -- see Incidents"
+
+    # An unfinished platform is worth saying out loud even on a turn that
+    # otherwise succeeded -- "instagram, twitter done; facebook interrupted"
+    # is the whole point, and an aggregate status cannot express it.
+    still_open = sorted(p for p, st in outcomes.items() if st in UNFINISHED_PLATFORM_STATES)
+    if still_open:
+        finished = sorted(p for p, st in outcomes.items()
+                          if st not in UNFINISHED_PLATFORM_STATES)
+        parts = []
+        if finished:
+            parts.append(f"{', '.join(finished)} done")
+        parts.append(f"{', '.join(still_open)} interrupted -- will resume next lap")
+        note = "; ".join(parts)
+
     duration = time.monotonic() - start
-    await clients_db.record_run_result(client_id, status, note, duration_s=duration)
+    await clients_db.record_run_result(
+        client_id, status, note, duration_s=duration, platforms=outcomes)
 
     _avg_duration_s = _avg_duration_s * 0.8 + duration * 0.2
     _slot_state[slot] = {"client_id": None, "phase": "idle", "since": _now_iso()}
@@ -638,6 +767,14 @@ async def client_statuses() -> list[dict]:
             "last_run_status": c.get("last_run_status"),
             "last_run_note": c.get("last_run_note", ""),
             "last_run_duration_s": c.get("last_run_duration_s"),
+            # {platform_id: done|partial|interrupted|failed|skipped} for the
+            # last turn, so Live Activity can say "instagram, twitter done;
+            # facebook interrupted" per client instead of one aggregate word.
+            "last_run_platforms": c.get("last_run_platforms") or {},
+            # The subset still owing work, i.e. what a resume turn would
+            # re-run. Derived here rather than in the client so the UI never
+            # has to know which states count as unfinished.
+            "unfinished_platforms": sorted(_unfinished_platforms(c)),
             "run_count": c.get("run_count", 0),
             "eta_seconds": eta_seconds,
             "current_phase": running["phase"] if running else None,

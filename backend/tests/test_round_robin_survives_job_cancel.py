@@ -84,8 +84,9 @@ class TestOperatorAbortIsNotAFailure:
 
         recorded: dict = {}
 
-        async def fake_record(client_id, status, note, duration_s=0.0):
-            recorded.update(client_id=client_id, status=status, note=note)
+        async def fake_record(client_id, status, note, duration_s=0.0, platforms=None):
+            recorded.update(client_id=client_id, status=status, note=note,
+                            platforms=platforms)
 
         with patch("backend.database.repositories.client_repository.try_get",
                    new=AsyncMock(return_value={"client_id": "c1", "name_keywords": ["acme"]})), \
