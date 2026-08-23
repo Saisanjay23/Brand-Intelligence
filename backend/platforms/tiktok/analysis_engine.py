@@ -46,7 +46,8 @@ from backend.shared.models.row import Row
 from backend.shared.text import name_score, normalized_host, parse_count, parse_normalized_url
 from backend.platforms.tiktok.discovery_engine import (RE_CHECKPOINT, RE_GONE,
                                                         RE_LOGIN, TikTokSession,
-                                                        TikTokUser, newest_post_iso,
+                                                        TikTokUser, geoblocked,
+                                                        newest_post_iso,
                                                         newest_post_via_search,
                                                         profile_from, read_hydration)
 
@@ -280,6 +281,19 @@ class Scraper:
                 body = await page.inner_text("body")
             except Exception:
                 pass
+
+            # A blocked region serves the same notice for every profile, so
+            # without this the row reads PARTIAL "profile payload not seen"
+            # -- a retryable status that will keep re-spending attempts on
+            # something no retry can fix. See RE_GEOBLOCK in
+            # discovery_engine.py.
+            if geoblocked(page.url, body):
+                row.status = "ERROR"
+                row.note(
+                    "TikTok is blocked for this IP (redirected to "
+                    f"{page.url}) -- route this platform through a proxy"
+                )
+                return row
 
             hydration = await read_hydration(page)
             user = profile_from(hydration, row.profile_id) if hydration else None

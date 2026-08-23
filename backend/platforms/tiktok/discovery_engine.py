@@ -91,6 +91,37 @@ RE_GONE = re.compile(
     r"(couldn.t find this account|this account can.t be found|user doesn.t exist)", re.I,
 )
 
+# A REGION WHERE TIKTOK IS BLOCKED serves the same government notice for
+# every URL and redirects to `/<region>/about`. Confirmed live (2026-08-23,
+# an Indian IP, no proxy): `tiktok.com/search?q=...` landed on
+# `https://www.tiktok.com/in/about` with the June 2020 India ban notice,
+# zero `/api/search/` responses, an empty hydration payload and no profile
+# links in the DOM.
+#
+# Worth naming rather than letting it fall through: with no search response
+# and nothing in the DOM, the sweep reported "results never rendered" and
+# `stopped=stalled` -- indistinguishable from a parser break or a slow
+# render, and it sends whoever investigates at the extraction code when the
+# actual fix is to route this platform through a proxy. Same reasoning as
+# facebook/discovery_engine.py's deny_paths note.
+RE_GEOBLOCK = re.compile(
+    r"(decided to block|Government of India|Govt\. of India"
+    r"|not available in your (country|region))", re.I,
+)
+
+
+def geoblocked(page_url: str, body: str) -> bool:
+    """WHAT: is this page the region-blocked notice rather than the page we
+    asked for? HOW: the redirect is the primary signal -- landing on an
+    `/<cc>/about` path when a different path was requested is something
+    only the block does -- with the notice text as corroboration for a
+    future variant that does not redirect. LINKED TO: checked by
+    Discovery.sweep() and by analysis_engine.py::Scraper.process(), both of
+    which stop early and say so rather than reporting an empty result."""
+    if re.search(r"/[a-z]{2}/about\b", page_url or "", re.I):
+        return True
+    return bool(RE_GEOBLOCK.search(body or ""))
+
 
 class TikTokSession(Session):
     """WHAT: a logged-in TikTok browser session. HOW: everything is
@@ -714,6 +745,15 @@ USER_SEARCH_URL = "https://www.tiktok.com/search/user?q={q}"
 _PROFILE_LOCKS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 
 
+async def _body_text(page) -> str:
+    """The page's visible text, or "" if it cannot be read. Used by the
+    geo-block check, where an unreadable body must not itself raise."""
+    try:
+        return await page.inner_text("body")
+    except Exception:
+        return ""
+
+
 def _profile_lock() -> asyncio.Lock:
     """The lock guarding the persistent profile directory, for THIS event
     loop (see the note above for why it cannot be a module-level lock).
@@ -1110,6 +1150,21 @@ class Discovery:
                 SEARCH_URL.format(q=quote(keyword)), wait_until="domcontentloaded",
                 timeout=self.a.timeout * 1000,
             )
+
+            # Blocked region? Stop here and NAME it. Everything below would
+            # otherwise run its full time budget against a notice page and
+            # report a stall (see RE_GEOBLOCK).
+            if geoblocked(page.url, await _body_text(page)):
+                out.stopped, out.complete = "geoblocked", False
+                out.error = (
+                    "TikTok is blocked for this IP -- the request was redirected to "
+                    f"{page.url}. Route this platform through a proxy in a region "
+                    "where TikTok is available."
+                )
+                log.warning(f"tiktok/people {keyword!r}: {out.error}")
+                out.seconds = time.time() - started
+                return out
+
             # Wait for the search tab strip itself, not for a body-text
             # length: `#search-tabs` only mounts once the results view has
             # actually rendered, whereas innerText clears 400 characters

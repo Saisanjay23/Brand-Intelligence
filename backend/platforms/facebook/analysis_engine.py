@@ -1025,18 +1025,54 @@ class Scraper:
             pass
         return bool(h.html[tag])
 
-    async def read_dom(self, page, h: Harvest, scrolled: bool = False) -> None:
+    # How long read_dom will wait for the photo-album anchors that
+    # owner_id() reads, and ONLY on a vanity URL, where they are the
+    # fallback that resolves the numeric id. See the note in read_dom.
+    _PB_ID_WAIT_MS = 4000
+
+    async def read_dom(self, page, h: Harvest, scrolled: bool = False,
+                       await_ids: bool = False) -> None:
         """WHAT: runs JS_HEADER against `page` and stores the result on
         `h.dom` (name, follower-chip text, avatar, verified badge, the
         pbIds used to resolve a vanity URL's numeric id -- see
         Scraper.owner_id). HOW: if the page has been scrolled, scrolls
         back to the top first, since the profile intro block can unmount
-        off-screen. LINKED TO: called once per visit from process()."""
+        off-screen. LINKED TO: called once per visit from process().
+
+        `await_ids` waits (briefly, bounded) for the photo-album anchors
+        before reading. It is set only for a VANITY url, where those
+        anchors are what owner_id() resolves the numeric id from.
+
+        Why it is needed: visit()'s readiness poll is given an EMPTY
+        needle for a vanity url (there is no numeric id to wait for yet),
+        and JS_READY treats an empty needle as "the id half is already
+        satisfied" -- so it returns as soon as the social-context PAYLOAD
+        lands, which happens well before the photo-album anchors render.
+        read_dom then saw an empty pbIds list and resolve_id fell through
+        to "id unresolved -- fields not scope-verified".
+
+        Confirmed live 2026-08-23 on facebook.com/AdaniOnline: the real
+        visit reported the id unresolved, while the same page given ~9s
+        exposed six anchors, unanimously 100064457091354 (corroborated by
+        `owning_profile_id` in the payloads). Unresolved is not cosmetic:
+        every field then comes from the UNSCOPED gql_* readers instead of
+        this profile's own entity, and the row files under the vanity slug
+        rather than the numeric id, so the same profile reached by its two
+        URL shapes becomes two rows."""
         try:
             if scrolled:
                 # scrolling can unmount the intro block, go back up first
                 await page.evaluate("window.scrollTo(0, 0)")
                 await page.wait_for_timeout(700)
+            if await_ids:
+                try:
+                    await page.wait_for_selector(
+                        'a[href*="set=pb."]', timeout=self._PB_ID_WAIT_MS)
+                except Exception:
+                    # No album anchors on this profile at all (a brand-new
+                    # or photo-less account). resolve_id reports it
+                    # honestly rather than this failing the visit.
+                    pass
             h.dom = await page.evaluate(self.JS_HEADER) or {}
         except Exception:
             h.dom = {}
@@ -1252,7 +1288,11 @@ class Scraper:
                     read_name(row, h)
                 return row
 
-            await self.read_dom(page, h, scrolled=self.a.scrolls > 0)
+            # `needle` is empty exactly when the URL is a vanity one, which
+            # is the only case where the numeric id has to come out of the
+            # DOM -- see read_dom's `await_ids`.
+            await self.read_dom(page, h, scrolled=self.a.scrolls > 0,
+                                await_ids=not needle)
             pid = self.resolve_id(row, h, url)
             hs = h.scoped(pid)
 
