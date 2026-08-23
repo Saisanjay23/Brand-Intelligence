@@ -617,6 +617,13 @@ async def _sweep_platform(
                 _options_for(0), session_item.get("cookies", []),
                 session_id=session_item.get("id", ""), proxy=session_item.get("proxy"),
             )
+            # Save whatever the platform rotated during this sweep back over
+            # the pooled jar when the session closes. Without it the pool
+            # replays a superseded token next run, which is what actually
+            # gets these accounts challenged -- see
+            # sessions/manager.py::refresh_cookies.
+            session.on_cookies = sessions_engine.cookie_saver(
+                plat.id, session_item.get("id", ""))
             await session.start()
             fell_back = False
             try:

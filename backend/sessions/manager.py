@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlparse
 
 from backend.config.settings import settings
 from backend.database.repositories import session_repository as sessions_db
-from backend.sessions.cookies import load_cookies
+from backend.sessions.cookies import load_cookies, normalize_cookies
 from backend.shared.errors import ConflictError, NotFoundError, ValidationError
 from backend.shared.logging import get_logger
 
@@ -45,6 +46,28 @@ LOGIN_FLOW = {
 }
 
 CHECK_INTERVAL_S = 30 * 60  # generous on purpose, this opens a real browser
+
+# How long a session that a REAL JOB proved healthy is trusted without a
+# synthetic probe.
+#
+# Every probe navigates to an authenticated-only page (/me,
+# /accounts/edit/, /home) in a real browser. At one pooled account per
+# platform -- which is what the pool actually holds today -- the most
+# overdue session is the same session every sweep, so that account was
+# visiting its own settings page 48 times a day, on a perfectly regular
+# 30-minute cadence, whether or not anything else was happening. Both the
+# volume and the metronome regularity are the sort of thing these
+# platforms score against an account.
+#
+# A job that completed and called mark_session_ok is STRONGER evidence
+# than the probe -- it exercised the real surface rather than one login
+# wall -- so within this window the probe adds risk and no information.
+# An idle session is unaffected and still checked on the normal cadence.
+PROVEN_FRESH_S = 90 * 60
+
+# Fraction of CHECK_INTERVAL_S to jitter each sleep by, so the sweep does
+# not land on the same wall-clock offset forever.
+CHECK_JITTER = 0.2
 BATCH_SIZE = 5  # sessions live-checked per platform per monitor sweep
 # youtube included since 2026-08, previously excluded entirely (a dead API
 # key sat unnoticed until a real job hit it); see _verify_credential_item.
@@ -515,6 +538,10 @@ async def mark_session_ok(platform_id: str, session_id: str) -> None:
     await sessions_db.update_item(
         platform_id, session_id,
         status="ready", rate_limited_until=0.0, consecutive_failures=0, dead_since=0.0,
+        # When this session was last PROVEN healthy by real work. Read by
+        # _pick_batch to skip a synthetic probe that would tell it nothing
+        # it does not already know -- see PROVEN_FRESH_S.
+        last_ok=_now(),
     )
 
 
@@ -540,6 +567,70 @@ async def save_cookies(platform_id: str, blob: str, identifier: str = "") -> dic
     except ValueError as e:
         raise ConflictError(str(e)) from e
     return await status(platform_id)
+
+
+async def refresh_cookies(platform_id: str, session_id: str, cookies: list[dict]) -> bool:
+    """Write a session's REFRESHED cookie jar back over the stored one.
+
+    WHY THIS EXISTS
+        The pooled jar is loaded into a fresh browser context on every run
+        and discarded when that context closes. But these platforms rotate
+        their session cookies as you browse -- X reissues `ct0` constantly,
+        Instagram rolls `sessionid`/`csrftoken`, Facebook refreshes `xs` --
+        so without this the pool keeps replaying an ever-staler jar. The
+        stored cookies are not close to expiring (measured 2026-08-23:
+        Facebook `xs` +364d, Instagram `sessionid` +361d, X `auth_token`
+        +158d), which is exactly why "the session expired" was the wrong
+        diagnosis: they were being INVALIDATED for replaying a superseded
+        token, not timing out.
+
+    SAFETY
+        Only ever an update to an existing pool row, never an insert, and
+        only when the incoming jar still carries every cookie the platform
+        marks required. A context that got logged out mid-run hands back a
+        jar with the auth cookie missing, and writing THAT over a good
+        stored one would destroy the session this is meant to preserve.
+
+    Returns True when the stored jar was replaced.
+    """
+    p = _get_platform(platform_id)
+    if p.uses_api_key or p.env_keys:
+        return False
+    if not session_id or not cookies:
+        return False
+
+    kept = normalize_cookies(cookies, p.cookie_domain)
+    if not kept:
+        return False
+    have = {c["name"] for c in kept}
+    missing = [n for n in p.required_cookies if n not in have]
+    if missing:
+        log.info(
+            f"{platform_id}/{session_id}: not saving refreshed cookies -- "
+            f"missing {', '.join(missing)} (the run ended logged out)"
+        )
+        return False
+
+    ok = await sessions_db.update_item(
+        platform_id, session_id,
+        cookies=kept, cookies_updated_at=datetime.now(timezone.utc),
+    )
+    if ok:
+        log.info(f"{platform_id}/{session_id}: stored {len(kept)} refreshed cookie(s)")
+    return ok
+
+
+def cookie_saver(platform_id: str, session_id: str):
+    """An `on_cookies` callback bound to one pooled session, for
+    stealth/browser.py::Session.stop(). Returns None when there is nothing
+    to save back to (an anonymous run has no pool row)."""
+    if not session_id:
+        return None
+
+    async def _save(cookies: list[dict]) -> None:
+        await refresh_cookies(platform_id, session_id, cookies)
+
+    return _save
 
 
 async def save_credentials(
@@ -999,6 +1090,10 @@ async def _pick_batch(platform_id: str, limit: int) -> list[tuple[str, str, list
         and s["status"] not in PENDING_STATES
         and s["rate_limited_until"] <= now
         and not _session_in_use(platform_id, s["id"])
+        # Recently proven by a real job, so a probe would only add another
+        # authenticated hit to an account that has already demonstrated it
+        # is fine. See PROVEN_FRESH_S.
+        and (now - float(s.get("last_ok") or 0.0)) >= PROVEN_FRESH_S
     ]
     if not candidates:
         return []
@@ -1155,7 +1250,11 @@ async def _monitor_loop() -> None:
                 log.info(f"session cleanup: purged {purged} stale dead session(s)")
         except Exception as e:
             log.error(f"session monitor sweep failed: {type(e).__name__}: {e}")
-        await asyncio.sleep(CHECK_INTERVAL_S)
+        # Jittered so the sweep does not fire on the same wall-clock offset
+        # every half hour for the life of the process. A probe is an
+        # authenticated page load on a real account; a perfectly periodic
+        # one is a pattern worth not having. See CHECK_JITTER.
+        await asyncio.sleep(CHECK_INTERVAL_S * (1.0 + random.uniform(-CHECK_JITTER, CHECK_JITTER)))
 
 
 def start_monitor() -> None:

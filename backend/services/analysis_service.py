@@ -461,6 +461,14 @@ async def _analyse_platform(
             session_id=session_item.get("id", ""), proxy=session_item.get("proxy"),
             **({"anonymous": True} if run_anonymously else {}),
         )
+        # Persist any cookies the platform rotated during this batch, so the
+        # pool is not replaying a stale jar on the next job. Anonymous runs
+        # have no pool row, and cookie_saver returns None for them.
+        inner = getattr(scraper, "session", None)
+        if inner is not None:
+            inner.on_cookies = sessions_engine.cookie_saver(
+                platform_id, session_item.get("id", ""))
+
         await scraper.start()
         try:
             if not await scraper.check_session():

@@ -85,6 +85,9 @@ class Session:
         self.cookies = cookies
         self.load_images = load_images
         self.session_id = session_id
+        # Optional async callback, `await on_cookies(list[dict])`, invoked
+        # by stop() with the live jar before the context closes. See stop().
+        self.on_cookies = None
         self.timezone_id = resolve_timezone_id(proxy, timezone_id)
         self.proxy = proxy
         self.identity = get_identity(session_id)
@@ -153,6 +156,34 @@ class Session:
         await route.continue_()
 
     async def stop(self):
+        """Closes the context and browser.
+
+        Before anything closes, the LIVE cookie jar is handed to
+        `on_cookies` if a caller set one. That callback is what keeps a
+        pooled session alive: Facebook, Instagram and X all rotate their
+        session cookies during ordinary browsing, and a context that is
+        thrown away without saving them means the next run replays the
+        older jar. Replaying a superseded session token is one of the
+        signals these platforms treat as account takeover, so the account
+        gets challenged or logged out -- not because the cookie expired
+        (the stored ones are good for months) but because it went stale.
+
+        `on_cookies` is an ATTRIBUTE rather than a constructor argument on
+        purpose: every platform's Session subclass is constructed with the
+        same fixed (args, cookies, session_id, proxy) signature by
+        analysis_service/discovery_service, and threading a new parameter
+        through all five engines would buy nothing over setting it on the
+        instance that the service already holds.
+
+        Best-effort throughout -- a failed save must never stop a browser
+        from closing, or the next run inherits a leaked process.
+        """
+        if self.on_cookies is not None and self.ctx is not None:
+            try:
+                await self.on_cookies(await self.ctx.cookies())
+            except Exception as e:
+                log.warning(f"could not persist refreshed cookies: {type(e).__name__}: {e}")
+
         for obj, meth in (
             (self.ctx, "close"),
             (self.browser, "close"),
