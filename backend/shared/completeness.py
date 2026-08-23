@@ -71,6 +71,25 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 # a lookup table.
 PLATFORMS_WITH_LOCATION = frozenset({"facebook", "twitter", "youtube", "instagram"})
 
+# The platforms whose analysis engine can produce an evidence screenshot at
+# all. Established by reading the engines, not assumed: facebook, instagram,
+# twitter and tiktok each define `Scraper.screenshot`; youtube (official Data
+# API) and telegram (MTProto) define NO such method, because neither one
+# opens a page to capture.
+#
+# `want_screenshot` is a run-level setting (`settings.capture_evidence`), so
+# with capture on, every YouTube and Telegram row was judged against a field
+# its platform is structurally incapable of producing. Measured on
+# 2026-08-23, out of 86 rows sitting in the retry queue:
+#
+#   telegram  10 rows whose ONLY unmet field was `screenshot` -- name,
+#             followers and last-post all read
+#   youtube    1 row, same shape (followers 148000, last post read)
+#
+# All 11 were status OK, permanently `analysis_complete: False`, and were
+# re-queued on every sweep to chase a capture that could never happen.
+PLATFORMS_WITH_SCREENSHOT = frozenset({"facebook", "instagram", "twitter", "tiktok"})
+
 # Statuses where re-reading cannot help: the profile is gone, so there is
 # nothing further to scrape and its blank fields are the honest answer.
 TERMINAL_STATUSES = ("GONE",)
@@ -117,6 +136,38 @@ def _no_audience_published(row: "Row") -> bool:
     return any(m in notes for m in _NO_AUDIENCE_MARKERS)
 
 
+def _can_screenshot(platform_id: str, want_screenshot: bool) -> bool:
+    """Is a screenshot both switched on for this run AND possible on this
+    platform? See PLATFORMS_WITH_SCREENSHOT."""
+    return want_screenshot and platform_id in PLATFORMS_WITH_SCREENSHOT
+
+
+def _telegram_user(platform_id: str, row: "Row") -> bool:
+    """A Telegram USER account, as opposed to a channel or a group.
+
+    Telegram publishes neither of two things for a user, and both are
+    properties of the PROTOCOL rather than of the account:
+
+      * no member count. `entity_from` reads it as
+        `getattr(obj, "participants_count", None)`, and a Telethon `User`
+        object simply has no such attribute -- only Channel/Chat do.
+      * no readable feed. `Telegram.last_post` says it outright in its own
+        docstring: "Users' own messages are not readable; channels' are."
+
+    So a user row comes back with blank followers and blank last-post no
+    matter how many times it is visited. The module already encodes the
+    third member of this family -- `created_iso` is guarded by
+    `if kind != "profile"` in entity_from, and analysis_engine.py notes
+    "telegram exposes no creation date for user accounts" -- this extends
+    the same honesty to the other two.
+
+    Measured 2026-08-23: t.me/CA_NITIN_MURARKA6, entity_type "profile",
+    sat at 6 attempts with followers, last_post and screenshot all marked
+    MISSED. All three are structural; none was ever obtainable.
+    """
+    return platform_id == "telegram" and row.entity_type == "profile"
+
+
 def missing_fields(platform_id: str, row: "Row", *, want_screenshot: bool) -> list[str]:
     """The fields this row should have carried and did not.
 
@@ -143,6 +194,7 @@ def missing_fields(platform_id: str, row: "Row", *, want_screenshot: bool) -> li
         and _blank(row.followers)
         and _blank(row.friends)
         and not _no_audience_published(row)
+        and not _telegram_user(platform_id, row)
     ):
         missing.append("followers")
 
@@ -152,10 +204,11 @@ def missing_fields(platform_id: str, row: "Row", *, want_screenshot: bool) -> li
         _blank(row.last_post_iso)
         and row.posts_seen != "no"
         and not _timeline_hidden(row)
+        and not _telegram_user(platform_id, row)
     ):
         missing.append("last post date")
 
-    if want_screenshot and _blank(row.screenshot):
+    if _can_screenshot(platform_id, want_screenshot) and _blank(row.screenshot):
         missing.append("screenshot")
 
     return missing
@@ -212,14 +265,20 @@ def field_report(platform_id: str, row: "Row", *, want_screenshot: bool) -> dict
         "followers": verdict(
             "followers",
             row.followers if not _blank(row.followers) else row.friends,
-            # Facebook groups publish a member count under neither field.
-            collected=row.entity_type != "group",
+            # Facebook groups publish a member count under neither field,
+            # and Telegram publishes none for a user account.
+            collected=(row.entity_type != "group"
+                       and not _telegram_user(platform_id, row)),
             # A profile the platform publishes no audience number for is
             # confirmed-absent at the source, not missed by the scraper.
             none_exist=_no_audience_published(row),
         ),
         "last_post_date": verdict(
             "last post date", row.last_post_iso,
+            # A Telegram user's own messages are not readable over MTProto
+            # at all, so this is a field never collected there rather than
+            # one that went missing.
+            collected=not _telegram_user(platform_id, row),
             # The two carve-outs missing_fields already honours, named
             # explicitly here instead of silently folded into "not missing":
             # an account with confirmed zero posts, and one whose timeline
@@ -234,5 +293,7 @@ def field_report(platform_id: str, row: "Row", *, want_screenshot: bool) -> dict
             # so this is honestly reported as absent rather than as a miss.
             none_exist=True,
         ),
-        "screenshot": verdict("screenshot", row.screenshot, collected=want_screenshot),
+        "screenshot": verdict(
+            "screenshot", row.screenshot,
+            collected=_can_screenshot(platform_id, want_screenshot)),
     }
