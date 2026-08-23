@@ -55,31 +55,53 @@ try:
 
     HAVE_TELETHON = True
 except ImportError:  # pragma: no cover
+    # Telethon is optional. Without it this platform cannot run, but the
+    # rest of the tool must still import -- registry.py loads every engine
+    # module at startup, so an ImportError here would take down all six
+    # platforms over one missing dependency. These stubs exist purely so
+    # the `except` clauses further down still name something catchable;
+    # HAVE_TELETHON is what actually gates the platform being usable.
     HAVE_TELETHON = False
     TelegramClient = None  # type: ignore
 
     class FloodWaitError(Exception):  # type: ignore
+        """Import-fallback stub, see the note above."""
+
         seconds = 0
 
     class AuthKeyUnregisteredError(Exception):  # type: ignore
+        """Import-fallback stub, see the note above."""
+
         pass
 
     class SessionRevokedError(Exception):  # type: ignore
+        """Import-fallback stub, see the note above."""
+
         pass
 
     class UserDeactivatedError(Exception):  # type: ignore
+        """Import-fallback stub, see the note above."""
+
         pass
 
     class UserDeactivatedBanError(Exception):  # type: ignore
+        """Import-fallback stub, see the note above."""
+
         pass
 
     class ChannelPrivateError(Exception):  # type: ignore
+        """Import-fallback stub, see the note above."""
+
         pass
 
     class UsernameInvalidError(Exception):  # type: ignore
+        """Import-fallback stub, see the note above."""
+
         pass
 
     class UsernameNotOccupiedError(Exception):  # type: ignore
+        """Import-fallback stub, see the note above."""
+
         pass
 
 
@@ -94,6 +116,8 @@ class FloodWait(RuntimeError):
     """Telegram asked us to slow down. Treated like a checkpoint."""
 
     def __init__(self, seconds: int):
+        """Carries the wait Telegram asked for, so the caller can report
+        how long rather than just that it happened."""
         super().__init__(f"telegram asked for a {seconds}s pause")
         self.seconds = seconds
 
@@ -363,6 +387,9 @@ class Sweep:
     error: str = ""
 
     def summary(self) -> str:
+        """One-line log form: how many, and why the sweep stopped. No page
+        count -- MTProto search returns a single result set rather than
+        paginating the way the browser platforms do."""
         return f"{len(self.hits)} hits, {self.stopped}"
 
 
@@ -382,6 +409,9 @@ class Discovery:
     """
 
     def __init__(self, args, ctx=None):
+        """`ctx` is accepted and ignored (no browser). The MTProto client
+        is left unbuilt until the first sweep, so constructing a Discovery
+        never opens a connection."""
         self.a = args
         self.tg: Telegram | None = None
         self._connect_lock = asyncio.Lock()

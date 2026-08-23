@@ -65,12 +65,15 @@ class InstagramSession(Session):
     browser context."""
 
     async def check_session(self) -> bool:  # type: ignore[override]
-        # WHAT/HOW: visits the authenticated-only /accounts/edit/ page and
-        # asks Session.check_session() to confirm the browser actually
-        # landed there rather than a login/checkpoint wall.
-        # expect_path is what actually catches a dead Instagram session:
-        # the logged-out redirect lands on `instagram.com/#`, which trips
-        # none of the negative patterns, see Session.check_session.
+        """WHAT: are these cookies still logged in? HOW: visits the
+        authenticated-only /accounts/edit/ page and asks
+        Session.check_session() to confirm the browser actually landed
+        there rather than on a login/checkpoint wall.
+
+        expect_path is what actually catches a dead Instagram session: the
+        logged-out redirect lands on `instagram.com/#`, which trips none
+        of the negative patterns. LINKED TO: stealth/browser.py::
+        Session.check_session; sessions/manager.py consumes the verdict."""
         return await super().check_session(
             ME, RE_LOGIN, RE_CHECKPOINT, expect_path="/accounts/edit",
         )
@@ -531,6 +534,9 @@ class Sweep:
     extraction: Optional["ExtractionResult"] = None
 
     def summary(self) -> str:
+        """One-line log form. Names `source` whenever it is not the
+        preferred API tier, so a silent slide down the fallback chain
+        shows up in the logs instead of passing as a normal result."""
         base = f"{len(self.hits)} hits, {self.pages} responses, {self.stopped}"
         return f"{base}, via {self.source}" if self.source != "api" else base
 
@@ -705,6 +711,8 @@ class Discovery:
         sem = asyncio.Semaphore(max(1, self.a.concurrency))
 
         async def one(i: int, keyword: str) -> tuple[int, Sweep]:
+            """One keyword sweep, holding a concurrency slot. Returns its
+            index alongside the Sweep so the caller can restore order."""
             async with sem:
                 # Initial delay to space out concurrent requests
                 await asyncio.sleep(i % max(1, self.a.concurrency) * 2.0)

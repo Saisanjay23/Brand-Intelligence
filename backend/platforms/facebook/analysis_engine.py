@@ -134,6 +134,8 @@ class Harvest:
     shared/completeness.py can tell a real reading from a lucky guess."""
 
     def __init__(self):
+        """Empty collectors. Everything is filled during one profile visit
+        by process()'s response listener and its tab reads."""
         self.gql: list[Any] = []  # parsed XHR /api/graphql lines
         self.raw: list[str] = []  # unparsed script[type=application/json]
         self.html: dict[str, str] = {}
@@ -586,6 +588,17 @@ def _post_stamps(roots) -> list[int]:
 
 
 def read_last_post(row: Row, h: Harvest) -> None:
+    """WHAT: sets row.last_post_iso from whatever this visit collected.
+    HOW: three tiers, precise-and-narrow first, proven-but-looser as the
+    safety net -- so the column is never silently empty just because the
+    precise method's data has not arrived over XHR yet. LINKED TO: called
+    by Scraper.process(); _post_stamps() supplies the candidate timestamps
+    and row.mark() records which tier answered.
+
+    The tier that answered matters as much as the answer: a date from tier
+    3 is looser evidence than one from tier 1, and shared/completeness.py
+    reads that provenance rather than treating every filled cell alike.
+    """
     # Three tiers, precise-and-narrow first, proven-but-looser as the safety
     # net, never silently empty just because the precise method's data
     # hasn't arrived yet over XHR.

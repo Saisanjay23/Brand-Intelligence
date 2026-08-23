@@ -61,19 +61,23 @@ class TwitterSession(Session):
     context."""
 
     async def check_session(self) -> bool:  # type: ignore[override]
-        # WHAT/HOW: visits /home (an authenticated-only destination) and
-        # asks Session.check_session() to confirm the browser landed
-        # there rather than a login/checkpoint wall.
-        # deny_paths is load-bearing, not decoration: confirmed live
-        # (2026-08-13, a fresh no-cookie context) that a logged-out
-        # `/home` lands on `https://x.com/` with a body reading "Happening
-        # now... Continue with phone / Google / Apple... Email or
-        # username", which matches NEITHER RE_LOGIN (none of its
-        # alternatives appear in that text) NOR the "/login" URL check
-        # (the browser never leaves "/"). Without this, a genuinely dead
-        # Twitter session read as healthy indefinitely, the exact same
-        # false-negative this file's own Session.check_session docstring
-        # documents Instagram having had, just never fixed here too.
+        """WHAT: are these cookies still logged in? HOW: visits /home (an
+        authenticated-only destination) and asks Session.check_session()
+        to confirm the browser landed there rather than on a login or
+        checkpoint wall. LINKED TO: stealth/browser.py::
+        Session.check_session; sessions/manager.py::verify_session_item
+        consumes the verdict.
+
+        deny_paths is load-bearing, not decoration. Confirmed live
+        (2026-08-13, a fresh no-cookie context): a logged-out /home lands
+        on https://x.com/ with a body reading -- Happening now, Continue
+        with phone / Google / Apple, Email or username -- which matches
+        NEITHER RE_LOGIN (none of its alternatives appear in that text)
+        NOR the /login URL check (the browser never leaves the root).
+
+        Without this, a genuinely dead Twitter session read as healthy
+        indefinitely: the same false negative this module documents
+        Instagram having had, just never fixed here too."""
         return await super().check_session(HOME, RE_LOGIN, RE_CHECKPOINT, deny_paths=("/",))
 
 
@@ -602,6 +606,9 @@ class Sweep:
     extraction: Optional["ExtractionResult"] = None
 
     def summary(self) -> str:
+        """One-line log form. Names `source` whenever it is not the
+        preferred GraphQL tier, so a silent slide down the fallback chain
+        shows up in the logs instead of passing as a normal result."""
         base = f"{len(self.hits)} hits, {self.pages} pages, {self.stopped}"
         return f"{base}, via {self.source}" if self.source != "graphql" else base
 
@@ -671,6 +678,10 @@ class Discovery:
         arrived = asyncio.Event()
 
         async def on_response(resp):
+            """Absorbs the search payloads and tracks the pagination
+            cursor, which X carries in the response BODY rather than a
+            header -- so the only way to page is to read it back out of
+            what arrived."""
             nonlocal cursor
             try:
                 if SEARCH_QUERY not in resp.url:
@@ -812,6 +823,9 @@ class Discovery:
         sem = asyncio.Semaphore(max(1, self.a.concurrency))
 
         async def one(i: int, keyword: str) -> tuple[int, Sweep]:
+            """One keyword sweep, holding a concurrency slot and starting
+            staggered. Returns its index so the caller can restore the
+            original keyword order."""
             async with sem:
                 await asyncio.sleep(i % max(1, self.a.concurrency) * 1.0)
                 s = await self.sweep(keyword)

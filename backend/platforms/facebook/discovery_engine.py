@@ -115,20 +115,25 @@ class FacebookSession(Session):
     context."""
 
     async def check_session(self) -> bool:  # type: ignore[override]
-        # WHAT/HOW: visits /me (an authenticated-only destination) and asks
-        # the shared Session.check_session() to confirm the browser landed
-        # on an account page rather than a login/checkpoint wall -- see
-        # deny_paths below for the specific signal this platform needs.
-        # deny_paths is the positive confirmation, the same job expect_path
-        # does for Instagram/TikTok, /me cannot use expect_path because
-        # its authenticated destination is the account's OWN profile path,
-        # which differs per account. Logged out it lands on the site root
-        # (/me) or on /index.php?next=... (every other authenticated path),
-        # and neither is somewhere a logged-in /me can end up. Without it a
-        # logged-out session reports healthy, every search it then runs is
-        # served a bare 404, and both discovery strategies correctly find
-        # nothing, which reads identically to a GraphQL doc-id rotation
-        # and sends the investigation at the parsers instead of the cookies.
+        """WHAT: are these cookies still logged in? HOW: visits /me (an
+        authenticated-only destination) and asks the shared
+        Session.check_session() to confirm the browser landed on an
+        account page rather than a login/checkpoint wall. LINKED TO:
+        stealth/browser.py::Session.check_session does the work;
+        sessions/manager.py::verify_session_item consumes the verdict.
+
+        deny_paths is the positive confirmation here, the job expect_path
+        does for Instagram/TikTok. /me cannot use expect_path because its
+        authenticated destination is the account's OWN profile path, which
+        differs per account. Logged out it lands on the site root (/me) or
+        on /index.php?next=... (every other authenticated path), and
+        neither is somewhere a logged-in /me can end up.
+
+        Without it a logged-out session reports healthy, every search it
+        then runs is served a bare 404, and both discovery strategies
+        correctly find nothing -- which reads identically to a GraphQL
+        doc-id rotation and sends the investigation at the parsers instead
+        of the cookies."""
         return await super().check_session(
             ME, RE_LOGIN, RE_CHECKPOINT, deny_paths=("/", "/index.php"),
         )
@@ -658,6 +663,12 @@ class Sweep:
     extraction: Optional["ExtractionResult"] = None
 
     def summary(self) -> str:
+        """One-line log form. Reports `backfilled` and `unshown` counts
+        separately because they mean different things: backfilled hits
+        needed a second lookup to become usable, and matched-but-unshown
+        are results Facebook counted but never rendered -- a gap between
+        `reported_total` and what was actually harvested is the signal
+        that a sweep is being throttled rather than exhausted."""
         note = f"{len(self.hits)} hits, {self.pages} pages, {self.stopped}"
         if self.backfilled:
             note += f", {self.backfilled} backfilled"
@@ -1058,11 +1069,15 @@ class Discovery:
         self_avatar_assets = await self._self_avatar_assets()
 
         async def one(eid: str) -> None:
+            """Backfills one entity that search listed without enough
+            detail to score, by visiting it directly. Holds a concurrency
+            slot for the duration of the visit."""
             async with sem:
                 page = await self.ctx.new_page()
                 blobs: list[Any] = []
 
                 async def on_response(resp):
+                    """Collects this entity's own GraphQL payloads."""
                     try:
                         if "/api/graphql" not in resp.url:
                             return
@@ -1282,6 +1297,9 @@ class Discovery:
         cap = _tab_cap(self.a)
 
         def absorb(blob) -> None:
+            """Folds one search payload into the running result set,
+            enforcing the cap as it goes. See the note below for why the
+            cap is applied HERE and not only between scrolls."""
             nonlocal state
             for hit in iter_results(blob):
                 # capped here, not only in the while-loop's own check below:
@@ -1304,6 +1322,11 @@ class Discovery:
                 processed_ids.update(st.ids_processed)
 
         async def on_response(resp):
+            """Absorbs the search payloads this sweep fires. Filtered by
+            REQUEST body, not just URL: every Facebook XHR shares the
+            /api/graphql path, so the post data is the only thing that
+            tells a search response apart from the dozens of unrelated
+            queries a page makes."""
             try:
                 if "/api/graphql" not in resp.url:
                     return
@@ -1548,6 +1571,9 @@ class Discovery:
         sem = asyncio.Semaphore(max(1, self.a.concurrency))
 
         async def one(i: int, keyword: str, tab: str):
+            """One (keyword, tab) sweep, holding a concurrency slot and
+            starting staggered so several tabs do not hit Facebook in the
+            same instant."""
             async with sem:
                 await asyncio.sleep(i % max(1, self.a.concurrency) * 1.0)
                 s = await self.sweep(keyword, tab)

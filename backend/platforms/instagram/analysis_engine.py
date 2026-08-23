@@ -482,6 +482,9 @@ class Scraper:
         bodies: list[str] = []
 
         async def on_response(resp):
+            """Collects the About-this-account payload, which carries the
+            join date and country -- neither of which the profile header
+            itself renders."""
             try:
                 if ABOUT_PANEL_APPID not in resp.url:
                     return
@@ -628,6 +631,12 @@ class Scraper:
         timeline_got = asyncio.Event()
 
         async def on_response(resp):
+            """Collects the profile and timeline payloads. Watches every
+            endpoint in PROFILE_ENDPOINTS because Instagram serves the
+            same record from several of them and which one answers varies
+            per visit; signals `timeline_got` so the visit can stop
+            waiting as soon as post dates land rather than always sleeping
+            out the full timeout."""
             try:
                 if not any(e in resp.url for e in PROFILE_ENDPOINTS):
                     return
@@ -850,6 +859,11 @@ class Scraper:
         this header read.
         """
         def count(field: str, word: str) -> tuple[Optional[int], bool]:
+            """One header count -> (value, was_exact). Anchored to the
+            LABEL that follows the number ("1,234 followers"), so it
+            cannot pick up a different statistic that happens to sit
+            nearby, and reports whether the figure was abbreviated rather
+            than presenting "1.2M" as an exact count."""
             m = re.match(rf"^([\d][\d,.]*[KMB]?)\s*{word}\b", dom.get(field, ""), re.I)
             return parse_count(m.group(1)) if m else (None, False)
 
