@@ -2194,6 +2194,29 @@ a:hover {
   font-family: var(--font-mono);
 }
 
+.table-avatar-link {
+  display: inline-flex;
+  border-radius: 50%;
+  text-decoration: none;
+  cursor: pointer;
+  transition: transform 0.15s ease, filter 0.15s ease, box-shadow 0.15s ease;
+}
+.table-avatar-link:hover {
+  transform: scale(1.08);
+  filter: brightness(1.15);
+}
+.table-platform-link {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+  cursor: pointer;
+  transition: transform 0.15s ease, filter 0.15s ease;
+}
+.table-platform-link:hover {
+  transform: scale(1.2);
+  filter: brightness(1.2);
+}
+
 .card-badge-top-left {
   position: absolute;
   top: 9px;

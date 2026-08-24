@@ -146,13 +146,41 @@ async def proxy_image(url: str):
     if not ok:
         raise HTTPException(status_code=400, detail="Host not allowed")
 
+    def _referer_for(u: str) -> str:
+        """Pick a Referer that matches the CDN the image lives on.
+
+        fbcdn.net serves both Facebook AND Instagram photos, but it
+        enforces the Referer: a request claiming to come from Instagram
+        while fetching a Facebook profile picture is silently rejected
+        (empty body / 403).  The fix is to send the platform's own
+        origin as the Referer so the CDN lets it through.
+        """
+        h = urlparse(u).hostname or ""
+        h = h.lower()
+        if "tiktokcdn" in h or "tiktok" in h:
+            return "https://www.tiktok.com/"
+        if "twimg" in h or "twitter" in h or h.endswith("x.com"):
+            return "https://x.com/"
+        if "ytimg" in h or "ggpht" in h or "youtube" in h or "googleusercontent" in h:
+            return "https://www.youtube.com/"
+        if "telegram" in h or "telesco.pe" in h or h.endswith("t.me"):
+            return "https://web.telegram.org/"
+        if "cdninstagram" in h or "instagram" in h:
+            return "https://www.instagram.com/"
+        # fbcdn.net hosts both FB and IG images.  For discovery-phase
+        # avatars (which is what this ticket is about) the URL always
+        # comes from a Facebook search result, so a Facebook Referer
+        # is the right default for any fbcdn.net URL that was not
+        # already caught by the Instagram branch above.
+        return "https://www.facebook.com/"
+
     def fetch():
         req = urllib.request.Request(
             url,
             headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
-                "Referer": "https://www.instagram.com/",
+                "Referer": _referer_for(url),
             },
         )
         # A dedicated opener with the validating handler, every redirect

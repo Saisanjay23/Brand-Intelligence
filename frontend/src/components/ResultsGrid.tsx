@@ -381,9 +381,15 @@ function LiveInspectionPane({
       </div>
 
       <div className="inspection-header">
-        <div style={{ width: "40px", height: "40px", flexShrink: 0 }}>
+        <a
+          href={linkUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ width: "40px", height: "40px", flexShrink: 0, display: "block", cursor: "pointer", borderRadius: "50%" }}
+          title="Open profile in new tab"
+        >
           <ProfileAvatar r={profile} size={40} />
-        </div>
+        </a>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--text-main)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: "5px" }}>
             <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{name}</span>
@@ -1005,7 +1011,16 @@ function ProfileCard({
             style={{ position: "absolute", top: "8px", left: "8px", zIndex: 2, width: "16px", height: "16px", cursor: "pointer" }}
           />
         )}
-        <ProfileAvatar r={r} />
+        <a
+          href={linkUrl}
+          target="_blank"
+          rel="noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          title={`Open ${name} in new tab`}
+          style={{ display: "block", width: "100%", height: "100%", cursor: "pointer" }}
+        >
+          <ProfileAvatar r={r} />
+        </a>
         <span
           className="card-badge-top-left"
           style={{
@@ -1044,10 +1059,18 @@ function ProfileCard({
                 : "🎯 Low Match"}
           </span>
         )}
-        <span className="card-badge-platform">
+        <a
+          href={linkUrl}
+          target="_blank"
+          rel="noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          className="card-badge-platform"
+          title={`Open ${r.platform} profile in new tab`}
+          style={{ cursor: "pointer", textDecoration: "none" }}
+        >
           <PlatformIcon platform={r.platform} size={14} />
           {r.platform}
-        </span>
+        </a>
       </div>
 
       <div className="profile-card-body">
@@ -4037,12 +4060,20 @@ export function ResultsGrid({
                       </td>
                       <td>
                         <div style={{ display: "flex", alignItems: "center", gap: isAnalysisView ? "10px" : "4px" }}>
-                          <ProfileAvatar
-                            r={r}
-                            size={isAnalysisView ? 52 : 28}
-                            style={isAnalysisView ? { border: "2px solid rgba(0, 229, 255, 0.35)", boxShadow: "0 2px 10px rgba(0, 229, 255, 0.15)" } : undefined}
-                          />
-
+                          <a
+                            href={isAnalysisView && inc ? inc.source : r.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            title={`Open ${r.profile_name || r.username || "profile"} in new tab`}
+                            className="table-avatar-link"
+                          >
+                            <ProfileAvatar
+                              r={r}
+                              size={isAnalysisView ? 52 : 28}
+                              style={isAnalysisView ? { border: "2px solid rgba(0, 229, 255, 0.35)", boxShadow: "0 2px 10px rgba(0, 229, 255, 0.15)" } : undefined}
+                            />
+                          </a>
                         </div>
                       </td>
                       {!isAnalysisView && (
@@ -4104,7 +4135,18 @@ export function ResultsGrid({
                           </div>
                         </td>
                       )}
-                      <td><PlatformIcon platform={r.platform} size={16} /></td>
+                      <td>
+                        <a
+                          href={isAnalysisView && inc ? inc.source : r.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          title={`Open ${r.platform} profile in new tab`}
+                          className="table-platform-link"
+                        >
+                          <PlatformIcon platform={r.platform} size={16} />
+                        </a>
+                      </td>
                       {isAnalysisView && (
                         <td
                           onClick={(e) => e.stopPropagation()}
