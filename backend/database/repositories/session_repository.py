@@ -113,6 +113,22 @@ async def get_item(platform: str, session_id: str) -> Optional[dict]:
     return _to_item(doc) if doc else None
 
 
+# A NEW pooled entry joins the rotation at the BACK, not the front.
+#
+# `manager._pick_least_recently_used` sorts ascending on `last_used`, so a
+# freshly-added account seeded with 0.0 was the lowest possible value and
+# therefore the very first session handed out -- ahead of every established
+# account, for its first job. That is backwards: a minutes-old account is
+# the one platforms scrutinise hardest, and with no result caps configured
+# a single discovery turn can be hundreds of authenticated page loads.
+#
+# Stamping "now" instead means a new entry sorts LAST, so it only gets work
+# once every already-trusted account has had its turn. Same pool, same
+# rotation, no ramp logic -- it just stops actively preferring the most
+# fragile account in the pool.
+_NEW_SESSION_LAST_USED = _now  # stamped at insert; see the note above
+
+
 async def add_item(platform: str, cookies: list[dict], identifier: str, proxy: Optional[dict] = None) -> dict:
     if await count_pool(platform) >= 20:
         raise ValueError(f"Session pool capacity limit (20) reached for {platform}. Please update an expired session or delete one.")
@@ -120,7 +136,7 @@ async def add_item(platform: str, cookies: list[dict], identifier: str, proxy: O
     doc = {
         "_id": _doc_id(platform, session_id), "platform": platform, "session_id": session_id,
         "identifier": identifier, "status": "ready", "cookies": cookies, "proxy": proxy,
-        "rate_limited_until": 0.0, "last_used": 0.0,
+        "rate_limited_until": 0.0, "last_used": _NEW_SESSION_LAST_USED(),
         "username": "", "password": "", "two_factor_secret": "",
         "credentials_updated_at": _now(),
     }
@@ -136,7 +152,7 @@ async def save_api_key_session(platform: str, key: str, identifier: str) -> dict
     doc = {
         "_id": _doc_id(platform, session_id), "platform": platform, "session_id": session_id,
         "identifier": identifier, "status": "ready", "api_key": key, "cookies": [],
-        "proxy": None, "rate_limited_until": 0.0, "last_used": 0.0,
+        "proxy": None, "rate_limited_until": 0.0, "last_used": _NEW_SESSION_LAST_USED(),
         "credentials_updated_at": _now(),
     }
     await db()[SESSIONS].update_one({"_id": _doc_id(platform, session_id)}, {"$set": doc}, upsert=True)
@@ -152,7 +168,7 @@ async def save_mtproto_session(platform: str, identifier: str, api_id: int, api_
         "_id": _doc_id(platform, session_id), "platform": platform, "session_id": session_id,
         "identifier": identifier, "status": "ready", "api_id": api_id, "api_hash": api_hash,
         "phone": phone, "session_blob": session_blob, "cookies": [], "proxy": None,
-        "rate_limited_until": 0.0, "last_used": 0.0,
+        "rate_limited_until": 0.0, "last_used": _NEW_SESSION_LAST_USED(),
         "credentials_updated_at": _now(),
     }
     await db()[SESSIONS].update_one({"_id": _doc_id(platform, session_id)}, {"$set": doc}, upsert=True)

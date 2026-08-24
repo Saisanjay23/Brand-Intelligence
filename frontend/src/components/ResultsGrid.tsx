@@ -1591,23 +1591,32 @@ export function ResultsGrid({
         { id: prev.id, prevStatus: prev.status },
       ]);
     }
-    
-    // Trigger CSS animation first
+
+    // Start the row's fade-out, but do NOT block on it. The 300ms exists so
+    // the row finishes fading before it is filtered out of a status-scoped
+    // view -- it must not gate the optimistic update or the PATCH. Awaiting
+    // it here meant the cell did not change for 300ms (defeating the point
+    // of an optimistic update), the network request queued behind an
+    // animation, and a failure took 300ms longer to surface.
     setAnimatingIds((prev) => new Set(prev).add(id));
-    await new Promise((r) => setTimeout(r, 300));
-    
-    setProfiles((rows) => {
-      const updated = rows.map((r) => (r.id === id ? { ...r, status: next } : r));
-      return !isAnalysisView && status ? updated.filter((r) => r.status === status) : updated;
-    });
-    setAnimatingIds((prev) => {
-      const nextSet = new Set(prev);
-      nextSet.delete(id);
-      return nextSet;
-    });
+    const fadeDone = new Promise<void>((r) => window.setTimeout(r, 300));
+    const clearFade = () =>
+      setAnimatingIds((prev) => {
+        const nextSet = new Set(prev);
+        nextSet.delete(id);
+        return nextSet;
+      });
+
+    // The optimistic status change lands immediately. Only the REMOVAL from
+    // a filtered list waits for the fade, below.
+    setProfiles((rows) => rows.map((r) => (r.id === id ? { ...r, status: next } : r)));
     setSavingId(id);
     try {
       await profilesApi.patchProfile(id, { status: next });
+      await fadeDone;
+      clearFade();
+      setProfiles((rows) =>
+        !isAnalysisView && status ? rows.filter((r) => r.status === status) : rows);
       if (next === "approved" && !isAnalysisView) {
         toast.custom(
           (t) => (
@@ -1684,7 +1693,14 @@ export function ResultsGrid({
       }
       await load(false);
     } catch (e: any) {
+      // Cancel the fade -- the row is staying, so it must not be left at
+      // opacity 0 / pointer-events:none after the rollback restores it.
+      clearFade();
       toast.error(`Failed to update profile: ${e.message}`);
+      // Also raised to the app-level error state, like every other failure
+      // path in this component. Omitting it made a failed validate/reject
+      // the one action that never reached App's error banner.
+      onError?.((e as Error).message);
       setProfiles((rows) => {
         const updated = rows.map((r) => (r.id === id && prev ? { ...r, status: prev.status } : r));
         return !isAnalysisView && status ? updated.filter((r) => r.status === status) : updated;

@@ -24,6 +24,7 @@ import type { Client, Job, JobEvent, PlatformProgress, Profile } from "../api/ty
 import { confirmAction } from "../utils/confirmAction";
 import { download } from "../utils/download";
 import { PlatformIcon } from "../components/PlatformIcon";
+import { schedulerApi, type SchedulerClientStatus } from "../api/schedulerApi";
 import {
   ZapIcon,
   DiscoverIcon,
@@ -105,6 +106,9 @@ const PLAT_STATUS_LOOK: Record<string, { bg: string; fg: string }> = {
   partial: { bg: "rgba(253,183,27,0.15)", fg: "var(--warn-yellow, #fdb71b)" },
   failed: { bg: "rgba(233,80,83,0.15)", fg: "var(--danger, #e95053)" },
   skipped: { bg: "rgba(102,112,133,0.1)", fg: "var(--text-dim, #667085)" },
+  // Amber, not red: an interrupted platform is unfinished work the engine
+  // will resume by itself on the next lap, not an error to investigate.
+  interrupted: { bg: "rgba(253,183,27,0.18)", fg: "var(--warn-yellow, #fdb71b)" },
 };
 
 const JOB_STATUS_COLOR: Record<string, string> = {
@@ -1158,8 +1162,175 @@ const LA_SELECT_STYLE: React.CSSProperties = {
   outline: "none",
 };
 
+// ══════════════════════════════════════════════════════════════════════════
+// CLIENT COVERAGE
+//
+// Answers the one question no other view can: for THIS client, which
+// platforms finished their last turn and which still owe work? An in-flight
+// job card shows one run in progress; the Scheduler tab shows one aggregate
+// word per client. Neither can express "Instagram and X are done, Facebook
+// lost its session halfway" -- the most common partial outcome, and the only
+// one that needs following up.
+//
+// Fed by GET /scheduler/status. `last_run_platforms` is written by
+// round_robin_service after every turn from the finished job's own
+// per-platform breakdown; `unfinished_platforms` is the subset a resume turn
+// would re-run. Both are OPTIONAL: a backend older than them omits both, so
+// every read goes through the accessors below rather than the property.
+// ══════════════════════════════════════════════════════════════════════════
+
+const COVERAGE_REFRESH_MS = 6_000;
+
+const OUTCOME_LABEL: Record<string, string> = {
+  done: "done",
+  partial: "partial",
+  interrupted: "interrupted",
+  failed: "failed",
+  skipped: "no session",
+  running: "running",
+  pending: "pending",
+};
+
+const unfinishedOf = (c: SchedulerClientStatus): string[] => c.unfinished_platforms ?? [];
+const outcomesOf = (c: SchedulerClientStatus): Record<string, string> =>
+  c.last_run_platforms ?? {};
+
+function ClientCoverage({ onCount }: { onCount: (n: number) => void }) {
+  const [clients, setClients] = useState<SchedulerClientStatus[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [err, setErr] = useState("");
+  const [onlyOpen, setOnlyOpen] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    const pull = async () => {
+      try {
+        const st = await schedulerApi.status();
+        if (!alive) return;
+        setClients(st.clients);
+        setErr("");
+        onCount(st.clients.filter((c) => unfinishedOf(c).length > 0).length);
+      } catch (e) {
+        if (alive) setErr(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (alive) setLoaded(true);
+      }
+    };
+    void pull();
+    const t = setInterval(() => void pull(), COVERAGE_REFRESH_MS);
+    return () => { alive = false; clearInterval(t); };
+  }, [onCount]);
+
+  const openCount = clients.filter((c) => unfinishedOf(c).length > 0).length;
+  const shown = onlyOpen ? clients.filter((c) => unfinishedOf(c).length > 0) : clients;
+
+  if (!loaded) {
+    return <EmptyState icon={<ClockIcon size={26} color="var(--cyan)" />}
+                       title="Loading coverage…" text="Reading the scheduler's per-client platform record." />;
+  }
+  if (err) {
+    return <EmptyState icon={<AlertTriangleIcon size={26} color="var(--danger)" />}
+                       title="Could not load coverage" text={err} />;
+  }
+  if (!clients.length) {
+    return <EmptyState icon={<DatabaseIcon size={26} color="var(--cyan)" />}
+                       title="No clients yet" text="No clients with keywords set." />;
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12.5, color: "var(--text-muted, #98a2b3)" }}>
+          {openCount > 0
+            ? `${openCount} of ${clients.length} client(s) have platforms still owing work — these run first on the next lap.`
+            : `All ${clients.length} client(s) completed every platform on their last turn.`}
+        </span>
+        <button
+          type="button"
+          onClick={() => setOnlyOpen((v) => !v)}
+          style={{
+            background: onlyOpen ? "rgba(253,183,27,0.15)" : "transparent",
+            border: "1px solid var(--border-subtle, #344054)", borderRadius: 8,
+            color: onlyOpen ? "var(--warn-yellow, #fdb71b)" : "var(--text-muted, #98a2b3)",
+            fontSize: 11.5, fontWeight: 700, padding: "5px 11px", cursor: "pointer",
+            whiteSpace: "nowrap",
+          }}
+          title="Show only clients with platforms still owing work"
+        >
+          {onlyOpen ? "Showing unfinished only" : "Show unfinished only"}
+        </button>
+      </div>
+
+      {shown.map((c) => {
+        const outcomes = outcomesOf(c);
+        const ids = Object.keys(outcomes).sort();
+        const open = unfinishedOf(c).length > 0;
+        return (
+          <div
+            key={c.client_id}
+            style={{
+              border: `1px solid ${open ? "rgba(253,183,27,0.35)" : "var(--border-subtle, #344054)"}`,
+              borderRadius: 12, padding: "12px 14px",
+              background: open ? "rgba(253,183,27,0.05)" : "var(--bg-surface, #1e2837)",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" }}>
+              <strong style={{ fontSize: 13.5 }}>{c.name}</strong>
+              {c.current_phase && <Badge color="var(--accent, #7c5cff)">running · {c.current_phase}</Badge>}
+              {open && !c.current_phase && <Badge color="var(--warn-yellow, #fdb71b)">resumes next lap</Badge>}
+              {!c.scheduler_enabled && <Badge color="var(--text-dim, #667085)">parked</Badge>}
+              <span style={{ marginLeft: "auto", fontSize: 11.5, color: "var(--text-dim, #667085)" }}>
+                {c.last_run_at ? relativeTime(c.last_run_at) : "never run"}
+              </span>
+            </div>
+
+            {ids.length === 0 ? (
+              <div style={{ fontSize: 11.5, color: "var(--text-dim, #667085)", marginTop: 7 }}>
+                No per-platform record yet — this client has not completed a turn since
+                coverage tracking was added.
+              </div>
+            ) : (
+              <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginTop: 9 }}>
+                {ids.map((pid) => {
+                  const st = outcomes[pid];
+                  const look = PLAT_STATUS_LOOK[st] ?? PLAT_STATUS_LOOK.skipped;
+                  return (
+                    <span
+                      key={pid}
+                      title={`${pid}: ${OUTCOME_LABEL[st] ?? st}`}
+                      style={{
+                        display: "inline-flex", alignItems: "center", gap: 6,
+                        background: look.bg, color: look.fg,
+                        borderRadius: 999, padding: "4px 10px",
+                        fontSize: 11.5, fontWeight: 700,
+                      }}
+                    >
+                      <PlatformIcon platform={pid} size={14} />
+                      <span>{pid}</span>
+                      <span style={{ opacity: 0.85, fontWeight: 500 }}>{OUTCOME_LABEL[st] ?? st}</span>
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+
+            {c.last_run_note && (
+              <div style={{ fontSize: 11.5, color: "var(--text-muted, #98a2b3)", marginTop: 8 }}>
+                {c.last_run_note}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export function LiveActivityPanel() {
-  const [activeTab, setActiveTab] = useState<"live" | "history" | "triage">("live");
+  const [activeTab, setActiveTab] = useState<"live" | "coverage" | "history" | "triage">("live");
+  // Clients with platforms still owing work. Lifted out of ClientCoverage
+  // so the tab badge stays accurate while another tab is open.
+  const [unfinishedClients, setUnfinishedClients] = useState(0);
   const [triageSubTab, setTriageSubTab] = useState<"retry" | "records">("retry");
   const [jobs, setJobs] = useState<Job[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
@@ -1453,8 +1624,12 @@ export function LiveActivityPanel() {
   const criticalIncidentCount = incidentCounts.critical ?? 0;
   const warningIncidentCount = incidentCounts.warning ?? 0;
 
-  const TABS: Array<{ id: "live" | "history" | "triage"; label: string; icon: React.ReactNode; badge?: number }> = [
+  const TABS: Array<{ id: "live" | "coverage" | "history" | "triage"; label: string; icon: React.ReactNode; badge?: number }> = [
     { id: "live", label: "In-Flight Sweeps", icon: <ZapIcon size={15} />, badge: activeJobs.length || undefined },
+    // Badged with the number of clients still owing platform work -- the
+    // one number an operator wants at a glance: how much coverage is
+    // currently incomplete.
+    { id: "coverage", label: "Client Coverage", icon: <DiscoverIcon size={15} />, badge: unfinishedClients || undefined },
     { id: "history", label: "Job History & Logs", icon: <ClockIcon size={15} />, badge: terminalJobs.length || undefined },
     {
       id: "triage",
@@ -1692,6 +1867,8 @@ export function LiveActivityPanel() {
           )}
         </div>
       )}
+
+      {activeTab === "coverage" && <ClientCoverage onCount={setUnfinishedClients} />}
 
       {/* ════════════════════════════════════════════════════════════════════════
           TAB 2: JOB HISTORY & LOGS
