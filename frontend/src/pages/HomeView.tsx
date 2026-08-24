@@ -5,7 +5,11 @@ import { clientsApi } from "../api/clientsApi";
 import { discoveryApi } from "../api/discoveryApi";
 import { jobsApi } from "../api/jobsApi";
 import type { Client, Job, KeywordGroup, PlatformHealth } from "../api/types";
-import { mergeGeneratedChildren } from "../services/keywordGroups";
+import {
+  mergeGeneratedChildren,
+  parseBulkKeywordGroups,
+  mergeBulkKeywordGroups,
+} from "../services/keywordGroups";
 import { PlatformIcon } from "../components/PlatformIcon";
 import { GlobalSearchModal } from "../components/GlobalSearchModal";
 import { confirmAction } from "../utils/confirmAction";
@@ -434,10 +438,30 @@ function KeywordGroupEditor({
   disabled?: boolean;
 }) {
   const [parentInput, setParentInput] = useState("");
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkText, setBulkText] = useState("");
+
+  const applyBulkText = (raw: string) => {
+    const parsed = parseBulkKeywordGroups(raw);
+    if (!parsed.length) return;
+    const { next, addedCount, dupCount } = mergeBulkKeywordGroups(groups, parsed);
+    onChange(next);
+    if (dupCount > 0) {
+      toast(`⚠️ Skipped ${dupCount} duplicate item${dupCount === 1 ? "" : "s"}`);
+    }
+    if (addedCount > 0) {
+      toast.success(`Added ${addedCount} keyword group${addedCount === 1 ? "" : "s"}`);
+    }
+  };
 
   const addParent = () => {
-    const trimmed = parentInput.trim();
+    const trimmed = parentInput.trim().replace(/^,+|,+$/g, "");
     if (!trimmed) return;
+    if (/[,\n]/.test(trimmed) || trimmed.includes(":") || trimmed.includes("->")) {
+      applyBulkText(trimmed);
+      setParentInput("");
+      return;
+    }
     if (groups.some((g) => g.parent.toLowerCase() === trimmed.toLowerCase())) {
       toast(`⚠️ "${trimmed}" already exists`, { id: `dup-parent-${trimmed.toLowerCase()}` });
       setParentInput("");
@@ -445,6 +469,12 @@ function KeywordGroupEditor({
     }
     onChange([...groups, { parent: trimmed, children: [] }]);
     setParentInput("");
+  };
+
+  const commitBulk = () => {
+    applyBulkText(bulkText);
+    setBulkText("");
+    setBulkOpen(false);
   };
 
   const removeParent = (idx: number) =>
@@ -466,14 +496,22 @@ function KeywordGroupEditor({
         searched on every platform. A parent with no search terms searches itself.
       </div>
 
-      <div className="chips-input-container" style={{ marginBottom: "12px" }}>
+      <div className="chips-input-container" style={{ marginBottom: "6px" }}>
         <input
           value={parentInput}
           onChange={(e) => setParentInput(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") {
+            if (e.key === "Enter" || e.key === ",") {
               e.preventDefault();
               addParent();
+            }
+          }}
+          onPaste={(e) => {
+            const text = e.clipboardData.getData("text");
+            if (/[,\n]/.test(text) || text.includes(":") || text.includes("->")) {
+              e.preventDefault();
+              applyBulkText(text);
+              setParentInput("");
             }
           }}
           onBlur={addParent}
@@ -482,6 +520,47 @@ function KeywordGroupEditor({
           style={{ flex: 1, minWidth: "220px", background: "transparent", border: "none", outline: "none", color: "var(--text-main)", fontSize: "13px" }}
         />
       </div>
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+        <div className="kw-count-badge" style={{ margin: 0 }}>
+          <strong>{groups.length}</strong> configured · <strong style={{ color: accent }}>{totalSearchTerms}</strong> search{totalSearchTerms === 1 ? "" : "es"} per platform
+        </div>
+        <button
+          type="button"
+          className="bulk-kw-toggle"
+          onClick={() => setBulkOpen((v) => !v)}
+          disabled={disabled}
+        >
+          {bulkOpen ? "▾ Close bulk paste" : (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+              <CloneIcon size={12} /> Bulk import
+            </span>
+          )}
+        </button>
+      </div>
+
+      {bulkOpen && (
+        <div className="bulk-kw-panel" style={{ marginBottom: "14px" }}>
+          <textarea
+            value={bulkText}
+            onChange={(e) => setBulkText(e.target.value)}
+            placeholder={"one per line, or comma-separated -- e.g.\ngautam adani\nkaran adani, jeet adani\n\nOptional search terms:\nAdani Group: adani_group, official_adani"}
+            rows={4}
+            disabled={disabled}
+          />
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "4px" }}>
+            <button
+              type="button"
+              className="btn-cyber-primary"
+              style={{ width: "auto", padding: "6px 14px", fontSize: "11.5px", marginTop: 0 }}
+              onClick={commitBulk}
+              disabled={disabled || !bulkText.trim()}
+            >
+              Add Keywords
+            </button>
+          </div>
+        </div>
+      )}
 
       {!groups.length ? (
         <div style={{ padding: "18px", textAlign: "center", fontSize: "12px", color: "var(--text-dim)", border: "1px dashed var(--border-subtle)", borderRadius: "10px" }}>
@@ -532,18 +611,10 @@ function KeywordGroupEditor({
           ))}
         </div>
       )}
-
-      {groups.length > 0 && (
-        <div style={{ fontSize: "11px", color: "var(--text-dim)", marginTop: "10px" }}>
-          <strong style={{ color: "var(--text-main)" }}>{groups.length}</strong> name
-          {groups.length === 1 ? "" : "s"} ·{" "}
-          <strong style={{ color: accent }}>{totalSearchTerms}</strong> search
-          {totalSearchTerms === 1 ? "" : "es"} per platform
-        </div>
-      )}
     </div>
   );
 }
+
 
 
 function KeywordTabs({

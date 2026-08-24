@@ -70,3 +70,115 @@ export function mergeGeneratedChildren(
   }
   return merged;
 }
+
+/**
+ * Parses raw multiline or comma-separated bulk keyword group text.
+ * Supports:
+ *   - Simple parent lists (newline or comma-separated): "Gautam Adani\nKaran Adani" or "Gautam Adani, Karan Adani"
+ *   - Parent with search terms: "Gautam Adani: official_gautam, real_gautam" or "Gautam Adani -> official_gautam"
+ */
+export function parseBulkKeywordGroups(raw: string): KeywordGroup[] {
+  const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const result: KeywordGroup[] = [];
+
+  for (const line of lines) {
+    // Check if line contains parent -> children or parent: children
+    const sepMatch = line.match(/^([^:=>\-]+)(?::|->|=>)(.+)$/);
+    if (sepMatch) {
+      const parent = sepMatch[1].trim();
+      const rawChildren = sepMatch[2];
+      const children = rawChildren
+        .split(/[,\n]/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (parent) {
+        result.push({ parent, children });
+      }
+    } else {
+      // If no separator, line might contain comma-separated parent names
+      const items = line
+        .split(/[,\n]/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      for (const item of items) {
+        if (item) {
+          result.push({ parent: item, children: [] });
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Merges a list of parsed incoming KeywordGroups into an existing list of groups:
+ * - Appends new parent groups
+ * - Merges any new search term children into matching existing parents (case-insensitive)
+ * - Returns updated list along with addedCount and dupCount
+ */
+export function mergeBulkKeywordGroups(
+  existing: KeywordGroup[],
+  incoming: KeywordGroup[],
+): { next: KeywordGroup[]; addedCount: number; dupCount: number } {
+  let updated = [...existing];
+  let addedCount = 0;
+  let dupCount = 0;
+
+  for (const item of incoming) {
+    const pTrimmed = item.parent.trim();
+    if (!pTrimmed) continue;
+
+    const existingIdx = updated.findIndex(
+      (g) => g.parent.toLowerCase() === pTrimmed.toLowerCase(),
+    );
+
+    if (existingIdx !== -1) {
+      // Parent already exists: if new child search terms are supplied, merge them
+      if (item.children.length > 0) {
+        const currentGroup = updated[existingIdx];
+        const seen = new Set(currentGroup.children.map((c) => c.toLowerCase()));
+        seen.add(currentGroup.parent.toLowerCase());
+        const freshChildren: string[] = [];
+        for (const raw of item.children) {
+          const ch = raw.trim();
+          if (!ch) continue;
+          const key = ch.toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          freshChildren.push(ch);
+        }
+        if (freshChildren.length > 0) {
+          updated[existingIdx] = {
+            ...currentGroup,
+            children: [...currentGroup.children, ...freshChildren],
+          };
+          addedCount++;
+        } else {
+          dupCount++;
+        }
+      } else {
+        dupCount++;
+      }
+    } else {
+      // New parent
+      const seen = new Set<string>([pTrimmed.toLowerCase()]);
+      const freshChildren: string[] = [];
+      for (const raw of item.children) {
+        const ch = raw.trim();
+        if (!ch) continue;
+        const key = ch.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        freshChildren.push(ch);
+      }
+      updated.push({
+        parent: pTrimmed,
+        children: freshChildren,
+      });
+      addedCount++;
+    }
+  }
+
+  return { next: updated, addedCount, dupCount };
+}

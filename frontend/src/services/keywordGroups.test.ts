@@ -17,7 +17,11 @@
 
 import { describe, expect, it } from "vitest";
 import type { KeywordGroup } from "../api/types";
-import { mergeGeneratedChildren } from "./keywordGroups";
+import {
+  mergeGeneratedChildren,
+  parseBulkKeywordGroups,
+  mergeBulkKeywordGroups,
+} from "./keywordGroups";
 
 const GROUPS: KeywordGroup[] = [
   { parent: "Gautam Adani", children: ["gautamadani"] },
@@ -113,3 +117,97 @@ describe("edges", () => {
     expect(out).toEqual([{ parent: "Acme", children: ["acme_support"] }]);
   });
 });
+
+describe("parseBulkKeywordGroups", () => {
+  it("parses newline separated parent names", () => {
+    const raw = `Gautam Adani
+Karan Adani
+Jeet Adani`;
+    const parsed = parseBulkKeywordGroups(raw);
+    expect(parsed).toEqual([
+      { parent: "Gautam Adani", children: [] },
+      { parent: "Karan Adani", children: [] },
+      { parent: "Jeet Adani", children: [] },
+    ]);
+  });
+
+  it("parses comma separated parent names on one or more lines", () => {
+    const raw = "Gautam Adani, Karan Adani\nJeet Adani, Pranav Adani";
+    const parsed = parseBulkKeywordGroups(raw);
+    expect(parsed).toEqual([
+      { parent: "Gautam Adani", children: [] },
+      { parent: "Karan Adani", children: [] },
+      { parent: "Jeet Adani", children: [] },
+      { parent: "Pranav Adani", children: [] },
+    ]);
+  });
+
+  it("parses parent with search terms using colon and arrow", () => {
+    const raw = `Gautam Adani: official_gautam, real_gautam
+Adani Group -> adani_group, adani_official
+Jeet Adani`;
+    const parsed = parseBulkKeywordGroups(raw);
+    expect(parsed).toEqual([
+      { parent: "Gautam Adani", children: ["official_gautam", "real_gautam"] },
+      { parent: "Adani Group", children: ["adani_group", "adani_official"] },
+      { parent: "Jeet Adani", children: [] },
+    ]);
+  });
+
+  it("handles blank lines and extra whitespace", () => {
+    const raw = `
+      Gautam Adani :  official_gautam , real_gautam  
+      
+      Karan Adani   
+    `;
+    const parsed = parseBulkKeywordGroups(raw);
+    expect(parsed).toEqual([
+      { parent: "Gautam Adani", children: ["official_gautam", "real_gautam"] },
+      { parent: "Karan Adani", children: [] },
+    ]);
+  });
+});
+
+describe("mergeBulkKeywordGroups", () => {
+  it("adds new parent groups", () => {
+    const initial: KeywordGroup[] = [{ parent: "Gautam Adani", children: [] }];
+    const incoming: KeywordGroup[] = [
+      { parent: "Karan Adani", children: [] },
+      { parent: "Jeet Adani", children: ["jeet_official"] },
+    ];
+    const { next, addedCount, dupCount } = mergeBulkKeywordGroups(initial, incoming);
+    expect(addedCount).toBe(2);
+    expect(dupCount).toBe(0);
+    expect(next).toEqual([
+      { parent: "Gautam Adani", children: [] },
+      { parent: "Karan Adani", children: [] },
+      { parent: "Jeet Adani", children: ["jeet_official"] },
+    ]);
+  });
+
+  it("merges child search terms into existing parent and avoids duplicates", () => {
+    const initial: KeywordGroup[] = [
+      { parent: "Gautam Adani", children: ["gautamadani"] },
+    ];
+    const incoming: KeywordGroup[] = [
+      { parent: "gautam adani", children: ["gautamadani", "official_gautam"] },
+    ];
+    const { next, addedCount, dupCount } = mergeBulkKeywordGroups(initial, incoming);
+    expect(addedCount).toBe(1);
+    expect(dupCount).toBe(0);
+    expect(next[0]).toEqual({
+      parent: "Gautam Adani",
+      children: ["gautamadani", "official_gautam"],
+    });
+  });
+
+  it("detects existing parent duplicates when no new children are added", () => {
+    const initial: KeywordGroup[] = [{ parent: "Gautam Adani", children: [] }];
+    const incoming: KeywordGroup[] = [{ parent: "Gautam Adani", children: [] }];
+    const { next, addedCount, dupCount } = mergeBulkKeywordGroups(initial, incoming);
+    expect(addedCount).toBe(0);
+    expect(dupCount).toBe(1);
+    expect(next).toEqual(initial);
+  });
+});
+
