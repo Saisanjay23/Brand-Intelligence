@@ -742,17 +742,11 @@ async def urls_for(
                 "analysis_status": {"$in": list(RETRYABLE_ANALYSIS_STATUSES)},
                 "analysis_attempts": {"$lt": MAX_ANALYSIS_ATTEMPTS},
             },
-            # Reached and read, but short of a field this platform does
-            # publish -- most often the last-post date or the evidence
-            # screenshot, which lose their race on a loaded machine. The
-            # in-run re-attempt passes (analysis_service) catch most of
-            # these; this clause is what lets the 20-minute catch-up
-            # sweep finish the rest instead of treating a half-read
-            # profile as done forever.
-            {
-                "analysis_complete": False,
-                "analysis_attempts": {"$lt": MAX_ANALYSIS_ATTEMPTS},
-            },
+            # NOTE: the old clause that re-queued profiles with
+            # analysis_complete=False was removed by design. Profiles with
+            # missing fields are now only re-analysed when an analyst
+            # manually triggers a re-run, not automatically on every
+            # catch-up sweep.
         ]
         # An analyst's manual "stop retrying" (see set_retry_state below)
         # overrides every clause above, including the un-throttled first

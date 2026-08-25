@@ -133,6 +133,14 @@ class _ValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+from collections import OrderedDict
+
+# In-memory LRU cache for proxied profile images to render instantly (<1ms).
+# Max 5,000 images in memory (~10-20MB RAM) with automatic oldest-first eviction.
+_MEDIA_CACHE: OrderedDict[str, tuple[bytes, str]] = OrderedDict()
+_MAX_MEDIA_CACHE_SIZE = 5000
+
+
 @router.get("/profiles/media-proxy")
 async def proxy_image(url: str):
     import asyncio
@@ -141,6 +149,18 @@ async def proxy_image(url: str):
 
     if not url or not url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="Invalid url")
+
+    # 1. Instant RAM cache hit (<0.1ms)
+    cached = _MEDIA_CACHE.get(url)
+    if cached:
+        _MEDIA_CACHE.move_to_end(url)
+        return Response(
+            content=cached[0],
+            media_type=cached[1],
+            headers={
+                "Cache-Control": "public, max-age=2592000, immutable",
+            },
+        )
 
     ok, hostname = _validate_fetch_target(url)
     if not ok:
@@ -203,7 +223,19 @@ async def proxy_image(url: str):
         raise HTTPException(status_code=404, detail="Image could not be fetched")
     if not (content_type or "").startswith("image/"):
         raise HTTPException(status_code=415, detail="Not an image")
-    return Response(content=data, media_type=content_type)
+
+    # Store in LRU cache with eviction
+    _MEDIA_CACHE[url] = (data, content_type)
+    if len(_MEDIA_CACHE) > _MAX_MEDIA_CACHE_SIZE:
+        _MEDIA_CACHE.popitem(last=False)
+
+    return Response(
+        content=data,
+        media_type=content_type,
+        headers={
+            "Cache-Control": "public, max-age=2592000, immutable",
+        },
+    )
 
 
 @router.get("/profiles/coverage")

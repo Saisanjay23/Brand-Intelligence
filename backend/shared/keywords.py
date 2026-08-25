@@ -224,12 +224,16 @@ def flat_keywords(groups: dict[str, list[dict]]) -> dict[str, list[str]]:
 
 def search_terms(groups: dict[str, list[dict]], kw_type: str) -> list[str]:
     """Every string that will actually be typed into a platform's search
-    box for one keyword type: each group's children, or the parent itself
-    when it has none. Used for previews/counts; the sweep itself wants
+    box for one keyword type: the parent itself plus all of its child
+    permutations. Used for previews/counts; the sweep itself wants
     `build_plans`, which also carries the match targets."""
     out: list[str] = []
     for group in groups.get(kw_type, []):
-        out.extend(group["children"] or [group["parent"]])
+        parent = group.get("parent")
+        children = group.get("children") or []
+        if parent:
+            out.append(parent)
+        out.extend(children)
     return _dedup(out)
 
 
@@ -308,7 +312,8 @@ def build_plans(
                 continue
             matched_parents.add(parent.lower())
             target = MatchTarget(parent=parent, terms=match_terms_for(client, parent, kw_type))
-            for term in group["children"] or [parent]:
+            terms_to_search = _dedup([parent, *(group.get("children") or [])])
+            for term in terms_to_search:
                 key = term.lower()
                 if key not in by_search:
                     by_search[key] = {"search": term, "kw_type": kw_type, "targets": [target]}

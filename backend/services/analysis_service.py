@@ -37,13 +37,10 @@ log = get_logger("services.analysis")
 
 
 # How many extra passes a run makes over the profiles that came back
-# missing a field the platform does publish. Two is deliberate: one is
-# enough for the ordinary case (a payload or a render that lost its race
-# on a loaded machine), and the cross-run catch-up sweep picks up anything
-# still short afterwards, bounded by MAX_ANALYSIS_ATTEMPTS. Making this
-# large would spend a live session re-reading genuinely unreadable
-# profiles instead.
-_COMPLETENESS_PASSES = 2
+# missing a field the platform does publish. Set to 0 to disable
+# automatic in-job re-attempts: every profile is visited exactly once
+# per run, and only re-analysed if an analyst manually clicks Re-analyse.
+_COMPLETENESS_PASSES = 0
 
 
 def _tri(flag: str) -> Optional[bool]:

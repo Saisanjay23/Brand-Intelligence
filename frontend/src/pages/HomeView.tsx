@@ -215,6 +215,203 @@ function ChipInput({
   );
 }
 
+/** Domain Asset Names input: a platform picker + text input that stores
+ *  entries as `"platform::AssetName"`. Chips render with a platform badge.
+ *  "All Platforms" stores without a prefix (legacy-compatible). */
+function DomainAssetPlatformInput({
+  chips,
+  onAdd,
+  onRemove,
+  platforms,
+  disabled,
+}: {
+  chips: string[];
+  onAdd: (v: string) => void;
+  onRemove: (i: number) => void;
+  platforms: PlatformHealth[];
+  disabled?: boolean;
+}) {
+  const [input, setInput] = useState("");
+  const [selectedPlatform, setSelectedPlatform] = useState("");
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkText, setBulkText] = useState("");
+
+  const platformNames: Record<string, string> = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const p of platforms) map[p.platform] = p.name;
+    return map;
+  }, [platforms]);
+
+  const encode = (name: string): string => {
+    if (!selectedPlatform) return name; // all platforms
+    return `${selectedPlatform}::${name}`;
+  };
+
+  const isDuplicate = (encoded: string): boolean =>
+    chips.some((c) => c.toLowerCase() === encoded.toLowerCase());
+
+  const commit = () => {
+    const trimmed = input.trim();
+    if (trimmed) {
+      const encoded = encode(trimmed);
+      if (isDuplicate(encoded)) {
+        toast(`⚠️ "${trimmed}" already exists for this platform`, { id: `dup-da-${encoded.toLowerCase()}` });
+      } else {
+        onAdd(encoded);
+      }
+      setInput("");
+    }
+  };
+
+  const commitBulk = () => {
+    let dupCount = 0;
+    const items = splitKeywordList(bulkText);
+    const seen = new Set(chips.map((c) => c.toLowerCase()));
+    for (const kw of items) {
+      const encoded = encode(kw);
+      if (seen.has(encoded.toLowerCase())) {
+        dupCount++;
+      } else {
+        seen.add(encoded.toLowerCase());
+        onAdd(encoded);
+      }
+    }
+    if (dupCount > 0) {
+      toast(`⚠️ Skipped ${dupCount} duplicate${dupCount === 1 ? "" : "s"}`);
+    }
+    setBulkText("");
+    setBulkOpen(false);
+  };
+
+  return (
+    <div>
+      <div className="chips-input-container" style={{ minHeight: "60px", alignItems: "center", alignContent: "flex-start" }}>
+        {chips.map((raw, i) => {
+          const { platform, name } = parseDomainAssetEntry(raw);
+          return (
+            <span key={i} className="kw-chip" style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+              {platform && (
+                <span style={{
+                  background: "var(--purple)", color: "#fff",
+                  borderRadius: "3px", padding: "1px 5px", fontSize: "9.5px",
+                  fontWeight: 600, letterSpacing: "0.3px", textTransform: "uppercase",
+                  lineHeight: "14px", flexShrink: 0,
+                }}>
+                  {platformNames[platform] || platform}
+                </span>
+              )}
+              {name}
+              <span className="remove-chip" onClick={() => onRemove(i)}>✕</span>
+            </span>
+          );
+        })}
+        
+        <div style={{ display: "flex", flex: 1, minWidth: "250px", alignItems: "center" }}>
+          <select
+            value={selectedPlatform}
+            onChange={(e) => setSelectedPlatform(e.target.value)}
+            disabled={disabled}
+            style={{
+              background: "transparent", color: selectedPlatform ? "var(--purple)" : "var(--text-dim)",
+              border: "none", outline: "none", fontSize: "13px", fontWeight: selectedPlatform ? 600 : 400,
+              cursor: "pointer", padding: "4px 2px", marginRight: "6px", fontFamily: "inherit"
+            }}
+            title="Select platform to tag this asset name with"
+          >
+            <option style={{ background: "var(--bg-surface)", color: "var(--text-main)", fontWeight: "normal" }} value="">
+              [All Platforms]
+            </option>
+            {platforms.map((p) => (
+              <option style={{ background: "var(--bg-surface)", color: "var(--text-main)", fontWeight: "normal" }} key={p.platform} value={p.platform}>
+                [{p.name}]
+              </option>
+            ))}
+          </select>
+          <input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === ",") {
+                e.preventDefault();
+                commit();
+              }
+            }}
+            onPaste={(e) => {
+              const text = e.clipboardData.getData("text");
+              if (/[,\n]/.test(text)) {
+                e.preventDefault();
+                const items = splitKeywordList(text);
+                const seen = new Set(chips.map((c) => c.toLowerCase()));
+                let dupCount = 0;
+                for (const kw of items) {
+                  const encoded = encode(kw);
+                  if (seen.has(encoded.toLowerCase())) {
+                    dupCount++;
+                  } else {
+                    seen.add(encoded.toLowerCase());
+                    onAdd(encoded);
+                  }
+                }
+                if (dupCount > 0) {
+                  toast(`⚠️ Skipped ${dupCount} duplicate${dupCount === 1 ? "" : "s"}`);
+                }
+              }
+            }}
+            onBlur={commit}
+            placeholder="Type asset name here…"
+            className="chip-input"
+            disabled={disabled}
+            style={{ flex: 1, minWidth: "150px" }}
+          />
+        </div>
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "6px" }}>
+        <div className="kw-count-badge" style={{ margin: 0 }}>
+          <strong>{chips.length}</strong> asset name{chips.length === 1 ? "" : "s"} configured
+        </div>
+        <button
+          type="button"
+          className="bulk-kw-toggle"
+          onClick={() => setBulkOpen((v) => !v)}
+          disabled={disabled}
+        >
+          {bulkOpen ? "▾ Close bulk paste" : (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+              <CloneIcon size={12} /> Bulk import
+            </span>
+          )}
+        </button>
+      </div>
+      {bulkOpen && (
+        <div className="bulk-kw-panel">
+          <div style={{ fontSize: "11px", color: "var(--text-dim)", marginBottom: "4px" }}>
+            Asset names will be tagged with the platform selected above ({selectedPlatform ? (platformNames[selectedPlatform] || selectedPlatform) : "All Platforms"}).
+          </div>
+          <textarea
+            value={bulkText}
+            onChange={(e) => setBulkText(e.target.value)}
+            placeholder={"one per line, or comma-separated — e.g.\nAcme Group\nAcme Holdings, Acme Brand"}
+            rows={3}
+            disabled={disabled}
+          />
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "4px" }}>
+            <button
+              type="button"
+              className="btn-cyber-primary"
+              style={{ width: "auto", padding: "6px 14px", fontSize: "11.5px", marginTop: 0 }}
+              onClick={commitBulk}
+              disabled={disabled || !bulkText.trim()}
+            >
+              Add Asset Names
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function KeywordGeneratorModal({
   nameKeywords,
   domainKeywords,
@@ -484,16 +681,16 @@ function KeywordGroupEditor({
     onChange(groups.map((g, i) => (i === idx ? { ...g, children } : g)));
 
   const totalSearchTerms = groups.reduce(
-    (n, g) => n + (g.children.length || 1), 0,
+    (n, g) => n + (g.children.length ? g.children.length + 1 : 1), 0,
   );
 
   return (
     <div>
       <div style={{ fontSize: "12px", color: "var(--text-dim)", marginBottom: "10px", lineHeight: 1.5 }}>
-        The <strong style={{ color: accent }}>parent</strong> is the real name — it is never searched,
-        it is what results are matched against and grouped under. Its{" "}
-        <strong style={{ color: accent }}>search terms</strong> are the permutations actually
-        searched on every platform. A parent with no search terms searches itself.
+        The <strong style={{ color: accent }}>parent</strong> is the primary target name — it is searched directly
+        and serves as the anchor results are matched against and grouped under. Its{" "}
+        <strong style={{ color: accent }}>search terms</strong> are the additional permutations and variations also
+        searched on every platform.
       </div>
 
       <div className="chips-input-container" style={{ marginBottom: "6px" }}>
@@ -586,7 +783,7 @@ function KeywordGroupEditor({
                   </span>
                   <span style={{ fontSize: "10px", fontWeight: 600, color: accent, background: "rgba(255,255,255,0.05)", padding: "2px 7px", borderRadius: "20px", whiteSpace: "nowrap" }}>
                     {g.children.length
-                      ? `${g.children.length} search term${g.children.length === 1 ? "" : "s"}`
+                      ? `${g.children.length + 1} search terms (${g.children.length} variation${g.children.length === 1 ? "" : "s"})`
                       : "searches itself"}
                   </span>
                 </div>
@@ -617,6 +814,22 @@ function KeywordGroupEditor({
 
 
 
+/** Parse a stored domain asset-name entry. Entries with a `platform::`
+ *  prefix return `{ platform, name }`; legacy entries (no prefix) return
+ *  `{ platform: "", name: raw }` meaning "all platforms". */
+function parseDomainAssetEntry(raw: string): { platform: string; name: string } {
+  const idx = raw.indexOf("::");
+  if (idx >= 0) return { platform: raw.slice(0, idx).trim(), name: raw.slice(idx + 2).trim() };
+  return { platform: "", name: raw.trim() };
+}
+
+/** Render a human-friendly label for a stored domain asset-name chip. */
+function domainAssetChipLabel(raw: string, platformNames: Record<string, string>): string {
+  const { platform, name } = parseDomainAssetEntry(raw);
+  if (!platform) return name;
+  return `${name} (${platformNames[platform] || platform})`;
+}
+
 function KeywordTabs({
   activeTab,
   onTab,
@@ -632,6 +845,7 @@ function KeywordTabs({
   onRemoveAssetIndividual,
   onAddAssetDomain,
   onRemoveAssetDomain,
+  platforms,
   disabled,
 }: {
   activeTab: KeywordTab;
@@ -651,6 +865,7 @@ function KeywordTabs({
   onRemoveAssetIndividual: (i: number) => void;
   onAddAssetDomain: (kw: string) => void;
   onRemoveAssetDomain: (i: number) => void;
+  platforms: PlatformHealth[];
   disabled?: boolean;
 }) {
   const [genOpen, setGenOpen] = useState(false);
@@ -744,11 +959,11 @@ function KeywordTabs({
             <label className="field-label" style={{ marginBottom: "6px", display: "flex", alignItems: "center", gap: "6px" }}>
               <GlobeIcon size={13} color="var(--purple)" /> Domain Asset Names
             </label>
-            <ChipInput
+            <DomainAssetPlatformInput
               chips={assetNameDomainKw}
               onAdd={onAddAssetDomain}
               onRemove={onRemoveAssetDomain}
-              placeholder="Asset name for domains…"
+              platforms={platforms}
               disabled={disabled}
             />
           </div>
@@ -1590,6 +1805,7 @@ export function HomeView({
                   onRemoveAssetIndividual={(i) => setAssetNameIndividualKw((prev) => prev.filter((_, idx) => idx !== i))}
                   onAddAssetDomain={(v) => setAssetNameDomainKw((prev) => (prev.some((k) => k.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]))}
                   onRemoveAssetDomain={(i) => setAssetNameDomainKw((prev) => prev.filter((_, idx) => idx !== i))}
+                  platforms={platforms}
                   disabled={busy}
                 />
               </div>
@@ -1973,6 +2189,7 @@ export function HomeView({
                   onRemoveAssetIndividual={(i) => setAssetNameIndividualKw((prev) => prev.filter((_, idx) => idx !== i))}
                   onAddAssetDomain={(v) => setAssetNameDomainKw((prev) => (prev.some((k) => k.toLowerCase() === v.toLowerCase()) ? prev : [...prev, v]))}
                   onRemoveAssetDomain={(i) => setAssetNameDomainKw((prev) => prev.filter((_, idx) => idx !== i))}
+                  platforms={platforms}
                   disabled={busy}
                 />
 

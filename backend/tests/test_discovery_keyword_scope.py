@@ -46,20 +46,24 @@ class TestTheDefaultIsBoth:
 
     def test_no_scope_sweeps_every_category(self):
         assert _scoped("") == [
-            "gautamadani", "adani gautam", "pranavadani",
-            "adani group", "adanigroup",
+            "Gautam Adani", "gautamadani", "adani gautam",
+            "Pranav Adani", "pranavadani",
+            "Adani", "adani group", "adanigroup",
         ]
 
 
 class TestScoping:
     def test_individual_only_drops_the_domain_terms(self):
         terms = _scoped(kw.INDIVIDUAL)
-        assert terms == ["gautamadani", "adani gautam", "pranavadani"]
+        assert terms == [
+            "Gautam Adani", "gautamadani", "adani gautam",
+            "Pranav Adani", "pranavadani",
+        ]
         assert "adanigroup" not in terms
 
     def test_domain_only_drops_the_individual_terms(self):
         terms = _scoped(kw.DOMAIN)
-        assert terms == ["adani group", "adanigroup"]
+        assert terms == ["Adani", "adani group", "adanigroup"]
         assert "gautamadani" not in terms
 
     def test_the_two_scopes_partition_the_unscoped_set(self):

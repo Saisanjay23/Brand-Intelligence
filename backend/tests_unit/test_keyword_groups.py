@@ -58,23 +58,20 @@ class TestBackCompat:
         assert [(p.search, p.parent) for p in plans] == [("Solo", "Solo")]
 
 
-class TestChildrenAreSearchedNotParents:
-    def test_only_children_are_searched(self):
+class TestAllKeywordsAreSearched:
+    def test_both_parent_and_children_are_searched(self):
         searched = [p.search for p in kw.build_plans(NEW_CLIENT)]
         assert searched == [
-            "gautamadani", "adani gautam", "gautam.adani.hq",
-            "adani group", "adanigroup",
+            "Gautam Adani", "gautamadani", "adani gautam", "gautam.adani.hq",
+            "Adani", "adani group", "adanigroup",
         ]
 
-    def test_the_parent_itself_is_never_searched(self):
-        searched = {p.search.lower() for p in kw.build_plans(NEW_CLIENT)}
-        assert "gautam adani" not in searched
-        assert "adani" not in searched
-
-    def test_every_child_rolls_up_to_its_own_parent(self):
+    def test_parent_and_children_roll_up_to_their_own_parent(self):
         by_search = {p.search: p.parent for p in kw.build_plans(NEW_CLIENT)}
+        assert by_search["Gautam Adani"] == "Gautam Adani"
         assert by_search["gautamadani"] == "Gautam Adani"
         assert by_search["gautam.adani.hq"] == "Gautam Adani"
+        assert by_search["Adani"] == "Adani"
         assert by_search["adanigroup"] == "Adani"
 
 
@@ -131,14 +128,14 @@ class TestSharedChildBetweenTwoParents:
 
     def test_it_is_searched_only_once(self):
         plans = kw.build_plans(self.CLIENT)
-        assert [p.search for p in plans] == ["adani"]
+        assert [p.search for p in plans] == ["Gautam Adani", "adani", "Pranav Adani"]
 
     def test_the_plan_carries_both_parents(self):
-        plan = kw.build_plans(self.CLIENT)[0]
+        plan = next(p for p in kw.build_plans(self.CLIENT) if p.search == "adani")
         assert {t.parent for t in plan.targets} == {"Gautam Adani", "Pranav Adani"}
 
     def test_each_hit_is_filed_under_the_parent_it_resembles(self):
-        plan = kw.build_plans(self.CLIENT)[0]
+        plan = next(p for p in kw.build_plans(self.CLIENT) if p.search == "adani")
         assert kw.resolve_parent(plan, "Gautam Adani Official", name_score)[0] == "Gautam Adani"
         assert kw.resolve_parent(plan, "Pranav Adani Official", name_score)[0] == "Pranav Adani"
 
@@ -193,9 +190,9 @@ class TestFlatListsStayDerived:
 
 
 class TestRequestedScoping:
-    def test_requesting_one_parent_sweeps_only_its_children(self):
+    def test_requesting_one_parent_sweeps_parent_and_its_children(self):
         plans = kw.build_plans(NEW_CLIENT, ["Adani"])
-        assert [p.search for p in plans] == ["adani group", "adanigroup"]
+        assert [p.search for p in plans] == ["Adani", "adani group", "adanigroup"]
 
     def test_an_unknown_requested_term_is_still_swept(self):
         """An ad-hoc one-off search for something not in the client's config
@@ -210,7 +207,7 @@ class TestRequestedScoping:
         assert kw.build_plans(NEW_CLIENT, ["something else"])[0].kw_type == kw.DOMAIN
 
     def test_no_request_sweeps_everything(self):
-        assert len(kw.build_plans(NEW_CLIENT)) == 5
+        assert len(kw.build_plans(NEW_CLIENT)) == 7
 
 
 @pytest.mark.parametrize("client", [None, {}, {"keyword_groups": {}}])

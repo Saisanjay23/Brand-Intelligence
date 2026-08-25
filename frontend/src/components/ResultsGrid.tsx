@@ -34,6 +34,7 @@ import {
   ageLabel,
   analysisWasBlocked,
   computeIncidentRiskScorePreview,
+  displayedRisk,
   emptyLabel,
   filterResults,
   logoMatchOf,
@@ -518,7 +519,7 @@ function ProfileAvatar({ r, size, style }: { r: Profile; size?: number; style?: 
       src={src}
       alt=""
       referrerPolicy="no-referrer"
-      loading="lazy"
+      decoding="async"
       style={size ? { width: size, height: size, borderRadius: "50%", objectFit: "cover", flexShrink: 0, ...style } : { width: "100%", height: "100%", objectFit: "cover", ...style }}
       onError={() => setError(true)}
     />
@@ -596,18 +597,38 @@ function IncidentField({
 // free text, both when the client has no drk_keywords configured yet and
 // via the explicit "Custom…" option, so nothing already saved is ever
 // clobbered by an empty options list.
+/** Parse stored `"platform::Name"` → `{ platform, name }`. Legacy entries
+ *  without `::` return `{ platform: "", name }`. */
+function _parseDomainAsset(raw: string): { platform: string; name: string } {
+  const idx = raw.indexOf("::");
+  if (idx >= 0) return { platform: raw.slice(0, idx).trim(), name: raw.slice(idx + 2).trim() };
+  return { platform: "", name: raw.trim() };
+}
+
 function IncidentAssetNameField({
-  value, path, onSave, options,
+  value, path, onSave, individualOptions, domainOptions,
 }: {
   value: string | number | null | undefined; path: string;
-  onSave: (path: string, value: string) => void; options: string[];
+  onSave: (path: string, value: string) => void;
+  individualOptions: string[];
+  domainOptions: string[];
 }) {
   const CUSTOM = "__custom__";
   const current = String(value ?? "");
-  const [customMode, setCustomMode] = useState(options.length === 0 || (!!current && !options.includes(current)));
+  const allOptions = [...individualOptions, ...domainOptions.map((d) => _parseDomainAsset(d).name)];
+  const [customMode, setCustomMode] = useState(allOptions.length === 0 || (!!current && !allOptions.includes(current)));
+
+  // Domain options for display: pure name + optional platform badge
+  const domainDisplay = useMemo(() =>
+    domainOptions.map((raw) => {
+      const { platform, name } = _parseDomainAsset(raw);
+      return { raw, name, label: platform ? `${name} (${platform})` : name };
+    }),
+  [domainOptions]);
 
   useEffect(() => {
-    setCustomMode(options.length === 0 || (!!current && !options.includes(current)));
+    const combined = [...individualOptions, ...domainOptions.map((d) => _parseDomainAsset(d).name)];
+    setCustomMode(combined.length === 0 || (!!current && !combined.includes(current)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path]);
 
@@ -623,7 +644,7 @@ function IncidentAssetNameField({
             if (e.target.value !== current) onSave(path, e.target.value);
           }}
         />
-        {options.length > 0 && (
+        {allOptions.length > 0 && (
           <button
             type="button"
             className="bulk-kw-toggle"
@@ -640,30 +661,63 @@ function IncidentAssetNameField({
   return (
     <label className="incident-field">
       <span className="incident-field-label">Asset Name</span>
-      <select
-        className="input-filter"
-        value={options.includes(current) ? current : ""}
-        onChange={(e) => {
-          if (e.target.value === CUSTOM) {
-            setCustomMode(true);
-            return;
-          }
-          onSave(path, e.target.value);
-        }}
-      >
-        <option value="" disabled>
-          Select an asset name…
-        </option>
-        {options.map((opt) => (
-          <option key={opt} value={opt}>
-            {opt}
-          </option>
-        ))}
-        <option value={CUSTOM}>Custom…</option>
-      </select>
+      <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+        {/* Individual dropdown */}
+        {individualOptions.length > 0 && (
+          <select
+            className="input-filter"
+            value={individualOptions.includes(current) ? current : ""}
+            onChange={(e) => {
+              if (e.target.value === CUSTOM) { setCustomMode(true); return; }
+              onSave(path, e.target.value);
+            }}
+            style={{ flex: 1 }}
+            title="Individual Asset Names"
+          >
+            <option value="" disabled>👤 Individual…</option>
+            {individualOptions.map((opt) => (
+              <option key={`ind-${opt}`} value={opt}>{opt}</option>
+            ))}
+            <option value={CUSTOM}>Custom…</option>
+          </select>
+        )}
+        {/* Domain dropdown */}
+        {domainDisplay.length > 0 && (
+          <select
+            className="input-filter"
+            value={domainDisplay.some((d) => d.name === current) ? current : ""}
+            onChange={(e) => {
+              if (e.target.value === CUSTOM) { setCustomMode(true); return; }
+              onSave(path, e.target.value);
+            }}
+            style={{ flex: 1 }}
+            title="Domain Asset Names"
+          >
+            <option value="" disabled>🌐 Domain…</option>
+            {domainDisplay.map((d) => (
+              <option key={`dom-${d.raw}`} value={d.name}>{d.label}</option>
+            ))}
+            <option value={CUSTOM}>Custom…</option>
+          </select>
+        )}
+        {/* If neither list has options */}
+        {individualOptions.length === 0 && domainDisplay.length === 0 && (
+          <select
+            className="input-filter"
+            value=""
+            onChange={(e) => {
+              if (e.target.value === CUSTOM) setCustomMode(true);
+            }}
+          >
+            <option value="" disabled>No asset names configured</option>
+            <option value={CUSTOM}>Custom…</option>
+          </select>
+        )}
+      </div>
     </label>
   );
 }
+
 
 function IncidentCheckField({
   label, value, path, onSave,
@@ -868,13 +922,39 @@ function ScreenshotCell({ r }: { r: Profile }) {
 // view entirely, replaced by this exact shape). Always expanded: these
 // aren't extra detail, they're the primary content of an analysis card.
 function IncidentEditPanel({
-  r, onSave, drkOptions = [], onToggleMatch,
+  r, onSave, drkIndividualOptions = [], drkDomainOptions = [], onToggleMatch,
 }: {
-  r: Profile; onSave: (path: string, value: string) => void; drkOptions?: string[];
+  r: Profile; onSave: (path: string, value: string) => void;
+  drkIndividualOptions?: string[];
+  drkDomainOptions?: string[];
   onToggleMatch?: (field: "username_match" | "logo_match", value: boolean) => void;
 }) {
-  const inc = r.incident;
-  if (!inc) return null;
+  const inc = r.incident || {
+    title: r.profile_name || r.username || "",
+    description: "",
+    category: "",
+    subCategory: "",
+    assetType: "",
+    assetCategory: "",
+    assetName: "",
+    domain: "",
+    orgId: "",
+    riskRating: String(r.risk_score || 0),
+    date: r.analysed_at ? r.analysed_at.substring(0, 10) : null,
+    source: r.url || "",
+    thirdParty: false,
+    socialProfileInfo: {
+      isActive: r.is_active === true,
+      isSimilarName: false,
+      isSimilarLogo: false,
+      numberOfFollowers: r.followers != null && Number.isFinite(Number(r.followers)) ? Number(r.followers) : null,
+      profileName: r.profile_name || r.username || "",
+      location: r.location || null,
+      profileImage: "",
+      lastPostDate: r.last_post_date || null,
+      posts: null,
+    }
+  };
   return (
     <div className="incident-panel">
       <EvidenceShot r={r} />
@@ -885,7 +965,7 @@ function IncidentEditPanel({
         <IncidentField label="Sub-Category" value={inc.subCategory} path="subCategory" onSave={onSave} />
         <IncidentField label="Asset Type" value={inc.assetType} path="assetType" onSave={onSave} />
         <IncidentField label="Asset Category" value={inc.assetCategory} path="assetCategory" onSave={onSave} />
-        <IncidentAssetNameField value={inc.assetName} path="assetName" onSave={onSave} options={drkOptions} />
+        <IncidentAssetNameField value={inc.assetName} path="assetName" onSave={onSave} individualOptions={drkIndividualOptions} domainOptions={drkDomainOptions} />
         <IncidentField label="Domain" value={inc.domain} path="domain" onSave={onSave} />
         <IncidentField label="Org ID" value={inc.orgId} path="orgId" onSave={onSave} />
         <IncidentField label="Risk Score" value={inc.riskRating} path="riskRating" onSave={onSave} />
@@ -941,7 +1021,8 @@ interface CardProps {
   onDecide: (id: string, next: Status) => void;
   onValidate: (id: string) => void;
   onSaveIncidentField: (id: string, path: string, value: string) => void;
-  drkOptions?: string[];
+  drkIndividualOptions?: string[];
+  drkDomainOptions?: string[];
   // bulk-triage selection, discovery cards only (see the bulk action bar
   // in the main component); undefined/no-op for an analysis card.
   selected?: boolean;
@@ -986,7 +1067,7 @@ function riskBadgeColor(riskRating: string): string {
 }
 
 function ProfileCard({
-  r, isAnalysisView, savingId, onDecide, onValidate, onSaveIncidentField, drkOptions, selected, onToggleSelected, dragHandlers, onOpenDiff,
+  r, isAnalysisView, savingId, onDecide, onValidate, onSaveIncidentField, drkIndividualOptions, drkDomainOptions, selected, onToggleSelected, dragHandlers, onOpenDiff,
 }: CardProps) {
   const inc = r.incident;
   const name = isAnalysisView && inc ? inc.title : r.profile_name || r.username || r.url;
@@ -1119,7 +1200,7 @@ function ProfileCard({
         )}
 
         {isAnalysisView && (
-          <IncidentEditPanel r={r} onSave={(path, value) => onSaveIncidentField(r.id, path, value)} drkOptions={drkOptions} />
+          <IncidentEditPanel r={r} onSave={(path, value) => onSaveIncidentField(r.id, path, value)} drkIndividualOptions={drkIndividualOptions} drkDomainOptions={drkDomainOptions} />
         )}
 
         <div className="card-actions-row">
@@ -1277,13 +1358,15 @@ export function ResultsGrid({
   // dropdown (see IncidentEditPanel), not re-fetched per profile.
   const [clientNameKeywords, setClientNameKeywords] = useState<string[]>([]);
   const [clientDomainKeywords, setClientDomainKeywords] = useState<string[]>([]);
-  const [drkOptions, setDrkOptions] = useState<string[]>([]);
+  const [drkIndividualOptions, setDrkIndividualOptions] = useState<string[]>([]);
+  const [drkDomainOptions, setDrkDomainOptions] = useState<string[]>([]);
   useEffect(() => {
     if (!clientId) {
 
       setClientNameKeywords([]);
       setClientDomainKeywords([]);
-      setDrkOptions([]);
+      setDrkIndividualOptions([]);
+      setDrkDomainOptions([]);
       return;
     }
     let cancelled = false;
@@ -1294,17 +1377,16 @@ export function ResultsGrid({
 
         setClientNameKeywords(c.name_keywords || []);
         setClientDomainKeywords(c.domain_keywords || []);
-        setDrkOptions([
-          ...(c.asset_name_individual_keywords || []),
-          ...(c.asset_name_domain_keywords || []),
-        ]);
+        setDrkIndividualOptions(c.asset_name_individual_keywords || []);
+        setDrkDomainOptions(c.asset_name_domain_keywords || []);
       })
       .catch(() => {
         if (cancelled) return;
 
         setClientNameKeywords([]);
         setClientDomainKeywords([]);
-        setDrkOptions([]);
+        setDrkIndividualOptions([]);
+        setDrkDomainOptions([]);
       });
     return () => { cancelled = true; };
   }, [clientId]);
@@ -1934,12 +2016,37 @@ export function ResultsGrid({
   // profile's own `incident` preview object, immutably, the same shape
   // profile_repository.patch() expands `incident_overrides` into server-side.
   const withIncidentPath = (r: Profile, path: string, value: unknown): Profile => {
-    if (!r.incident) return r;
-    if (!path.includes(".")) return { ...r, incident: { ...r.incident, [path]: value } };
+    const inc = r.incident || {
+      title: r.profile_name || r.username || "",
+      description: "",
+      category: "",
+      subCategory: "",
+      assetType: "",
+      assetCategory: "",
+      assetName: "",
+      domain: "",
+      orgId: "",
+      riskRating: String(r.risk_score || 0),
+      date: r.analysed_at ? r.analysed_at.substring(0, 10) : null,
+      source: r.url || "",
+      thirdParty: false,
+      socialProfileInfo: {
+        isActive: r.is_active === true,
+        isSimilarName: false,
+        isSimilarLogo: false,
+        numberOfFollowers: r.followers != null && Number.isFinite(Number(r.followers)) ? Number(r.followers) : null,
+        profileName: r.profile_name || r.username || "",
+        location: r.location || null,
+        profileImage: "",
+        lastPostDate: r.last_post_date || null,
+        posts: null,
+      }
+    };
+    if (!path.includes(".")) return { ...r, incident: { ...inc, [path]: value } };
     const [parent, child] = path.split(".", 2);
     return {
       ...r,
-      incident: { ...r.incident, [parent]: { ...(r.incident as unknown as Record<string, object>)[parent], [child]: value } },
+      incident: { ...inc, [parent]: { ...((inc as unknown as Record<string, object>)[parent] || {}), [child]: value } },
     };
   };
 
@@ -2027,13 +2134,30 @@ export function ResultsGrid({
   // other; disabling the row's own controls while its save is in flight
   // makes that race impossible to trigger in the first place, rather than
   // just resolved gracefully after the fact.
-  const saveProfileField = async (id: string, field: "username_match" | "logo_match", value: boolean): Promise<void> => {
+  const saveProfileField = async (id: string, field: "username_match" | "logo_match" | "comments", value: boolean | string): Promise<void> => {
     const prev = profiles.find((r) => r.id === id);
     if (!prev) return;
     const seq = nextRowSeq(id);
+
+    if (field === "comments") {
+      setProfiles((rows) => rows.map((r) => (r.id === id ? { ...r, comments: value as string } : r)));
+      const task = (async () => {
+        try {
+          const updated = await profilesApi.patchProfile(id, { comments: value as string });
+          if (isLatestRowSeq(id, seq)) setProfiles((rows) => rows.map((r) => (r.id === id ? updated : r)));
+        } catch (e) {
+          if (isLatestRowSeq(id, seq)) setProfiles((rows) => rows.map((r) => (r.id === id ? prev : r)));
+          onError?.((e as Error).message);
+        }
+      })();
+      pendingSaves.current.add(task);
+      task.finally(() => pendingSaves.current.delete(task));
+      return;
+    }
+
     const inc = prev.incident?.socialProfileInfo;
-    const logoMatch = field === "logo_match" ? value : (inc?.isSimilarLogo ?? logoMatchOf(prev));
-    const usernameMatch = field === "username_match" ? value : (inc?.isSimilarName ?? usernameMatchOf(prev));
+    const logoMatch = field === "logo_match" ? (value as boolean) : (inc?.isSimilarLogo ?? logoMatchOf(prev));
+    const usernameMatch = field === "username_match" ? (value as boolean) : (inc?.isSimilarName ?? usernameMatchOf(prev));
     const followers = inc?.numberOfFollowers ?? prev.followers;
     const location = inc?.location ?? prev.location;
     const lastPostDate = inc?.lastPostDate ?? prev.last_post_date;
@@ -3301,7 +3425,7 @@ export function ResultsGrid({
               <span style={{ fontSize: "12px", fontWeight: 700 }}>
                 {selectedIds.size} selected
               </span>
-              {drkOptions.length > 0 ? (
+              {(drkIndividualOptions.length > 0 || drkDomainOptions.length > 0) ? (
                 <select
                   className="select-filter"
                   defaultValue=""
@@ -3315,11 +3439,21 @@ export function ResultsGrid({
                   <option value="" disabled>
                     {bulkAssetNameBusy ? "Applying…" : "Set Asset Name to…"}
                   </option>
-                  {drkOptions.map((opt) => (
-                    <option key={opt} value={opt}>
-                      {opt}
-                    </option>
-                  ))}
+                  {drkIndividualOptions.length > 0 && (
+                    <optgroup label="👤 Individual">
+                      {drkIndividualOptions.map((opt) => (
+                        <option key={`ind-${opt}`} value={opt}>{opt}</option>
+                      ))}
+                    </optgroup>
+                  )}
+                  {drkDomainOptions.length > 0 && (
+                    <optgroup label="🌐 Domain">
+                      {drkDomainOptions.map((raw) => {
+                        const { platform, name } = _parseDomainAsset(raw);
+                        return <option key={`dom-${raw}`} value={name}>{platform ? `${name} (${platform})` : name}</option>;
+                      })}
+                    </optgroup>
+                  )}
                 </select>
               ) : (
                 <span style={{ fontSize: "11px", color: "var(--text-dim)" }}>
@@ -3954,6 +4088,7 @@ export function ResultsGrid({
                         r={r} isAnalysisView={isAnalysisView} savingId={savingId}
                         onDecide={decide} onValidate={validate}
                         onSaveIncidentField={saveIncidentField}
+                        drkIndividualOptions={drkIndividualOptions} drkDomainOptions={drkDomainOptions}
                         selected={selectedIds.has(r.id)} onToggleSelected={toggleSelected}
                         dragHandlers={dragSelectHandlers(r.id)}
                         onOpenDiff={(p) => setDiffProfile(p)}
@@ -4001,16 +4136,40 @@ export function ResultsGrid({
                     <th></th>
                     {!isAnalysisView && <th>Name</th>}
                     <th>Platform</th>
-                    {isAnalysisView && <th>Screenshot</th>}
-                    {isAnalysisView && <th>Username Match</th>}
-                    {isAnalysisView && <th>Logo Match</th>}
-                    {isAnalysisView && <th>AssetName</th>}
-                    {isAnalysisView && <th>Risk</th>}
-                    {isAnalysisView && <th>Followers</th>}
-                    {isAnalysisView && <th>Location</th>}
-                    {isAnalysisView && <th>Last Post</th>}
-                    {isAnalysisView && <th>Active</th>}
-                    {isAnalysisView && <th>Date</th>}
+                    {/* Legacy layout for Analysis Unpublished */}
+                    {isAnalysisView && publishedFilter === "unpublished" && (
+                      <>
+                        <th>Screenshot</th>
+                        <th>Original Name</th>
+                        <th>IMPERSONATED</th>
+                        <th>Profile Name</th>
+                        <th>Logo (Yes/No)</th>
+                        <th>Followers</th>
+                        <th>Active (Yes/No)</th>
+                        <th>Name (Yes/No)</th>
+                        <th>Location</th>
+                        <th>Last Post</th>
+                        <th>Risk Score</th>
+                        <th>Priority</th>
+                        <th>Date</th>
+                        <th>Comments</th>
+                      </>
+                    )}
+                    {/* Platform Format layout for Analysis Published */}
+                    {isAnalysisView && publishedFilter === "published" && (
+                      <>
+                        <th>Screenshot</th>
+                        <th>Username Match</th>
+                        <th>Logo Match</th>
+                        <th>AssetName</th>
+                        <th>Risk</th>
+                        <th>Followers</th>
+                        <th>Location</th>
+                        <th>Last Post</th>
+                        <th>Active</th>
+                        <th>Date</th>
+                      </>
+                    )}
                     {!isAnalysisView && <th>Status</th>}
                     <th className="core_table-actions-cell">Actions</th>
                   </tr>
@@ -4019,14 +4178,14 @@ export function ResultsGrid({
                   {loading && displayed.length === 0 ? (
                     Array.from({ length: 7 }).map((_, i) => (
                       <tr key={`skeleton-${i}`}>
-                        <td colSpan={isAnalysisView ? 16 : 6} style={{ padding: '8px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
+                        <td colSpan={isAnalysisView ? (publishedFilter === "unpublished" ? 18 : 16) : 6} style={{ padding: '8px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
                           <div className="skeleton-row" style={{ width: '100%', opacity: Math.max(0.1, 1 - (i * 0.15)) }} />
                         </td>
                       </tr>
                     ))
                   ) : displayed.length === 0 ? (
                     <tr>
-                      <td colSpan={isAnalysisView ? 15 : 6} style={{ textAlign: "center", padding: "80px 20px" }}>
+                      <td colSpan={isAnalysisView ? (publishedFilter === "unpublished" ? 18 : 15) : 6} style={{ textAlign: "center", padding: "80px 20px" }}>
                         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "16px", color: "var(--text-dim)" }}>
                           <div style={{ width: "64px", height: "64px", borderRadius: "50%", background: "rgba(0, 229, 255, 0.05)", display: "flex", alignItems: "center", justifyContent: "center" }}>
                             <SearchIcon size={32} color="rgba(0, 229, 255, 0.6)" />
@@ -4147,156 +4306,375 @@ export function ResultsGrid({
                           <PlatformIcon platform={r.platform} size={16} />
                         </a>
                       </td>
-                      {isAnalysisView && (
-                        <td
-                          onClick={(e) => e.stopPropagation()}
-                          onMouseDown={(e) => e.stopPropagation()}
-                          onPointerDown={(e) => e.stopPropagation()}
-                        >
-                          <ScreenshotCell r={r} />
-                        </td>
-                      )}
-                      {isAnalysisView && (
-                        <td>
-                          <button
-                            type="button"
-                            disabled={savingId === r.id}
-                            onClick={(e) => { e.stopPropagation(); saveProfileField(r.id, "username_match", !usernameMatchOf(r)); }}
-                            style={{
-                              cursor: savingId === r.id ? "default" : "pointer",
-                              opacity: savingId === r.id ? 0.6 : 1,
-                              background: usernameMatchOf(r) ? "var(--success, #10B981)" : "rgba(156, 163, 175, 0.2)",
-                              color: "#ffffff",
-                              border: "1px solid " + (usernameMatchOf(r) ? "transparent" : "var(--border-color)"),
-                              padding: "4px 10px",
-                              borderRadius: "14px",
-                              fontSize: "12px",
-                              fontWeight: usernameMatchOf(r) ? 600 : 400,
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: "4px",
-                              transition: "all 0.15s ease",
-                            }}
-                            title={
-                              savingId === r.id
-                                ? "Saving…"
-                                : "Click anywhere to instantly toggle Username Match"
-                            }
+                      {/* ── Legacy layout cells (Analysis Unpublished) ── */}
+                      {isAnalysisView && publishedFilter === "unpublished" && (
+                        <>
+                          <td
+                            onClick={(e) => e.stopPropagation()}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onPointerDown={(e) => e.stopPropagation()}
                           >
-                            {usernameMatchOf(r) ? "✓ Match" : "+ Match"}
-                          </button>
-                        </td>
-                      )}
-                      {isAnalysisView && (
-                        <td>
-                          <button
-                            type="button"
-                            disabled={savingId === r.id}
-                            onClick={(e) => { e.stopPropagation(); saveProfileField(r.id, "logo_match", !logoMatchOf(r)); }}
-                            style={{
-                              cursor: savingId === r.id ? "default" : "pointer",
-                              opacity: savingId === r.id ? 0.6 : 1,
-                              background: logoMatchOf(r) ? "var(--success, #10B981)" : "rgba(156, 163, 175, 0.2)",
-                              color: "#ffffff",
-                              border: "1px solid " + (logoMatchOf(r) ? "transparent" : "var(--border-color)"),
-                              padding: "4px 10px",
-                              borderRadius: "14px",
-                              fontSize: "12px",
-                              fontWeight: logoMatchOf(r) ? 600 : 400,
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: "4px",
-                              transition: "all 0.15s ease",
-                            }}
-                            title={
-                              savingId === r.id
-                                ? "Saving…"
-                                : "Click anywhere to instantly toggle Logo Match"
-                            }
-                          >
-                            {logoMatchOf(r) ? "✓ Match" : "+ Match"}
-                          </button>
-                        </td>
-                      )}
-                      {isAnalysisView && (
-                        <td title={inc?.assetName ?? ""} style={{ maxWidth: "140px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-main)" }}>
-                          {inc?.assetName || "—"}
-                        </td>
-                      )}
-                      {isAnalysisView && (
-                        <td>
-                          {(() => {
-                            const risk = getRiskBadgeDetails(inc?.riskRating);
-                            if (risk.label === "—") return "—";
-                            return (
-                              <span
-                                className="risk-capsule-badge"
-                                title={`Risk Score: ${risk.score}/10 (${risk.label})`}
-                                style={{
-                                  background: risk.color,
-                                  color: "#ffffff",
-                                  padding: "3px 12px",
-                                  borderRadius: "14px",
-                                  fontSize: "11px",
-                                  fontWeight: 700,
-                                  display: "inline-block",
-                                  letterSpacing: "0.4px",
-                                  boxShadow: `0 2px 8px ${risk.color}40`,
-                                  textTransform: "capitalize",
-                                }}
-                              >
-                                {risk.label} · {risk.score}
-                              </span>
-                            );
-                          })()}
-                        </td>
-                      )}
-                      {isAnalysisView && (
-                        <td style={{ fontSize: "11px", color: "var(--text-main)" }}>
-                          {inc?.socialProfileInfo.numberOfFollowers ?? r.followers ?? emptyLabel(r, r.platform, "followers")}
-                        </td>
-                      )}
-                      {isAnalysisView && (
-                        <td style={{ fontSize: "11px", color: "var(--text-main)" }}>
-                          {inc?.socialProfileInfo.location || r.location || emptyLabel(r, r.platform, "location")}
-                        </td>
-                      )}
-                      {isAnalysisView && (
-                        <td style={{ fontSize: "11px", color: "var(--text-main)", whiteSpace: "nowrap" }}>
-                          {inc?.socialProfileInfo.lastPostDate || r.last_post_date || emptyLabel(r, r.platform, "last_post_date")}
-                        </td>
-                      )}
-                      {isAnalysisView && (
-                        <td>
-                          {/* Two states only, by explicit product decision
-                              (see incident_publisher.py::_is_recent).
-                              Anything not shown to have posted inside the
-                              window reads "inactive", including a row
-                              stored under the old tri-state rule, whose
-                              isActive is still null. The Last Post column
-                              is where "no date at all" remains visible. */}
-                          {(() => {
-                            const active = inc?.socialProfileInfo.isActive === true;
-                            const undated = !inc?.socialProfileInfo.lastPostDate;
-                            return (
-                              <span
-                                style={{ color: active ? "var(--success)" : "var(--text-main)" }}
-                                title={
-                                  active
-                                    ? "Posted within the last 6 months"
-                                    : undated
-                                    ? "No last-post date was found, so this is not counted as active"
-                                    : "Last post is older than 6 months"
+                            <ScreenshotCell r={r} />
+                          </td>
+                          {/* Original Name */}
+                          <td style={{ fontSize: "11px", color: "var(--text-main)", maxWidth: "140px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.keyword || r.target || ""}>
+                            {r.keyword && [...clientKeywordSets.domainKeywords].some(k => k.toLowerCase() === r.keyword?.toLowerCase()) ? "—" : (r.keyword || r.target || "—")}
+                          </td>
+                          {/* IMPERSONATED (URL) */}
+                          <td style={{ fontSize: "11px", maxWidth: "200px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            <a href={r.url} target="_blank" rel="noreferrer" style={{ color: "var(--cyan)" }} title={r.url}>{r.url || "—"}</a>
+                          </td>
+                          {/* Profile Name */}
+                          <td style={{ fontSize: "11px", maxWidth: "140px" }}>
+                            <input
+                              type="text"
+                              defaultValue={inc?.socialProfileInfo.profileName ?? r.profile_name ?? r.username ?? ""}
+                              onBlur={(e) => {
+                                const val = e.target.value;
+                                if (val !== (inc?.socialProfileInfo.profileName ?? r.profile_name ?? r.username ?? "")) {
+                                  saveIncidentField(r.id, "socialProfileInfo.profileName", val);
                                 }
-                              >
-                                {active ? "● active" : "○ inactive"}
-                              </span>
-                            );
-                          })()}
-                        </td>
+                              }}
+                              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                              title={inc?.socialProfileInfo.profileName ?? r.profile_name ?? r.username ?? ""}
+                              style={{ width: "100%", background: "transparent", border: "1px solid transparent", color: "inherit", fontSize: "11px", padding: "2px 4px", borderRadius: "4px" }}
+                              onFocus={(e) => (e.target.style.border = "1px solid var(--border-color)")}
+                              onBlurCapture={(e) => (e.target.style.border = "1px solid transparent")}
+                            />
+                          </td>
+                          {/* Logo (Yes/No) */}
+                          <td>
+                            <button
+                              type="button"
+                              disabled={savingId === r.id}
+                              onClick={(e) => { e.stopPropagation(); saveProfileField(r.id, "logo_match", !logoMatchOf(r)); }}
+                              style={{
+                                cursor: savingId === r.id ? "default" : "pointer",
+                                opacity: savingId === r.id ? 0.6 : 1,
+                                background: logoMatchOf(r) ? "var(--success, #10B981)" : "rgba(156, 163, 175, 0.2)",
+                                color: "#ffffff",
+                                border: "1px solid " + (logoMatchOf(r) ? "transparent" : "var(--border-color)"),
+                                padding: "4px 10px",
+                                borderRadius: "14px",
+                                fontSize: "12px",
+                                fontWeight: logoMatchOf(r) ? 600 : 400,
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "4px",
+                                transition: "all 0.15s ease",
+                              }}
+                              title={savingId === r.id ? "Saving…" : "Click to toggle Logo Match"}
+                            >
+                              {logoMatchOf(r) ? "Yes" : "No"}
+                            </button>
+                          </td>
+                          {/* Followers */}
+                          <td style={{ fontSize: "11px", maxWidth: "80px" }}>
+                            <input
+                              type="number"
+                              defaultValue={inc?.socialProfileInfo.numberOfFollowers ?? r.followers ?? ""}
+                              onBlur={(e) => {
+                                const val = e.target.value;
+                                if (val !== String(inc?.socialProfileInfo.numberOfFollowers ?? r.followers ?? "")) {
+                                  saveIncidentField(r.id, "socialProfileInfo.numberOfFollowers", val);
+                                }
+                              }}
+                              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                              style={{ width: "100%", background: "transparent", border: "1px solid transparent", color: "inherit", fontSize: "11px", padding: "2px 4px", borderRadius: "4px" }}
+                              onFocus={(e) => (e.target.style.border = "1px solid var(--border-color)")}
+                              onBlurCapture={(e) => (e.target.style.border = "1px solid transparent")}
+                            />
+                          </td>
+                          {/* Active (Yes/No) */}
+                          <td>
+                            <button
+                              type="button"
+                              disabled={savingId === r.id}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const currentActive = inc?.socialProfileInfo.isActive ?? r.is_active ?? false;
+                                saveIncidentField(r.id, "socialProfileInfo.isActive", currentActive ? "false" : "true");
+                              }}
+                              style={{
+                                cursor: savingId === r.id ? "default" : "pointer",
+                                opacity: savingId === r.id ? 0.6 : 1,
+                                background: (inc?.socialProfileInfo.isActive ?? r.is_active ?? false) ? "var(--success, #10B981)" : "rgba(156, 163, 175, 0.2)",
+                                color: "#ffffff",
+                                border: "1px solid " + ((inc?.socialProfileInfo.isActive ?? r.is_active ?? false) ? "transparent" : "var(--border-color)"),
+                                padding: "4px 10px",
+                                borderRadius: "14px",
+                                fontSize: "12px",
+                                fontWeight: (inc?.socialProfileInfo.isActive ?? r.is_active ?? false) ? 600 : 400,
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "4px",
+                                transition: "all 0.15s ease",
+                              }}
+                              title={savingId === r.id ? "Saving…" : "Click to toggle Active Status"}
+                            >
+                              {(inc?.socialProfileInfo.isActive ?? r.is_active ?? false) ? "Yes" : "No"}
+                            </button>
+                          </td>
+                          {/* Name (Yes/No) */}
+                          <td>
+                            <button
+                              type="button"
+                              disabled={savingId === r.id}
+                              onClick={(e) => { e.stopPropagation(); saveProfileField(r.id, "username_match", !usernameMatchOf(r)); }}
+                              style={{
+                                cursor: savingId === r.id ? "default" : "pointer",
+                                opacity: savingId === r.id ? 0.6 : 1,
+                                background: usernameMatchOf(r) ? "var(--success, #10B981)" : "rgba(156, 163, 175, 0.2)",
+                                color: "#ffffff",
+                                border: "1px solid " + (usernameMatchOf(r) ? "transparent" : "var(--border-color)"),
+                                padding: "4px 10px",
+                                borderRadius: "14px",
+                                fontSize: "12px",
+                                fontWeight: usernameMatchOf(r) ? 600 : 400,
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "4px",
+                                transition: "all 0.15s ease",
+                              }}
+                              title={savingId === r.id ? "Saving…" : "Click to toggle Username Match"}
+                            >
+                              {usernameMatchOf(r) ? "Yes" : "No"}
+                            </button>
+                          </td>
+                          {/* Location */}
+                          <td style={{ fontSize: "11px", maxWidth: "120px" }}>
+                            <input
+                              type="text"
+                              defaultValue={inc?.socialProfileInfo.location ?? r.location ?? ""}
+                              onBlur={(e) => {
+                                const val = e.target.value;
+                                if (val !== (inc?.socialProfileInfo.location ?? r.location ?? "")) {
+                                  saveIncidentField(r.id, "socialProfileInfo.location", val);
+                                }
+                              }}
+                              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                              title={inc?.socialProfileInfo.location ?? r.location ?? ""}
+                              style={{ width: "100%", background: "transparent", border: "1px solid transparent", color: "inherit", fontSize: "11px", padding: "2px 4px", borderRadius: "4px" }}
+                              onFocus={(e) => (e.target.style.border = "1px solid var(--border-color)")}
+                              onBlurCapture={(e) => (e.target.style.border = "1px solid transparent")}
+                            />
+                          </td>
+                          {/* Last Post */}
+                          <td style={{ fontSize: "11px", maxWidth: "100px" }}>
+                            <input
+                              type="text"
+                              defaultValue={inc?.socialProfileInfo.lastPostDate ?? r.last_post_date ?? ""}
+                              onBlur={(e) => {
+                                const val = e.target.value;
+                                if (val !== (inc?.socialProfileInfo.lastPostDate ?? r.last_post_date ?? "")) {
+                                  saveIncidentField(r.id, "socialProfileInfo.lastPostDate", val);
+                                }
+                              }}
+                              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                              style={{ width: "100%", background: "transparent", border: "1px solid transparent", color: "inherit", fontSize: "11px", padding: "2px 4px", borderRadius: "4px" }}
+                              onFocus={(e) => (e.target.style.border = "1px solid var(--border-color)")}
+                              onBlurCapture={(e) => (e.target.style.border = "1px solid transparent")}
+                            />
+                          </td>
+                          {/* Risk Score */}
+                          <td>
+                            {(() => {
+                              const riskVal = displayedRisk(r);
+                              const numRisk = Number(riskVal);
+                              if (!Number.isFinite(numRisk)) return "—";
+                              const risk = getRiskBadgeDetails(riskVal);
+                              return (
+                                <span
+                                  className="risk-capsule-badge"
+                                  title={`Risk Score: ${Math.round(numRisk)}/10`}
+                                  style={{
+                                    background: risk.color,
+                                    color: "#ffffff",
+                                    padding: "3px 12px",
+                                    borderRadius: "14px",
+                                    fontSize: "11px",
+                                    fontWeight: 700,
+                                    display: "inline-block",
+                                    letterSpacing: "0.4px",
+                                    boxShadow: `0 2px 8px ${risk.color}40`,
+                                  }}
+                                >
+                                  {Math.round(numRisk)}
+                                </span>
+                              );
+                            })()}
+                          </td>
+                          {/* Priority */}
+                          <td style={{ fontSize: "11px", color: "var(--text-main)" }}>
+                            {riskLabel(inc?.riskRating ?? r.risk_score)}
+                          </td>
+                          {/* Date (analysed_at) */}
+                          <td style={{ fontSize: "11px", maxWidth: "110px" }}>
+                            <input
+                              type="date"
+                              defaultValue={inc?.date ?? (r.analysed_at ? (() => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(r.analysed_at); return m ? `${m[1]}-${m[2]}-${m[3]}` : ""; })() : "")}
+                              onBlur={(e) => {
+                                const val = e.target.value;
+                                const original = inc?.date ?? (r.analysed_at ? (() => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(r.analysed_at); return m ? `${m[1]}-${m[2]}-${m[3]}` : ""; })() : "");
+                                if (val !== original) {
+                                  saveIncidentField(r.id, "date", val);
+                                }
+                              }}
+                              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                              style={{ width: "100%", background: "transparent", border: "1px solid transparent", color: "inherit", fontSize: "11px", padding: "2px 2px", borderRadius: "4px" }}
+                              onFocus={(e) => (e.target.style.border = "1px solid var(--border-color)")}
+                              onBlurCapture={(e) => (e.target.style.border = "1px solid transparent")}
+                            />
+                          </td>
+                          {/* Comments */}
+                          <td style={{ fontSize: "11px", maxWidth: "140px" }}>
+                            <input
+                              type="text"
+                              placeholder="—"
+                              defaultValue={r.comments ?? ""}
+                              onBlur={(e) => {
+                                const val = e.target.value;
+                                if (val !== (r.comments ?? "")) {
+                                  saveProfileField(r.id, "comments", val);
+                                }
+                              }}
+                              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                              title={r.comments ?? ""}
+                              style={{ width: "100%", background: "transparent", border: "1px solid transparent", color: "inherit", fontSize: "11px", padding: "2px 4px", borderRadius: "4px" }}
+                              onFocus={(e) => (e.target.style.border = "1px solid var(--border-color)")}
+                              onBlurCapture={(e) => (e.target.style.border = "1px solid transparent")}
+                            />
+                          </td>
+                        </>
                       )}
-                      {isAnalysisView && (
-                        <td style={{ fontSize: "11px", color: "var(--text-main)", whiteSpace: "nowrap" }}>{inc?.date || "—"}</td>
+                      {/* ── Platform Format cells (Analysis Published) ── */}
+                      {isAnalysisView && publishedFilter === "published" && (
+                        <>
+                          <td
+                            onClick={(e) => e.stopPropagation()}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onPointerDown={(e) => e.stopPropagation()}
+                          >
+                            <ScreenshotCell r={r} />
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              disabled={savingId === r.id}
+                              onClick={(e) => { e.stopPropagation(); saveProfileField(r.id, "username_match", !usernameMatchOf(r)); }}
+                              style={{
+                                cursor: savingId === r.id ? "default" : "pointer",
+                                opacity: savingId === r.id ? 0.6 : 1,
+                                background: usernameMatchOf(r) ? "var(--success, #10B981)" : "rgba(156, 163, 175, 0.2)",
+                                color: "#ffffff",
+                                border: "1px solid " + (usernameMatchOf(r) ? "transparent" : "var(--border-color)"),
+                                padding: "4px 10px",
+                                borderRadius: "14px",
+                                fontSize: "12px",
+                                fontWeight: usernameMatchOf(r) ? 600 : 400,
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "4px",
+                                transition: "all 0.15s ease",
+                              }}
+                              title={
+                                savingId === r.id
+                                  ? "Saving…"
+                                  : "Click anywhere to instantly toggle Username Match"
+                              }
+                            >
+                              {usernameMatchOf(r) ? "✓ Match" : "+ Match"}
+                            </button>
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              disabled={savingId === r.id}
+                              onClick={(e) => { e.stopPropagation(); saveProfileField(r.id, "logo_match", !logoMatchOf(r)); }}
+                              style={{
+                                cursor: savingId === r.id ? "default" : "pointer",
+                                opacity: savingId === r.id ? 0.6 : 1,
+                                background: logoMatchOf(r) ? "var(--success, #10B981)" : "rgba(156, 163, 175, 0.2)",
+                                color: "#ffffff",
+                                border: "1px solid " + (logoMatchOf(r) ? "transparent" : "var(--border-color)"),
+                                padding: "4px 10px",
+                                borderRadius: "14px",
+                                fontSize: "12px",
+                                fontWeight: logoMatchOf(r) ? 600 : 400,
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "4px",
+                                transition: "all 0.15s ease",
+                              }}
+                              title={
+                                savingId === r.id
+                                  ? "Saving…"
+                                  : "Click anywhere to instantly toggle Logo Match"
+                              }
+                            >
+                              {logoMatchOf(r) ? "✓ Match" : "+ Match"}
+                            </button>
+                          </td>
+                          <td title={inc?.assetName ?? ""} style={{ maxWidth: "140px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-main)" }}>
+                            {inc?.assetName || "—"}
+                          </td>
+                          <td>
+                            {(() => {
+                              const risk = getRiskBadgeDetails(inc?.riskRating);
+                              if (risk.label === "—") return "—";
+                              return (
+                                <span
+                                  className="risk-capsule-badge"
+                                  title={`Risk Score: ${risk.score}/10 (${risk.label})`}
+                                  style={{
+                                    background: risk.color,
+                                    color: "#ffffff",
+                                    padding: "3px 12px",
+                                    borderRadius: "14px",
+                                    fontSize: "11px",
+                                    fontWeight: 700,
+                                    display: "inline-block",
+                                    letterSpacing: "0.4px",
+                                    boxShadow: `0 2px 8px ${risk.color}40`,
+                                    textTransform: "capitalize",
+                                  }}
+                                >
+                                  {risk.label} · {risk.score}
+                                </span>
+                              );
+                            })()}
+                          </td>
+                          <td style={{ fontSize: "11px", color: "var(--text-main)" }}>
+                            {inc?.socialProfileInfo.numberOfFollowers ?? r.followers ?? emptyLabel(r, r.platform, "followers")}
+                          </td>
+                          <td style={{ fontSize: "11px", color: "var(--text-main)" }}>
+                            {inc?.socialProfileInfo.location || r.location || emptyLabel(r, r.platform, "location")}
+                          </td>
+                          <td style={{ fontSize: "11px", color: "var(--text-main)", whiteSpace: "nowrap" }}>
+                            {inc?.socialProfileInfo.lastPostDate || r.last_post_date || emptyLabel(r, r.platform, "last_post_date")}
+                          </td>
+                          <td>
+                            {(() => {
+                              const active = inc?.socialProfileInfo.isActive === true;
+                              const undated = !inc?.socialProfileInfo.lastPostDate;
+                              return (
+                                <span
+                                  style={{ color: active ? "var(--success)" : "var(--text-main)" }}
+                                  title={
+                                    active
+                                      ? "Posted within the last 6 months"
+                                      : undated
+                                      ? "No last-post date was found, so this is not counted as active"
+                                      : "Last post is older than 6 months"
+                                  }
+                                >
+                                  {active ? "● active" : "○ inactive"}
+                                </span>
+                              );
+                            })()}
+                          </td>
+                          <td style={{ fontSize: "11px", color: "var(--text-main)", whiteSpace: "nowrap" }}>{inc?.date || "—"}</td>
+                        </>
                       )}
                       {!isAnalysisView && (
                         <td>
@@ -4323,7 +4701,7 @@ export function ResultsGrid({
                       )}
                       <td className="core_table-actions-cell" style={{ whiteSpace: "nowrap" }}>
                         <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "nowrap", whiteSpace: "nowrap" }}>
-                          {isAnalysisView && inc && (
+                          {isAnalysisView && (
                             <button
                               onClick={() => setEditingId(r.id)}
                               title="Edit every incident field (OrgId, Domain, Description, Location, Followers, Last Post, and more)"
@@ -4577,7 +4955,7 @@ export function ResultsGrid({
                   ✕
                 </button>
               </div>
-              <IncidentEditPanel r={editing} onSave={(path, value) => saveIncidentField(editing.id, path, value)} drkOptions={drkOptions} onToggleMatch={(field, val) => saveProfileField(editing.id, field, val)} />
+              <IncidentEditPanel r={editing} onSave={(path, value) => saveIncidentField(editing.id, path, value)} drkIndividualOptions={drkIndividualOptions} drkDomainOptions={drkDomainOptions} onToggleMatch={(field, val) => saveProfileField(editing.id, field, val)} />
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "16px", paddingTop: "12px", borderTop: "1px solid var(--border-subtle)" }}>
                 <div>
                   {isUnpublished && (

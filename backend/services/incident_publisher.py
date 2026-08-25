@@ -98,6 +98,29 @@ def _first_match(matched: list, pool: set):
     return None
 
 
+def _parse_drk_domain(raw: list[str], platform: str) -> list[str]:
+    """Parse domain asset name entries that may carry a ``platform::name``
+    prefix.  Returns only the *pure* asset names (no prefix) that apply to
+    the given *platform*.
+
+    Rules:
+    * ``"facebook::Acme Brand"`` → include only when *platform* == ``facebook``
+    * ``"Acme Brand"``           → legacy / "all platforms", always included
+    """
+    result: list[str] = []
+    for entry in raw:
+        if "::" in entry:
+            plat, name = entry.split("::", 1)
+            name = name.strip()
+            if plat.strip().lower() == platform.lower() and name:
+                result.append(name)
+        else:
+            stripped = entry.strip()
+            if stripped:
+                result.append(stripped)
+    return result
+
+
 def _category_and_asset_name(doc: dict, client: dict) -> tuple[str, str, str]:
     """(category, subCategory, assetName).
 
@@ -128,7 +151,11 @@ def _category_and_asset_name(doc: dict, client: dict) -> tuple[str, str, str]:
     name_keywords = set(client.get("name_keywords") or [])
     domain_keywords = set(client.get("domain_keywords") or [])
     drk_individual = list(client.get("asset_name_individual_keywords") or [])
-    drk_domain = list(client.get("asset_name_domain_keywords") or [])
+    profile_platform = str(doc.get("platform") or "")
+    drk_domain = _parse_drk_domain(
+        list(client.get("asset_name_domain_keywords") or []),
+        profile_platform,
+    )
 
     name_hit = _first_match(matched, name_keywords)
     if not name_hit and not matched:
