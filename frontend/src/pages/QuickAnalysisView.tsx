@@ -58,8 +58,9 @@ const EditableCell = ({ value, onChange, placeholder = "—" }: { value: string,
 };
 
 const ToggleCell = ({ value, onChange }: { value: string, onChange: (v: string) => void }) => {
-  const isYes = value === "Yes";
-  const isNo = value === "No";
+  const displayValue = value || "Yes";
+  const isYes = displayValue === "Yes";
+  const isNo = displayValue === "No";
   
   return (
     <button
@@ -78,7 +79,7 @@ const ToggleCell = ({ value, onChange }: { value: string, onChange: (v: string) 
         transition: "all 0.2s"
       }}
     >
-      {isYes ? "Yes" : isNo ? "No" : value || "—"}
+      {displayValue}
     </button>
   );
 };
