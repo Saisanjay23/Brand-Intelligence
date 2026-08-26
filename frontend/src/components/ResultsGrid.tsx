@@ -82,23 +82,27 @@ const UNDO_WINDOW_MS = 8000;
 function HighlightedText({ text, highlight }: { text: string; highlight?: string }) {
   if (!highlight || !text) return <>{text}</>;
   
-  // Use case-insensitive split with capture group to keep the match
-  const parts = text.split(new RegExp(`(${highlight})`, "gi"));
-  const lowerHighlight = highlight.toLowerCase();
-  
-  return (
-    <>
-      {parts.map((part, i) =>
-        part.toLowerCase() === lowerHighlight ? (
-          <span key={i} className="keyword-highlight">
-            {part}
-          </span>
-        ) : (
-          <span key={i}>{part}</span>
-        )
-      )}
-    </>
-  );
+  try {
+    const escaped = highlight.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const parts = text.split(new RegExp(`(${escaped})`, "gi"));
+    const lowerHighlight = highlight.toLowerCase();
+    
+    return (
+      <>
+        {parts.map((part, i) =>
+          part.toLowerCase() === lowerHighlight ? (
+            <span key={i} className="keyword-highlight">
+              {part}
+            </span>
+          ) : (
+            <span key={i}>{part}</span>
+          )
+        )}
+      </>
+    );
+  } catch {
+    return <>{text}</>;
+  }
 }
 // "5s" / "2m 30s" / "1h 5m", never both units at zero, never blank.
 function formatEta(seconds: number | null): string {

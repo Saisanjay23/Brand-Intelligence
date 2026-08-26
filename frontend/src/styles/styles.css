@@ -2264,9 +2264,17 @@ a:hover {
 .profile-display-name {
   font-size: 15px;
   font-weight: 700;
+  color: var(--text-main, #ffffff) !important;
+  text-decoration: none;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  transition: color 0.15s ease;
+}
+
+.profile-display-name:hover {
+  color: var(--cyan, #00e5ff) !important;
+  text-decoration: underline;
 }
 
 .profile-handle {
@@ -3436,10 +3444,8 @@ tr:hover .row-quick-actions {
 
 
 .keyword-highlight {
-  background: rgba(0, 229, 255, 0.2);
-  color: var(--cyan);
-  border-radius: 3px;
-  padding: 0 2px;
-  font-weight: 600;
+  background: transparent;
+  color: var(--text-main, #ffffff);
+  font-weight: 700;
 }
 
