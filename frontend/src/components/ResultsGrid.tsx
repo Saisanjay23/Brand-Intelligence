@@ -4276,7 +4276,7 @@ export function ResultsGrid({
                         />
                       </td>
                       <td>
-                        <div style={{ display: "flex", alignItems: "center", gap: isAnalysisView ? "10px" : "4px" }}>
+                        <div style={{ display: "flex", flexDirection: isAnalysisView ? "column" : "row", alignItems: "center", gap: isAnalysisView ? "4px" : "4px" }}>
                           <a
                             href={isAnalysisView && inc ? inc.source : r.url}
                             target="_blank"
@@ -4291,6 +4291,15 @@ export function ResultsGrid({
                               style={isAnalysisView ? { border: "2px solid rgba(0, 229, 255, 0.35)", boxShadow: "0 2px 10px rgba(0, 229, 255, 0.15)" } : undefined}
                             />
                           </a>
+                          {isAnalysisView && isProfileNew(r) && (
+                            <span
+                              className="table-badge-new"
+                              style={{ margin: 0, fontSize: "9px", padding: "1px 5px" }}
+                              title="Newly scraped profile (within last 24h)"
+                            >
+                              ✨ NEW
+                            </span>
+                          )}
                         </div>
                       </td>
                       {!isAnalysisView && (
@@ -4380,22 +4389,29 @@ export function ResultsGrid({
                             <a href={r.url} target="_blank" rel="noreferrer" style={{ color: "var(--cyan)" }} title={r.url}>{r.url || "—"}</a>
                           </td>
                           {/* Profile Name */}
-                          <td style={{ fontSize: "11px", maxWidth: "140px" }}>
-                            <input
-                              type="text"
-                              defaultValue={inc?.socialProfileInfo.profileName ?? r.profile_name ?? r.username ?? ""}
-                              onBlur={(e) => {
-                                const val = e.target.value;
-                                if (val !== (inc?.socialProfileInfo.profileName ?? r.profile_name ?? r.username ?? "")) {
-                                  saveIncidentField(r.id, "socialProfileInfo.profileName", val);
-                                }
-                              }}
-                              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-                              title={inc?.socialProfileInfo.profileName ?? r.profile_name ?? r.username ?? ""}
-                              style={{ width: "100%", background: "transparent", border: "1px solid transparent", color: "inherit", fontSize: "11px", padding: "2px 4px", borderRadius: "4px" }}
-                              onFocus={(e) => (e.target.style.border = "1px solid var(--border-color)")}
-                              onBlurCapture={(e) => (e.target.style.border = "1px solid transparent")}
-                            />
+                          <td style={{ fontSize: "11px", maxWidth: "160px" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                              <input
+                                type="text"
+                                defaultValue={inc?.socialProfileInfo.profileName ?? r.profile_name ?? r.username ?? ""}
+                                onBlur={(e) => {
+                                  const val = e.target.value;
+                                  if (val !== (inc?.socialProfileInfo.profileName ?? r.profile_name ?? r.username ?? "")) {
+                                    saveIncidentField(r.id, "socialProfileInfo.profileName", val);
+                                  }
+                                }}
+                                onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                                title={inc?.socialProfileInfo.profileName ?? r.profile_name ?? r.username ?? ""}
+                                style={{ width: "100%", background: "transparent", border: "1px solid transparent", color: "inherit", fontSize: "11px", padding: "2px 4px", borderRadius: "4px" }}
+                                onFocus={(e) => (e.target.style.border = "1px solid var(--border-color)")}
+                                onBlurCapture={(e) => (e.target.style.border = "1px solid transparent")}
+                              />
+                              {isProfileNew(r) && (
+                                <span className="table-badge-new" title="Newly scraped profile (within last 24h)">
+                                  ✨ NEW
+                                </span>
+                              )}
+                            </div>
                           </td>
                           {/* Logo (Yes/No) */}
                           <td>
@@ -4670,8 +4686,15 @@ export function ResultsGrid({
                               {logoMatchOf(r) ? "✓ Match" : "+ Match"}
                             </button>
                           </td>
-                          <td title={inc?.assetName ?? ""} style={{ maxWidth: "140px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-main)" }}>
-                            {inc?.assetName || "—"}
+                          <td title={inc?.assetName ?? ""} style={{ maxWidth: "160px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-main)" }}>
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                              <span>{inc?.assetName || "—"}</span>
+                              {isProfileNew(r) && (
+                                <span className="table-badge-new" title="Newly scraped profile (within last 24h)">
+                                  ✨ NEW
+                                </span>
+                              )}
+                            </span>
                           </td>
                           <td>
                             {(() => {
@@ -4996,6 +5019,11 @@ export function ResultsGrid({
                   <div style={{ fontSize: "14px", fontWeight: 700 }}>
                     ✏️ Edit incident — {editing.incident?.title || editing.profile_name || editing.username}
                   </div>
+                  {isProfileNew(editing) && (
+                    <span className="table-badge-new" style={{ fontSize: "11px", padding: "2px 6px" }} title="Newly scraped profile (within last 24h)">
+                      ✨ NEW
+                    </span>
+                  )}
                   {isSaving ? (
                     <span className="drawer-save-indicator saving">⏳ Saving…</span>
                   ) : (
