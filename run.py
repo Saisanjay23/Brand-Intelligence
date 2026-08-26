@@ -241,8 +241,14 @@ def main() -> None:
 
     try:
         import uvicorn
+        import webbrowser
+        from threading import Timer
 
-        print(f"\n  Brand Intelligence -> http://127.0.0.1:{a.port}\n")
+        url = f"http://127.0.0.1:{a.port}"
+        print(f"\n  Brand Intelligence -> {url}\n")
+        
+        Timer(1.0, lambda: webbrowser.open(url)).start()
+
         uvicorn.run(
             "backend.main:app",
             host="127.0.0.1",

@@ -4512,10 +4512,10 @@ export function ResultsGrid({
                           <td style={{ fontSize: "11px", maxWidth: "110px" }}>
                             <input
                               type="date"
-                              defaultValue={inc?.date ?? (r.analysed_at ? (() => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(r.analysed_at); return m ? `${m[1]}-${m[2]}-${m[3]}` : ""; })() : "")}
+                              defaultValue={inc?.date ?? new Date().toISOString().split('T')[0]}
                               onBlur={(e) => {
                                 const val = e.target.value;
-                                const original = inc?.date ?? (r.analysed_at ? (() => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(r.analysed_at); return m ? `${m[1]}-${m[2]}-${m[3]}` : ""; })() : "");
+                                const original = inc?.date ?? new Date().toISOString().split('T')[0];
                                 if (val !== original) {
                                   saveIncidentField(r.id, "date", val);
                                 }
