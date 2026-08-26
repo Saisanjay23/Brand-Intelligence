@@ -216,6 +216,8 @@ export interface Profile {
   analysis_status?: string;
   analysis_attempts?: number;
   analysed_at?: string | null;
+  first_seen?: string | null;
+  last_seen?: string | null;
   // live preview of the exact record Publish writes to published_incidents
   // (see backend/services/incident_publisher.py), analysis phase only,
   // null when the client record is gone. Editable pre-publish via

@@ -168,6 +168,29 @@ export function keywordRelevance(r: Profile, activeKeyword?: string): number {
   return relevanceScore(name, candidate);
 }
 
+/** A profile is "new" if it was discovered/analysed/seen within the last 24 hours. */
+export function isProfileNew(r: Profile): boolean {
+  try {
+    let timestamp = 0;
+    if (r.first_seen) {
+      timestamp = new Date(r.first_seen).getTime();
+    } else if (r.analysed_at) {
+      timestamp = new Date(r.analysed_at).getTime();
+    } else if (r.last_seen) {
+      timestamp = new Date(r.last_seen).getTime();
+    } else if (r.id && r.id.length === 24 && /^[0-9a-fA-F]{24}$/.test(r.id)) {
+      timestamp = parseInt(r.id.substring(0, 8), 16) * 1000;
+    }
+    if (!timestamp || isNaN(timestamp)) return false;
+    const now = Date.now();
+    const twentyFourHoursMs = 24 * 60 * 60 * 1000;
+    const diff = now - timestamp;
+    return diff >= 0 && diff < twentyFourHoursMs;
+  } catch {
+    return false;
+  }
+}
+
 /** "Page" / "People" isn't available, this backend's /profiles response
  * carries no entity_type at all, so reach is always labelled "followers". */
 export function reachLabel(): "followers" {

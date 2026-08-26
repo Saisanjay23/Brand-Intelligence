@@ -75,6 +75,9 @@ def _to_card(doc: dict, client: Optional[dict] = None) -> dict:
         # unsets it on any status change), so it never lingers as stale info.
         "changes": doc.get("changes"),
         "changed_at": doc.get("changed_at"),
+        "first_seen": doc.get("first_seen"),
+        "last_seen": doc.get("last_seen"),
+        "analysed_at": doc.get("analysed_at"),
     }
 
 
@@ -138,6 +141,8 @@ def _to_full(doc: dict, client: Optional[dict]) -> dict:
         "analysis_status": doc.get("analysis_status", ""),
         "analysis_attempts": doc.get("analysis_attempts", 0),
         "analysed_at": doc.get("analysed_at"),
+        "first_seen": doc.get("first_seen"),
+        "last_seen": doc.get("last_seen"),
         # Why each field is or isn't populated -- "read" / "none-exist" /
         # "not-collected" / "unknown" / "MISSED", see
         # shared/completeness.py::field_report. Lets a blank cell say which

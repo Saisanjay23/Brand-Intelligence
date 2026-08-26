@@ -37,6 +37,7 @@ import {
   displayedRisk,
   emptyLabel,
   filterResults,
+  isProfileNew,
   keywordRelevance,
   logoMatchOf,
   riskLabel,
@@ -1140,16 +1141,33 @@ function ProfileCard({
         >
           <ProfileAvatar r={r} />
         </a>
-        <span
-          className="card-badge-top-left"
+        <div
           style={{
-            background: r.status === "approved" ? "rgba(136,56,221,0.85)" : r.status === "rejected" ? "rgba(119,39,205,0.85)" : "rgba(154,80,233,0.85)",
-            color: "#fff",
-            left: isDiscovery && onToggleSelected ? "32px" : undefined,
+            position: "absolute",
+            top: "9px",
+            left: isDiscovery && onToggleSelected ? "32px" : "9px",
+            display: "flex",
+            alignItems: "center",
+            gap: "5px",
+            zIndex: 2,
           }}
         >
-          {r.status}
-        </span>
+          <span
+            className="card-badge-top-left"
+            style={{
+              position: "static",
+              background: r.status === "approved" ? "rgba(136,56,221,0.85)" : r.status === "rejected" ? "rgba(119,39,205,0.85)" : "rgba(154,80,233,0.85)",
+              color: "#fff",
+            }}
+          >
+            {r.status}
+          </span>
+          {isProfileNew(r) && (
+            <span className="card-badge-new" title="Newly scraped profile (within last 24h)">
+              ✨ NEW
+            </span>
+          )}
+        </div>
         {isAnalysisView && (
           <span
             className="card-badge-top-right"
@@ -4308,6 +4326,11 @@ export function ResultsGrid({
                               </span>
                             );
                           })()}
+                          {isProfileNew(r) && (
+                            <span className="table-badge-new" title="Newly scraped profile (within last 24h)">
+                              ✨ NEW
+                            </span>
+                          )}
                           <div className="row-quick-actions">
                             <button
                               type="button"
