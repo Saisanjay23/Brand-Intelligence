@@ -25,13 +25,14 @@ const SAMPLE_URLS = [
   "https://www.tiktok.com/@tiktok",
 ].join("\n");
 
-const EditableCell = ({ value, onChange, placeholder = "—" }: { value: string, onChange: (v: string) => void, placeholder?: string }) => {
+const EditableCell = ({ value, onChange, placeholder = "", readOnly = false }: { value: string, onChange: (v: string) => void, placeholder?: string, readOnly?: boolean }) => {
   return (
     <input
       type="text"
       value={value}
-      onChange={(e) => onChange(e.target.value)}
+      onChange={(e) => !readOnly && onChange(e.target.value)}
       placeholder={placeholder}
+      readOnly={readOnly}
       style={{
         background: "transparent",
         border: "1px solid transparent",
@@ -43,15 +44,20 @@ const EditableCell = ({ value, onChange, placeholder = "—" }: { value: string,
         outline: "none",
         transition: "all 0.2s",
         fontSize: "inherit",
-        fontFamily: "inherit"
+        fontFamily: "inherit",
+        cursor: readOnly ? "default" : "text"
       }}
       onFocus={(e) => {
-        e.target.style.background = "rgba(0, 0, 0, 0.2)";
-        e.target.style.border = "1px solid var(--border-color)";
+        if (!readOnly) {
+          e.target.style.background = "rgba(0, 0, 0, 0.2)";
+          e.target.style.border = "1px solid var(--border-color)";
+        }
       }}
       onBlur={(e) => {
-        e.target.style.background = "transparent";
-        e.target.style.border = "1px solid transparent";
+        if (!readOnly) {
+          e.target.style.background = "transparent";
+          e.target.style.border = "1px solid transparent";
+        }
       }}
     />
   );
@@ -82,6 +88,41 @@ const ToggleCell = ({ value, onChange, defaultWhenEmpty = "—" }: { value: stri
       {displayValue}
     </button>
   );
+};
+
+const computeDynamicRisk = (row: any, formatMode: "incident" | "legacy"): number => {
+  const nameYes = formatMode === "incident" ? row["Name (Yes/No)"] : row["Name (Yes / No)"];
+  const logoYes = formatMode === "incident" ? row["Logo (Yes/No)"] : row["Logo (Yes / No)"];
+  const activeYes = formatMode === "incident" ? row["Active (Yes/No)"] : row["Active (Yes / No)"];
+  const location = row["Location"];
+  const lastPost = row["Last Post (DD-MM-YYYY) (Optional)"];
+
+  const hasName = nameYes === "Yes" || nameYes === "" || nameYes === undefined;
+  const hasLogo = logoYes === "Yes" || logoYes === "" || logoYes === undefined;
+  const isActive = activeYes === "Yes";
+  const hasLocation = Boolean(location && String(location).trim() !== "");
+  const hasLastPost = Boolean(lastPost && String(lastPost).trim() !== "");
+  
+  let tier = "NONE";
+  if (isActive) tier = "ACTIVE";
+  else if (hasLastPost) tier = "DORMANT";
+  
+  if (!hasName) return 2;
+  
+  if (hasLogo) {
+    if (tier === "ACTIVE") return hasLocation ? 9 : 8;
+    if (hasLocation || tier === "DORMANT") return 7;
+    return 6;
+  }
+  if (tier === "ACTIVE") return 5;
+  if (tier === "DORMANT") return 4;
+  return 3;
+};
+
+const getPriorityFromRisk = (risk: number): string => {
+  if (risk >= 8) return "High";
+  if (risk >= 4) return "Medium";
+  return "Low";
 };
 
 export function QuickAnalysisView() {
@@ -282,7 +323,18 @@ export function QuickAnalysisView() {
     const rows = filteredItems.map((it) => {
       const baseRow = formatMode === "incident" ? it.incident_row : it.legacy_row;
       const itemEdits = edits[it.id] || {};
-      return { ...baseRow, ...itemEdits };
+      const mergedRow = { ...baseRow, ...itemEdits };
+      const riskScore = computeDynamicRisk(mergedRow, formatMode);
+      const priority = getPriorityFromRisk(riskScore);
+      
+      // Update fields if they exist in the row structure
+      if (formatMode === "legacy") {
+        mergedRow["Risk Score"] = riskScore;
+      }
+      if ("priority" in mergedRow) {
+        mergedRow["priority"] = priority;
+      }
+      return mergedRow;
     });
 
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
@@ -1188,7 +1240,7 @@ export function QuickAnalysisView() {
 
                         {/* Risk Rating */}
                         <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
-                          {getRiskBadge(it.risk_score || 2)}
+                          {getRiskBadge(computeDynamicRisk(row, formatMode))}
                         </td>
 
                         {/* Mode Specific Columns */}
@@ -1211,7 +1263,7 @@ export function QuickAnalysisView() {
                             <td style={{ padding: "0", textAlign: "center" }}><ToggleCell value={String(row["Name (Yes / No)"] || "")} defaultWhenEmpty="Yes" onChange={(v) => handleEdit(it.id, "Name (Yes / No)", v)} /></td>
                             <td style={{ padding: "0" }}><EditableCell value={String(row["Location"] || "")} onChange={(v) => handleEdit(it.id, "Location", v)} /></td>
                             <td style={{ padding: "0" }}><EditableCell value={String(row["Last Post (DD-MM-YYYY) (Optional)"] || "")} onChange={(v) => handleEdit(it.id, "Last Post (DD-MM-YYYY) (Optional)", v)} /></td>
-                            <td style={{ padding: "0" }}><EditableCell value={String(row["priority"] || "")} onChange={(v) => handleEdit(it.id, "priority", v)} /></td>
+                            <td style={{ padding: "0" }}><EditableCell value={getPriorityFromRisk(computeDynamicRisk(row, formatMode))} onChange={(v) => {}} readOnly={true} /></td>
                           </>
                         )}
                       </tr>
