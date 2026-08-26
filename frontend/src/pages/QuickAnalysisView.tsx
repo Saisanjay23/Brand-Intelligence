@@ -57,8 +57,8 @@ const EditableCell = ({ value, onChange, placeholder = "—" }: { value: string,
   );
 };
 
-const ToggleCell = ({ value, onChange }: { value: string, onChange: (v: string) => void }) => {
-  const displayValue = value || "Yes";
+const ToggleCell = ({ value, onChange, defaultWhenEmpty = "—" }: { value: string, onChange: (v: string) => void, defaultWhenEmpty?: string }) => {
+  const displayValue = value || defaultWhenEmpty;
   const isYes = displayValue === "Yes";
   const isNo = displayValue === "No";
   
@@ -1196,8 +1196,8 @@ export function QuickAnalysisView() {
                           <>
                             <td style={{ padding: "0" }}><EditableCell value={String(row["AssetName"] || "")} onChange={(v) => handleEdit(it.id, "AssetName", v)} /></td>
                             <td style={{ padding: "0", textAlign: "center" }}><ToggleCell value={String(row["Active (Yes/No)"] || "")} onChange={(v) => handleEdit(it.id, "Active (Yes/No)", v)} /></td>
-                            <td style={{ padding: "0", textAlign: "center" }}><ToggleCell value={String(row["Name (Yes/No)"] || "")} onChange={(v) => handleEdit(it.id, "Name (Yes/No)", v)} /></td>
-                            <td style={{ padding: "0", textAlign: "center" }}><ToggleCell value={String(row["Logo (Yes/No)"] || "")} onChange={(v) => handleEdit(it.id, "Logo (Yes/No)", v)} /></td>
+                            <td style={{ padding: "0", textAlign: "center" }}><ToggleCell value={String(row["Name (Yes/No)"] || "")} defaultWhenEmpty="Yes" onChange={(v) => handleEdit(it.id, "Name (Yes/No)", v)} /></td>
+                            <td style={{ padding: "0", textAlign: "center" }}><ToggleCell value={String(row["Logo (Yes/No)"] || "")} defaultWhenEmpty="Yes" onChange={(v) => handleEdit(it.id, "Logo (Yes/No)", v)} /></td>
                             <td style={{ padding: "0" }}><EditableCell value={String(row["Number of Followers"] ?? "")} onChange={(v) => handleEdit(it.id, "Number of Followers", v)} /></td>
                             <td style={{ padding: "0" }}><EditableCell value={String(row["Last Post (DD-MM-YYYY) (Optional)"] || "")} onChange={(v) => handleEdit(it.id, "Last Post (DD-MM-YYYY) (Optional)", v)} /></td>
                             <td style={{ padding: "0" }}><EditableCell value={String(row["Location"] || "")} onChange={(v) => handleEdit(it.id, "Location", v)} /></td>
@@ -1207,8 +1207,8 @@ export function QuickAnalysisView() {
                             <td style={{ padding: "0" }}><EditableCell value={String(row["Original Name"] || "")} onChange={(v) => handleEdit(it.id, "Original Name", v)} /></td>
                             <td style={{ padding: "0" }}><EditableCell value={String(row["Followers"] ?? "")} onChange={(v) => handleEdit(it.id, "Followers", v)} /></td>
                             <td style={{ padding: "0", textAlign: "center" }}><ToggleCell value={String(row["Active (Yes / No)"] || "")} onChange={(v) => handleEdit(it.id, "Active (Yes / No)", v)} /></td>
-                            <td style={{ padding: "0", textAlign: "center" }}><ToggleCell value={String(row["Logo (Yes / No)"] || "")} onChange={(v) => handleEdit(it.id, "Logo (Yes / No)", v)} /></td>
-                            <td style={{ padding: "0", textAlign: "center" }}><ToggleCell value={String(row["Name (Yes / No)"] || "")} onChange={(v) => handleEdit(it.id, "Name (Yes / No)", v)} /></td>
+                            <td style={{ padding: "0", textAlign: "center" }}><ToggleCell value={String(row["Logo (Yes / No)"] || "")} defaultWhenEmpty="Yes" onChange={(v) => handleEdit(it.id, "Logo (Yes / No)", v)} /></td>
+                            <td style={{ padding: "0", textAlign: "center" }}><ToggleCell value={String(row["Name (Yes / No)"] || "")} defaultWhenEmpty="Yes" onChange={(v) => handleEdit(it.id, "Name (Yes / No)", v)} /></td>
                             <td style={{ padding: "0" }}><EditableCell value={String(row["Location"] || "")} onChange={(v) => handleEdit(it.id, "Location", v)} /></td>
                             <td style={{ padding: "0" }}><EditableCell value={String(row["Last Post (DD-MM-YYYY) (Optional)"] || "")} onChange={(v) => handleEdit(it.id, "Last Post (DD-MM-YYYY) (Optional)", v)} /></td>
                             <td style={{ padding: "0" }}><EditableCell value={String(row["priority"] || "")} onChange={(v) => handleEdit(it.id, "priority", v)} /></td>
