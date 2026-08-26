@@ -203,20 +203,22 @@ async def proxy_image(url: str):
                 "Referer": _referer_for(url),
             },
         )
-        # A dedicated opener with the validating handler, every redirect
-        # this request follows is checked BEFORE being followed, not after.
         opener = urllib.request.build_opener(_ValidatingRedirectHandler)
-        try:
-            with opener.open(req, timeout=5) as resp:
-                # Belt and suspenders: re-validate the URL we actually
-                # landed on too, in case a future urllib change ever
-                # bypasses redirect_request for some redirect class.
-                final_host = urlparse(resp.geturl()).hostname or ""
-                if not _allowed_image_host(final_host) or not _resolves_to_public_ip(final_host):
+        
+        import time
+        for attempt in range(3):
+            try:
+                with opener.open(req, timeout=5) as resp:
+                    final_host = urlparse(resp.geturl()).hostname or ""
+                    if not _allowed_image_host(final_host) or not _resolves_to_public_ip(final_host):
+                        return None, None
+                    return resp.read(), resp.headers.get("Content-Type", "image/jpeg")
+            except Exception as e:
+                print(f"Proxy fetch error for {url} (attempt {attempt+1}): {e}")
+                if attempt == 2:
                     return None, None
-                return resp.read(), resp.headers.get("Content-Type", "image/jpeg")
-        except Exception:
-            return None, None
+                time.sleep(0.5)
+        return None, None
 
     data, content_type = await asyncio.to_thread(fetch)
     if not data:
