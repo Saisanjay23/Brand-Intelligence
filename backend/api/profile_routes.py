@@ -206,18 +206,17 @@ async def proxy_image(url: str):
         opener = urllib.request.build_opener(_ValidatingRedirectHandler)
         
         import time
-        for attempt in range(3):
+        for attempt in range(2):
             try:
-                with opener.open(req, timeout=5) as resp:
+                with opener.open(req, timeout=3) as resp:
                     final_host = urlparse(resp.geturl()).hostname or ""
                     if not _allowed_image_host(final_host) or not _resolves_to_public_ip(final_host):
                         return None, None
                     return resp.read(), resp.headers.get("Content-Type", "image/jpeg")
-            except Exception as e:
-                print(f"Proxy fetch error for {url} (attempt {attempt+1}): {e}")
-                if attempt == 2:
+            except Exception:
+                if attempt == 1:
                     return None, None
-                time.sleep(0.5)
+                time.sleep(0.2)
         return None, None
 
     data, content_type = await asyncio.to_thread(fetch)

@@ -30,6 +30,7 @@ to wait (FloodWait), which is reported rather than retried.
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 import sys
 import time
@@ -307,6 +308,13 @@ class Telegram:
         out: list[TelegramEntity] = []
         for obj in list(getattr(res, "users", [])) + list(getattr(res, "chats", [])):
             if ent := entity_from(obj):
+                if ent.has_photo:
+                    try:
+                        photo_bytes = await self.client.download_profile_photo(obj, file=bytes)
+                        if photo_bytes:
+                            ent.avatar = f"data:image/jpeg;base64,{base64.b64encode(photo_bytes).decode('utf-8')}"
+                    except Exception as e:
+                        log.debug(f"could not download photo for {ent.username or ent.entity_id}: {e}")
                 out.append(ent)
         return out
 
@@ -324,6 +332,14 @@ class Telegram:
         ent = entity_from(obj)
         if ent is None:
             return None
+
+        if ent.has_photo:
+            try:
+                photo_bytes = await self.client.download_profile_photo(obj, file=bytes)
+                if photo_bytes:
+                    ent.avatar = f"data:image/jpeg;base64,{base64.b64encode(photo_bytes).decode('utf-8')}"
+            except Exception as e:
+                log.debug(f"could not download photo for @{username}: {e}")
 
         try:
             if ent.kind == "profile":
