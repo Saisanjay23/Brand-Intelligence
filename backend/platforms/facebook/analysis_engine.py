@@ -1085,7 +1085,7 @@ class Scraper:
         Best-effort: a failed capture never fails the visit. LINKED TO:
         database/repositories/evidence_repository.py owns the store;
         row.screenshot holds that key, not a filesystem path."""
-        if not self.evidence:
+        if not self.evidence and not getattr(self.a, 'ephemeral_screenshot', False):
             return
         # DETERMINISTIC key, no timestamp: re-analysing a profile must
         # overwrite its own previous capture, not add another one. With a
@@ -1093,7 +1093,7 @@ class Scraper:
         # the store forever, and the profile document only ever pointed at
         # the newest, every earlier one was unreachable garbage.
         stem = re.sub(r"[^A-Za-z0-9._-]", "_", row.profile_id or "entity")[:60]
-        key = f"{self.evidence}/{stem}.png"
+        key = f"{self.evidence}/{stem}.png" if self.evidence else ""
         try:
             # JS_READY (above) is a DATA-readiness check, it can pass while
             # the screen is still a bare loading splash, since it reads
@@ -1106,9 +1106,14 @@ class Scraper:
             await self.session.wait_for_visible_content(
                 page, content_selector=POST_LINK_SELECTOR)
             data = await page.screenshot(full_page=False)
-            from backend.database.repositories import evidence_repository
-            await evidence_repository.save(key, data)
-            row.screenshot = key
+            
+            if self.evidence:
+                from backend.database.repositories import evidence_repository
+                await evidence_repository.save(key, data)
+                row.screenshot = key
+                
+            if getattr(self.a, 'ephemeral_screenshot', False):
+                row.screenshot_bytes = data
         except Exception:
             pass
 

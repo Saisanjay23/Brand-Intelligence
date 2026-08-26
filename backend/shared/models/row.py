@@ -48,6 +48,7 @@ class Row:
     # engine doesn't check for one", never "not verified".
     verified: Optional[bool] = None
     screenshot: str = ""
+    screenshot_bytes: Optional[bytes] = None
     notes: str = ""
     name_score: int = 0
     src: dict[str, str] = field(default_factory=dict)  # field -> where it came from

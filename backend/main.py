@@ -27,6 +27,7 @@ from backend.api.job_routes import router as jobs_router
 from backend.api.profile_routes import router as profiles_router
 from backend.api.incident_routes import router as incidents_router
 from backend.api.published_incident_routes import router as published_incidents_router
+from backend.api.quick_analysis_routes import router as quick_analysis_router
 from backend.api.scheduler_routes import router as scheduler_router
 from backend.api.session_routes import router as sessions_router
 from backend.api.settings_routes import router as settings_router
@@ -122,6 +123,7 @@ app.include_router(sessions_router)
 app.include_router(jobs_router)
 app.include_router(incidents_router)
 app.include_router(published_incidents_router)
+app.include_router(quick_analysis_router)
 app.include_router(scheduler_router)
 app.include_router(settings_router)
 
@@ -141,7 +143,7 @@ from fastapi.staticfiles import StaticFiles
 # reading an HTML document.
 _API_PREFIXES = (
     "analysis", "clients", "discovery", "health", "incidents",
-    "jobs", "metrics", "profiles", "published-incidents", "scheduler", "sessions", "settings",
+    "jobs", "metrics", "profiles", "published-incidents", "quick-analysis", "scheduler", "sessions", "settings",
     "docs", "redoc", "openapi.json",
 )
 

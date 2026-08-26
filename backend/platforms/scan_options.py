@@ -17,6 +17,7 @@ from typing import Optional
 @dataclass
 class ScanOptions:
     evidence: Optional[str] = None  # GridFS key prefix for screenshots; disables asset blocking
+    ephemeral_screenshot: bool = False  # If True, captures screenshot and puts in row.screenshot_bytes instead of DB
     headful: bool = False
     timeout: int = 45  # per-navigation, seconds
     settle: float = 6.0  # cap on waiting for the profile payload

@@ -6,13 +6,14 @@ import {
   ClientsNavIcon,
   LiveResultsNavIcon,
   AdminNavIcon,
+  QuickAnalysisNavIcon,
   BellAlertIcon,
   SearchIcon,
   SunIcon,
   MoonIcon,
 } from "./AppIcons";
 
-export type ViewPage = "home" | "results" | "admin";
+export type ViewPage = "home" | "results" | "quick-analysis" | "admin";
 
 interface Props {
   page: ViewPage;
@@ -83,6 +84,14 @@ export function Header({
           <LiveResultsNavIcon size={16} />
           <span>Live Results</span>
           {liveResultsCount > 0 && <span className="top-nav-badge">{liveResultsCount}</span>}
+        </button>
+
+        <button
+          onClick={() => onPage("quick-analysis")}
+          className={`top-nav-btn ${page === "quick-analysis" ? "active" : ""}`}
+        >
+          <QuickAnalysisNavIcon size={16} />
+          <span>Quick Analysis</span>
         </button>
 
         <button

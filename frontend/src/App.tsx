@@ -8,6 +8,7 @@ import { AppLayout } from "./layouts/AppLayout";
 import { AdminPanel } from "./pages/AdminPanel";
 import { HomeView } from "./pages/HomeView";
 import { LiveResultsView } from "./pages/LiveResultsView";
+import { QuickAnalysisView } from "./pages/QuickAnalysisView";
 import { useJobPolling } from "./hooks/useJobPolling";
 import { usePlatformState } from "./hooks/usePlatformState";
 import { loadRecentClients, rememberClient, forgetClient, type RecentClient } from "./services/recentClients";
@@ -229,6 +230,8 @@ export default function App() {
           onError={setError}
         />
       )}
+
+      {page === "quick-analysis" && <QuickAnalysisView />}
 
       {page === "admin" && <AdminPanel sessions={sessions} onChanged={refreshPlatformState} />}
       <Toaster 

@@ -909,7 +909,7 @@ class Scraper:
         see stealth/browser.py::Session.wait_for_visible_content. LINKED
         TO: called from process() after fields are filled but before the
         last-post fallback tiers (which can navigate this page away)."""
-        if not self.evidence:
+        if not self.evidence and not getattr(self.a, 'ephemeral_screenshot', False):
             return
         # DETERMINISTIC key, no timestamp: re-analysing a profile must
         # overwrite its own previous capture, not add another one. With a
@@ -917,7 +917,7 @@ class Scraper:
         # the store forever, and the profile document only ever pointed at
         # the newest, every earlier one was unreachable garbage.
         stem = re.sub(r"[^A-Za-z0-9._-]", "_", row.profile_id or "entity")[:60]
-        key = f"{self.evidence}/{stem}.png"
+        key = f"{self.evidence}/{stem}.png" if self.evidence else ""
         try:
             # See Session.wait_for_visible_content: field extraction here
             # comes from intercepted API responses, which can land well
@@ -929,9 +929,14 @@ class Scraper:
             await self.session.wait_for_visible_content(
                 page, content_selector='a[href*="/p/"], a[href*="/reel/"]')
             data = await page.screenshot(full_page=False)
-            from backend.database.repositories import evidence_repository
-            await evidence_repository.save(key, data)
-            row.screenshot = key
+            
+            if self.evidence:
+                from backend.database.repositories import evidence_repository
+                await evidence_repository.save(key, data)
+                row.screenshot = key
+                
+            if getattr(self.a, 'ephemeral_screenshot', False):
+                row.screenshot_bytes = data
         except Exception:
             pass
 

@@ -1068,3 +1068,30 @@ export function DownloadIcon({ size = 16, color = "currentColor", className, sty
     </svg>
   );
 }
+
+/**
+ * Custom Quick Analysis Lightning / Sparkle Nav Icon
+ */
+export function QuickAnalysisNavIcon({ size = 16, color = "currentColor", className, style }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      className={className}
+      style={{ display: "inline-block", verticalAlign: "middle", flexShrink: 0, ...style }}
+    >
+      <path
+        d="M13 2L3 14H12L11 22L21 10H12L13 2Z"
+        stroke={color}
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="currentColor"
+        fillOpacity="0.15"
+      />
+    </svg>
+  );
+}
+
