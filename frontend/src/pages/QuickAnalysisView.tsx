@@ -1096,12 +1096,13 @@ export function QuickAnalysisView() {
                           {it.has_screenshot ? (
                             <button
                               type="button"
-                              onClick={() =>
+                              onMouseEnter={() =>
                                 setPreviewScreenshot({
                                   url: quickAnalysisApi.getScreenshotUrl(jobData.id, it.id),
                                   profileName: it.profile_name || it.entity_id,
                                 })
                               }
+                              onMouseLeave={() => setPreviewScreenshot(null)}
                               style={{
                                 background: "rgba(0, 240, 255, 0.12)",
                                 border: "1px solid rgba(0, 240, 255, 0.3)",
@@ -1113,7 +1114,7 @@ export function QuickAnalysisView() {
                                 fontWeight: 600,
                               }}
                             >
-                              View Capture
+                              Hover Capture
                             </button>
                           ) : (
                             <span style={{ color: "var(--text-muted)", fontSize: "11px" }}>—</span>
@@ -1239,6 +1240,7 @@ export function QuickAnalysisView() {
             alignItems: "center",
             justifyContent: "center",
             padding: "20px",
+            pointerEvents: "none",
           }}
         >
           <div
@@ -1259,19 +1261,6 @@ export function QuickAnalysisView() {
               <span style={{ fontSize: "14px", fontWeight: 700, color: "var(--text-main, #fff)" }}>
                 Evidence Capture: {previewScreenshot.profileName}
               </span>
-              <button
-                onClick={() => setPreviewScreenshot(null)}
-                style={{
-                  background: "transparent",
-                  border: "none",
-                  color: "var(--text-muted, #98a2b3)",
-                  fontSize: "18px",
-                  cursor: "pointer",
-                  padding: "2px 8px",
-                }}
-              >
-                ✕
-              </button>
             </div>
             <div style={{ overflow: "auto", maxHeight: "calc(90vh - 80px)", borderRadius: "6px" }}>
               <img
