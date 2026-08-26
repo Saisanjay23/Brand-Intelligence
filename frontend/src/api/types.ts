@@ -170,6 +170,7 @@ export interface Profile {
   // signal in the system, confidence is scored off the client's own
   // search keywords, not a separate handle/username lookup.
   name_score?: number | null;
+  name_exact_run?: boolean | null;
   // an analyst's own visual confirmation, set via the discovery card's
   // Validate action, carried through to the analysis-phase record too
   logo_match?: boolean | null;

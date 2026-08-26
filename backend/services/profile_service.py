@@ -38,6 +38,8 @@ def _to_card(doc: dict, client: Optional[dict] = None) -> dict:
     return {
         "id": doc["id"], "platform": doc.get("platform", ""), "url": doc.get("url", ""),
         "client_name": client["name"] if client else "",
+        "username": doc.get("username") or doc.get("display_name") or "",
+        "keyword": ", ".join(doc.get("keywords", [])),
         "profile_name": doc.get("display_name") or doc.get("username") or "",
         "profile_image_url": doc.get("profile_image_url", ""),
         "has_logo": bool(doc.get("has_logo", False)),
@@ -59,6 +61,7 @@ def _to_card(doc: dict, client: Optional[dict] = None) -> dict:
         # refined once analysis actually visits the profile, the card's
         # High/Low match badge
         "name_score": doc.get("name_score"),
+        "name_exact_run": doc.get("name_exact_run"),
         # an analyst's own visual confirmation, set via the card's Validate
         # action, see EDITABLE in profile_repository.py
         "logo_match": doc.get("logo_match"),
@@ -115,6 +118,8 @@ def _to_full(doc: dict, client: Optional[dict]) -> dict:
         "phase": doc.get("phase", "analysis"),
         "risk_score": doc.get("risk_score"),
         "priority": doc.get("priority"),
+        "name_score": doc.get("name_score"),
+        "name_exact_run": doc.get("name_exact_run"),
         "comments": doc.get("comments"),
         "published": doc.get("published", True),
         "publish_hold_until": doc.get("publish_hold_until"),

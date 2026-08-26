@@ -81,33 +81,21 @@ def _hit_to_fields(hit, platform: str, plan: "kw.KeywordPlan") -> dict:
             if "?" not in candidate and "#" not in candidate:
                 username = candidate
     # The parent this hit is filed under, and its score against that
-    # parent's own match terms -- NOT against `hit.keyword`, which is the
-    # permutation that found it. See shared/keywords.py::resolve_parent.
+    # parent's own match terms -- scored across all available name tokens
+    # (display name and username/handle) so handles without separate names
+    # accurately qualify for their match level across all platforms.
+    names_to_test = [n for n in [hit.name, username] if n]
     parent, score = kw.resolve_parent(plan, hit.name or "", name_score)
     exact_run = kw.match_any(plan, hit.name or "", contiguous_letters_match)
-
-    # A CONTIGUOUS letter-run match is a High Match by this codebase's own
-    # definition (shared/text.py::contiguous_letters_match: "True High
-    # Match ... a literal, explainable reason a profile qualifies"), but
-    # `name_score` is token-based and rates several of those ZERO, because
-    # a run-together handle shares no whole word with the name it is
-    # impersonating:
-    #
-    #     name_score("gautamadani",         "Gautam Adani") == 0
-    #     name_score("GautamAdaniOfficial", "Gautam Adani") == 0
-    #
-    # That matters because the results grid's High/Medium/Low filter bands
-    # on `name_score` alone (profile_repository.list_profiles::match_level),
-    # so without this lift the single most obvious kind of impersonator --
-    # the one that just removed the space -- files as LOW.
-    #
-    # Before parent/child groups those profiles scored 100 by accident, by
-    # being matched against the run-together permutation that found them.
-    # Now that scoring is (correctly) against the real name, the lift is
-    # what keeps them where they belong. It can only ever RAISE a hit that
-    # already contains the full keyword letter-run: "Gawtam Kumar" (a typo
-    # squat, no contiguous run) stays at its token score of 20, and an
-    # unrelated name stays at 0.
+    for n in names_to_test:
+        p, s = kw.resolve_parent(plan, n, name_score)
+        ex = kw.match_any(plan, n, contiguous_letters_match)
+        if ex:
+            s = max(s, NAME_THRESHOLD)
+            exact_run = True
+        if s > score:
+            score = s
+            parent = p
     if exact_run:
         score = max(score, NAME_THRESHOLD)
     fields = {

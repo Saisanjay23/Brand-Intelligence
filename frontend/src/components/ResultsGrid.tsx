@@ -37,6 +37,7 @@ import {
   displayedRisk,
   emptyLabel,
   filterResults,
+  keywordRelevance,
   logoMatchOf,
   riskLabel,
   sortResults,
@@ -1053,6 +1054,39 @@ const RISK_BADGE_COLORS: Record<string, { color: string; bg: string }> = {
   "—": { color: "#667085", bg: "rgba(102, 112, 133, 0.2)" },
 };
 
+export function getMatchBadgeDetails(r: Profile) {
+  let score = r.name_score;
+  let exactRun = Boolean(r.name_exact_run);
+  
+  if (score === null || score === undefined) {
+    const name = r.profile_name || r.username || "";
+    const kw = r.keyword || (r.keywords && r.keywords[0]) || "";
+    if (name && kw) {
+      const rel = keywordRelevance(r, kw);
+      score = Math.max(0, 100 - rel * 10);
+      if (rel <= 1) exactRun = true;
+    }
+  }
+
+  const isHigh = exactRun || (score !== null && score !== undefined && score >= MATCH_EXACT_THRESHOLD);
+  const isMed = !isHigh && (score !== null && score !== undefined && score >= MATCH_MEDIUM_THRESHOLD);
+  const isLow = !isHigh && !isMed && (score !== null && score !== undefined);
+
+  if (!isHigh && !isMed && !isLow) return null;
+
+  return {
+    label: isHigh ? "🎯 High Match" : isMed ? "🎯 Medium Match" : "🎯 Low Match",
+    shortLabel: isHigh ? "🎯 High Match" : isMed ? "🎯 Med Match" : "🎯 Low Match",
+    score: score ?? 0,
+    isHigh,
+    isMed,
+    isLow,
+    cardBg: isHigh ? "rgba(54,181,160,0.85)" : isMed ? "rgba(255,165,0,0.85)" : "rgba(255,80,80,0.85)",
+    tableBg: isHigh ? "rgba(54,181,160,0.2)" : isMed ? "rgba(255,165,0,0.2)" : "rgba(255,80,80,0.2)",
+    textColor: isHigh ? "var(--success)" : isMed ? "var(--warn-yellow)" : "var(--danger)",
+  };
+}
+
 function getRiskBadgeDetails(riskRating?: string | number | null) {
   const label = riskLabel(riskRating);
   const { color, bg } = RISK_BADGE_COLORS[label];
@@ -1112,34 +1146,36 @@ function ProfileCard({
         >
           {r.status}
         </span>
-        {isAnalysisView && inc && (
+        {isAnalysisView && (
           <span
             className="card-badge-top-right"
-            style={{ background: riskBadgeColor(inc.riskRating), color: "#fff" }}
-          >
-            Risk {inc.riskRating}
-          </span>
-        )}
-        {isDiscovery && r.name_score !== null && r.name_score !== undefined && (
-          <span
-            className="card-badge-top-right"
-            title={`Name-to-keyword match score: ${r.name_score}/100`}
             style={{
-              background: r.name_score >= MATCH_EXACT_THRESHOLD 
-                ? "rgba(54,181,160,0.85)" 
-                : r.name_score >= MATCH_MEDIUM_THRESHOLD 
-                  ? "rgba(255,165,0,0.85)" 
-                  : "rgba(255,80,80,0.85)",
+              background: inc?.riskRating
+                ? riskBadgeColor(inc.riskRating)
+                : r.priority === "High"
+                  ? "rgba(255,128,0,0.85)"
+                  : r.priority === "Low"
+                    ? "rgba(18,183,106,0.85)"
+                    : "rgba(102,112,133,0.85)",
               color: "#fff",
             }}
           >
-            {r.name_score >= MATCH_EXACT_THRESHOLD 
-              ? "🎯 High Match" 
-              : r.name_score >= MATCH_MEDIUM_THRESHOLD 
-                ? "🎯 Medium Match" 
-                : "🎯 Low Match"}
+            {inc?.riskRating ? `Risk ${inc.riskRating}` : r.priority ? `${r.priority} Priority` : "Analysed"}
           </span>
         )}
+        {isDiscovery && (() => {
+          const badge = getMatchBadgeDetails(r);
+          if (!badge) return null;
+          return (
+            <span
+              className="card-badge-top-right"
+              title={`Name-to-keyword match score: ${badge.score}/100`}
+              style={{ background: badge.cardBg, color: "#fff" }}
+            >
+              {badge.label}
+            </span>
+          );
+        })()}
         <a
           href={linkUrl}
           target="_blank"
@@ -4247,35 +4283,27 @@ export function ResultsGrid({
                           </a>
                           {r.verified && <VerifiedBadgeIcon size={14} style={{ marginLeft: "4px" }} />}
                           {r.has_logo && <TagIcon size={12} color="var(--cyan)" style={{ marginLeft: "4px" }} />}
-                          {r.name_score !== null && r.name_score !== undefined && (
-                            <span
-                              style={{
-                                marginLeft: "8px",
-                                fontSize: "10px",
-                                fontWeight: 600,
-                                padding: "2px 6px",
-                                borderRadius: "4px",
-                                background: r.name_score >= MATCH_EXACT_THRESHOLD 
-                                  ? "rgba(54,181,160,0.2)" 
-                                  : r.name_score >= MATCH_MEDIUM_THRESHOLD 
-                                    ? "rgba(255,165,0,0.2)" 
-                                    : "rgba(255,80,80,0.2)",
-                                color: r.name_score >= MATCH_EXACT_THRESHOLD 
-                                  ? "var(--success)" 
-                                  : r.name_score >= MATCH_MEDIUM_THRESHOLD 
-                                    ? "var(--warn-yellow)" 
-                                    : "var(--danger)",
-                                whiteSpace: "nowrap"
-                              }}
-                              title={`Name-to-keyword match score: ${r.name_score}/100`}
-                            >
-                              {r.name_score >= MATCH_EXACT_THRESHOLD 
-                                ? "🎯 High Match" 
-                                : r.name_score >= MATCH_MEDIUM_THRESHOLD 
-                                  ? "🎯 Med Match" 
-                                  : "🎯 Low Match"}
-                            </span>
-                          )}
+                          {(() => {
+                            const badge = getMatchBadgeDetails(r);
+                            if (!badge) return null;
+                            return (
+                              <span
+                                style={{
+                                  marginLeft: "8px",
+                                  fontSize: "10px",
+                                  fontWeight: 600,
+                                  padding: "2px 6px",
+                                  borderRadius: "4px",
+                                  background: badge.tableBg,
+                                  color: badge.textColor,
+                                  whiteSpace: "nowrap"
+                                }}
+                                title={`Name-to-keyword match score: ${badge.score}/100`}
+                              >
+                                {badge.shortLabel}
+                              </span>
+                            );
+                          })()}
                           <div className="row-quick-actions">
                             <button
                               type="button"
