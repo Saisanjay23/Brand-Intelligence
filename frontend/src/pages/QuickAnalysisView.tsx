@@ -1097,11 +1097,11 @@ export function QuickAnalysisView() {
               <thead>
                 <tr style={{ background: "var(--bg-primary, #080F1E)", color: "var(--text-dim, #98a2b3)", borderBottom: "1px solid var(--border-color, #344054)" }}>
                   <th style={{ padding: "10px 14px", fontWeight: 600, textAlign: "center" }}>Screenshot</th>
-                  <th style={{ padding: "10px 14px", fontWeight: 600 }}>Platform</th>
-                  <th style={{ padding: "10px 14px", fontWeight: 600 }}>Profile / Account</th>
-                  <th style={{ padding: "10px 14px", fontWeight: 600 }}>Risk Rating</th>
                   {formatMode === "incident" ? (
                     <>
+                      <th style={{ padding: "10px 14px", fontWeight: 600 }}>Platform</th>
+                      <th style={{ padding: "10px 14px", fontWeight: 600 }}>Profile / Account</th>
+                      <th style={{ padding: "10px 14px", fontWeight: 600 }}>Risk Rating</th>
                       <th style={{ padding: "10px 14px", fontWeight: 600 }}>Asset Name</th>
                       <th style={{ padding: "10px 14px", fontWeight: 600 }}>Active</th>
                       <th style={{ padding: "10px 14px", fontWeight: 600 }}>Name Match</th>
@@ -1112,14 +1112,21 @@ export function QuickAnalysisView() {
                     </>
                   ) : (
                     <>
-                      <th style={{ padding: "10px 14px", fontWeight: 600 }}>Target Name</th>
+                      <th style={{ padding: "10px 14px", fontWeight: 600 }}>Original Name</th>
+                      <th style={{ padding: "10px 14px", fontWeight: 600 }}>Original feed</th>
+                      <th style={{ padding: "10px 14px", fontWeight: 600 }}>IMPERSONATED</th>
+                      <th style={{ padding: "10px 14px", fontWeight: 600 }}>Profile name</th>
+                      <th style={{ padding: "10px 14px", fontWeight: 600 }}>Created Date</th>
+                      <th style={{ padding: "10px 14px", fontWeight: 600 }}>Logo (Yes / No)</th>
                       <th style={{ padding: "10px 14px", fontWeight: 600 }}>Followers</th>
-                      <th style={{ padding: "10px 14px", fontWeight: 600 }}>Active</th>
-                      <th style={{ padding: "10px 14px", fontWeight: 600 }}>Logo (Yes/No)</th>
-                      <th style={{ padding: "10px 14px", fontWeight: 600 }}>Name (Yes/No)</th>
+                      <th style={{ padding: "10px 14px", fontWeight: 600 }}>Active (Yes / No)</th>
+                      <th style={{ padding: "10px 14px", fontWeight: 600 }}>Name (Yes / No)</th>
                       <th style={{ padding: "10px 14px", fontWeight: 600 }}>Location</th>
-                      <th style={{ padding: "10px 14px", fontWeight: 600 }}>Last Post</th>
-                      <th style={{ padding: "10px 14px", fontWeight: 600 }}>Priority</th>
+                      <th style={{ padding: "10px 14px", fontWeight: 600 }}>Last Post (DD-MM-YYYY) (Optional)</th>
+                      <th style={{ padding: "10px 14px", fontWeight: 600 }}>Risk Score</th>
+                      <th style={{ padding: "10px 14px", fontWeight: 600 }}>priority</th>
+                      <th style={{ padding: "10px 14px", fontWeight: 600 }}>Date</th>
+                      <th style={{ padding: "10px 14px", fontWeight: 600 }}>Comments</th>
                     </>
                   )}
                 </tr>
@@ -1174,78 +1181,77 @@ export function QuickAnalysisView() {
                           )}
                         </td>
 
-                        {/* Platform */}
-                        <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
-                          <span style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontWeight: 600, color: "var(--text-main, #fff)" }}>
-                            <PlatformIcon platform={it.platform} size={16} />
-                            {it.platform_name}
-                          </span>
-                        </td>
-
-                        {/* Profile Info */}
-                        <td style={{ padding: "10px 14px", minWidth: "220px" }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                            {it.profile_image_url ? (
-                              <img
-                                src={`/profiles/media-proxy?url=${encodeURIComponent(it.profile_image_url)}`}
-                                alt=""
-                                style={{ width: "26px", height: "26px", borderRadius: "50%", objectFit: "cover", flexShrink: 0 }}
-                                onError={(e) => {
-                                  (e.target as HTMLElement).style.display = "none";
-                                }}
-                              />
-                            ) : (
-                              <div
-                                style={{
-                                  width: "26px",
-                                  height: "26px",
-                                  borderRadius: "50%",
-                                  background: "var(--bg-surface-3, #344054)",
-                                  display: "flex",
-                                  alignItems: "center",
-                                  justifyContent: "center",
-                                  fontSize: "11px",
-                                  fontWeight: 700,
-                                  flexShrink: 0,
-                                }}
-                              >
-                                {(it.profile_name || it.entity_id || "?").charAt(0).toUpperCase()}
-                              </div>
-                            )}
-
-                            <div style={{ minWidth: 0 }}>
-                              <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                                <a
-                                  href={it.url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  style={{ fontWeight: 600, color: "var(--cyan, #00F0FF)", textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-                                >
-                                  {it.profile_name || it.entity_id || "Profile Link"}
-                                </a>
-                                {it.verified && <VerifiedBadgeIcon size={14} />}
-                              </div>
-                              {it.error ? (
-                                <div style={{ fontSize: "11px", color: "var(--danger, #E95053)" }}>
-                                  {it.error}
-                                </div>
-                              ) : (
-                                <div style={{ fontSize: "11px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                  {it.entity_id}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        </td>
-
-                        {/* Risk Rating */}
-                        <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
-                          {getRiskBadge(computeDynamicRisk(row, formatMode))}
-                        </td>
-
                         {/* Mode Specific Columns */}
                         {formatMode === "incident" ? (
                           <>
+                            {/* Platform */}
+                            <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
+                              <span style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontWeight: 600, color: "var(--text-main, #fff)" }}>
+                                <PlatformIcon platform={it.platform} size={16} />
+                                {it.platform_name}
+                              </span>
+                            </td>
+    
+                            {/* Profile Info */}
+                            <td style={{ padding: "10px 14px", minWidth: "220px" }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                                {it.profile_image_url ? (
+                                  <img
+                                    src={`/profiles/media-proxy?url=${encodeURIComponent(it.profile_image_url)}`}
+                                    alt=""
+                                    style={{ width: "26px", height: "26px", borderRadius: "50%", objectFit: "cover", flexShrink: 0 }}
+                                    onError={(e) => {
+                                      (e.target as HTMLElement).style.display = "none";
+                                    }}
+                                  />
+                                ) : (
+                                  <div
+                                    style={{
+                                      width: "26px",
+                                      height: "26px",
+                                      borderRadius: "50%",
+                                      background: "var(--bg-surface-3, #344054)",
+                                      display: "flex",
+                                      alignItems: "center",
+                                      justifyContent: "center",
+                                      fontSize: "11px",
+                                      fontWeight: 700,
+                                      flexShrink: 0,
+                                    }}
+                                  >
+                                    {(it.profile_name || it.entity_id || "?").charAt(0).toUpperCase()}
+                                  </div>
+                                )}
+    
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                                    <a
+                                      href={it.url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      style={{ fontWeight: 600, color: "var(--cyan, #00F0FF)", textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                                    >
+                                      {it.profile_name || it.entity_id || "Profile Link"}
+                                    </a>
+                                    {it.verified && <VerifiedBadgeIcon size={14} />}
+                                  </div>
+                                  {it.error ? (
+                                    <div style={{ fontSize: "11px", color: "var(--danger, #E95053)" }}>
+                                      {it.error}
+                                    </div>
+                                  ) : (
+                                    <div style={{ fontSize: "11px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                      {it.entity_id}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </td>
+    
+                            {/* Risk Rating */}
+                            <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
+                              {getRiskBadge(computeDynamicRisk(row, formatMode))}
+                            </td>
                             <td style={{ padding: "0" }}><EditableCell value={String(row["AssetName"] || "")} onChange={(v) => handleEdit(it.id, "AssetName", v)} /></td>
                             <td style={{ padding: "0", textAlign: "center" }}><ToggleCell value={String(row["Active (Yes/No)"] || "")} onChange={(v) => handleEdit(it.id, "Active (Yes/No)", v)} /></td>
                             <td style={{ padding: "0", textAlign: "center" }}><ToggleCell value={String(row["Name (Yes/No)"] || "")} defaultWhenEmpty="Yes" onChange={(v) => handleEdit(it.id, "Name (Yes/No)", v)} /></td>
@@ -1257,13 +1263,24 @@ export function QuickAnalysisView() {
                         ) : (
                           <>
                             <td style={{ padding: "0" }}><EditableCell value={String(row["Original Name"] || "")} onChange={(v) => handleEdit(it.id, "Original Name", v)} /></td>
+                            <td style={{ padding: "0" }}><EditableCell value={String(row["Original feed"] || "")} onChange={(v) => handleEdit(it.id, "Original feed", v)} /></td>
+                            <td style={{ padding: "10px 14px", maxWidth: "200px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              <a href={it.url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--cyan, #00F0FF)", textDecoration: "none" }}>{it.url}</a>
+                            </td>
+                            <td style={{ padding: "0" }}><EditableCell value={String(row["Profile name"] || "")} onChange={(v) => handleEdit(it.id, "Profile name", v)} /></td>
+                            <td style={{ padding: "0" }}><EditableCell value={String(row["Created Date"] || "")} onChange={(v) => handleEdit(it.id, "Created Date", v)} /></td>
+                            <td style={{ padding: "0", textAlign: "center" }}><ToggleCell value={String(row["Logo (Yes / No)"] || "")} defaultWhenEmpty="Yes" onChange={(v) => handleEdit(it.id, "Logo (Yes / No)", v)} /></td>
                             <td style={{ padding: "0" }}><EditableCell value={String(row["Followers"] ?? "")} onChange={(v) => handleEdit(it.id, "Followers", v)} /></td>
                             <td style={{ padding: "0", textAlign: "center" }}><ToggleCell value={String(row["Active (Yes / No)"] || "")} onChange={(v) => handleEdit(it.id, "Active (Yes / No)", v)} /></td>
-                            <td style={{ padding: "0", textAlign: "center" }}><ToggleCell value={String(row["Logo (Yes / No)"] || "")} defaultWhenEmpty="Yes" onChange={(v) => handleEdit(it.id, "Logo (Yes / No)", v)} /></td>
                             <td style={{ padding: "0", textAlign: "center" }}><ToggleCell value={String(row["Name (Yes / No)"] || "")} defaultWhenEmpty="Yes" onChange={(v) => handleEdit(it.id, "Name (Yes / No)", v)} /></td>
                             <td style={{ padding: "0" }}><EditableCell value={String(row["Location"] || "")} onChange={(v) => handleEdit(it.id, "Location", v)} /></td>
                             <td style={{ padding: "0" }}><EditableCell value={String(row["Last Post (DD-MM-YYYY) (Optional)"] || "")} onChange={(v) => handleEdit(it.id, "Last Post (DD-MM-YYYY) (Optional)", v)} /></td>
+                            <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
+                              {getRiskBadge(computeDynamicRisk(row, formatMode))}
+                            </td>
                             <td style={{ padding: "0" }}><EditableCell value={getPriorityFromRisk(computeDynamicRisk(row, formatMode))} onChange={(v) => {}} readOnly={true} /></td>
+                            <td style={{ padding: "0" }}><EditableCell value={String(row["Date"] || "")} onChange={(v) => handleEdit(it.id, "Date", v)} /></td>
+                            <td style={{ padding: "0" }}><EditableCell value={String(row["Comments"] || "")} onChange={(v) => handleEdit(it.id, "Comments", v)} /></td>
                           </>
                         )}
                       </tr>
