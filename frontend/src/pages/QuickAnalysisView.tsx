@@ -65,18 +65,18 @@ const EditableCell = ({ value, onChange, placeholder = "", readOnly = false }: {
 
 const ToggleCell = ({ value, onChange, defaultWhenEmpty = "—" }: { value: string, onChange: (v: string) => void, defaultWhenEmpty?: string }) => {
   const displayValue = value || defaultWhenEmpty;
-  const isYes = displayValue === "Yes";
-  const isNo = displayValue === "No";
-  
   return (
     <button
       type="button"
-      onClick={() => onChange(isYes ? "No" : "Yes")}
+      onClick={() => {
+        if (displayValue === "Yes") onChange("No");
+        else onChange("Yes");
+      }}
       style={{
-        background: isYes ? "rgba(18, 183, 106, 0.15)" : isNo ? "rgba(233, 80, 83, 0.15)" : "rgba(255, 255, 255, 0.05)",
-        border: `1px solid ${isYes ? "rgba(18, 183, 106, 0.4)" : isNo ? "rgba(233, 80, 83, 0.4)" : "rgba(255, 255, 255, 0.1)"}`,
-        color: isYes ? "#12B76A" : isNo ? "#E95053" : "var(--text-muted)",
-        padding: "4px 10px",
+        background: displayValue === "Yes" ? "rgba(0, 255, 136, 0.1)" : displayValue === "No" ? "rgba(233, 80, 83, 0.1)" : "var(--bg-surface-3, #344054)",
+        border: `1px solid ${displayValue === "Yes" ? "rgba(0, 255, 136, 0.3)" : displayValue === "No" ? "rgba(233, 80, 83, 0.3)" : "var(--border-color, #475467)"}`,
+        color: displayValue === "Yes" ? "#00FF88" : displayValue === "No" ? "#E95053" : "var(--text-muted, #667085)",
+        padding: "4px 8px",
         borderRadius: "4px",
         fontSize: "11px",
         fontWeight: 600,
