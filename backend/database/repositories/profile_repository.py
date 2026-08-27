@@ -935,7 +935,7 @@ def compute_priority(
 
     if resolve_match(has_logo, logo_match, validated):
         return "High"
-    return "Medium" if resolve_match(has_name_match, username_match, validated) else "Low"
+    return "High" if resolve_match(has_name_match, username_match, validated) else "Low"
 
 
 async def patch(doc_id: str, fields: dict) -> dict:

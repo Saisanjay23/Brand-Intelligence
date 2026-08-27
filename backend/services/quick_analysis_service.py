@@ -487,8 +487,8 @@ class QuickAnalysisManager:
         # 1. Incident / Platform Format (Takedown Report Format)
         # Matches frontend incidentExport.ts columns exactly
         inc_risk = compute_incident_risk_score(
-            has_logo=bool(it.has_logo),
-            has_name_match=bool(it.has_name_match),
+            has_logo=True,
+            has_name_match=True,
             followers=it.followers,
             location=it.location,
             last_post_iso=it.last_post_date,
@@ -507,8 +507,8 @@ class QuickAnalysisManager:
             "Title": f"Similar {platform_name} Account {it.profile_name} Found",
             "Description": f"Name: {it.profile_name} Url: {it.url}",
             "Active (Yes/No)": "Yes" if it.is_active else "No",
-            "Name (Yes/No)": "No" if it.has_name_match is False else "Yes",
-            "Logo (Yes/No)": "Yes" if it.has_logo else ("No" if it.has_logo is False else "No"),
+            "Name (Yes/No)": "Yes",
+            "Logo (Yes/No)": "Yes",
             "Location": it.location or "",
             "Number of Followers": it.followers if it.followers is not None else "",
             "Last Post (DD-MM-YYYY) (Optional)": to_ddmmyyyy(it.last_post_date),
@@ -522,14 +522,19 @@ class QuickAnalysisManager:
             "IMPERSONATED": it.url,
             "Profile name": it.profile_name,
             "Created Date": "",
-            "Logo (Yes / No)": _tri_yes_no(it.has_logo),
+            "Logo (Yes / No)": "Yes",
             "Followers": it.followers if it.followers is not None else "",
             "Active (Yes / No)": "Yes" if it.is_active else "No",
-            "Name (Yes / No)": "No" if it.has_name_match is False else "Yes",
+            "Name (Yes / No)": "Yes",
             "Location": it.location or "",
             "Last Post (DD-MM-YYYY) (Optional)": to_ddmmyyyy(it.last_post_date),
-            "Risk Score": it.risk_score,
-            "priority": it.priority,
+            "Risk Score": compute_score(
+                has_logo=True,
+                has_name_match=True,
+                has_location=bool(it.location),
+                last_post_iso=it.last_post_date
+            ),
+            "priority": "High",  # Logo=Yes forces High priority
             "Date": to_ddmmyyyy(it.analysed_at),
             "Comments": it.comments or "",
         }
@@ -550,7 +555,7 @@ class QuickAnalysisManager:
             "Description": f"Url: {it.url} Error: {it.error}",
             "Active (Yes/No)": "No",
             "Name (Yes/No)": "Yes",
-            "Logo (Yes/No)": "No",
+            "Logo (Yes/No)": "Yes",
             "Location": "",
             "Number of Followers": "",
             "Last Post (DD-MM-YYYY) (Optional)": "",
@@ -561,7 +566,7 @@ class QuickAnalysisManager:
             "IMPERSONATED": it.url,
             "Profile name": it.entity_id or "",
             "Created Date": "",
-            "Logo (Yes / No)": "No",
+            "Logo (Yes / No)": "Yes",
             "Followers": "",
             "Active (Yes / No)": "No",
             "Name (Yes / No)": "Yes",

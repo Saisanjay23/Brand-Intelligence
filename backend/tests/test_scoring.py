@@ -90,11 +90,13 @@ def test_logo_alone_sets_high_priority():
     assert row.priority == "High"
 
 
-def test_name_match_without_logo_is_medium():
-    row = Row(url="https://x", target="Brand")
-    row.profile_name = "Brand Official"
-    row.name_score = 95
-    assert row.priority == "Medium"
+def test_name_match_without_logo_is_high():
+    row = Row(
+        has_custom_pic=False,
+        name_score=100,
+        profile_name="foo",
+    )
+    assert row.priority == "High"
 
 
 def test_neither_logo_nor_name_is_low():
@@ -126,5 +128,5 @@ def test_compute_risk_score_matches_row_risk_for_the_same_facts():
 
 def test_compute_priority_matches_row_priority():
     assert compute_priority(has_logo=True, has_name_match=False) == "High"
-    assert compute_priority(has_logo=False, has_name_match=True) == "Medium"
+    assert compute_priority(has_logo=False, has_name_match=True) == "High"
     assert compute_priority(has_logo=False, has_name_match=False) == "Low"

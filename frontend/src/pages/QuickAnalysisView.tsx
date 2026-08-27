@@ -119,9 +119,8 @@ const computeDynamicRisk = (row: any, formatMode: "incident" | "legacy"): number
   return 3;
 };
 
-const getPriorityFromRisk = (risk: number): string => {
-  if (risk >= 8) return "High";
-  if (risk >= 4) return "Medium";
+const getPriorityFromRisk = (score: number) => {
+  if (score >= 5) return "High";
   return "Low";
 };
 
@@ -153,13 +152,25 @@ export function QuickAnalysisView() {
   const [edits, setEdits] = useState<Record<string, Record<string, string>>>({});
 
   const handleEdit = (itemId: string, field: string, value: string) => {
-    setEdits((prev) => ({
-      ...prev,
-      [itemId]: {
-        ...(prev[itemId] || {}),
-        [field]: value,
-      },
-    }));
+    setEdits((prev) => {
+      const itemEdits = { ...(prev[itemId] || {}) };
+      itemEdits[field] = value;
+      
+      // Synchronize keys between Incident and Legacy formats so edits apply to both exports
+      if (field === "Name (Yes/No)") itemEdits["Name (Yes / No)"] = value;
+      if (field === "Name (Yes / No)") itemEdits["Name (Yes/No)"] = value;
+      if (field === "Logo (Yes/No)") itemEdits["Logo (Yes / No)"] = value;
+      if (field === "Logo (Yes / No)") itemEdits["Logo (Yes/No)"] = value;
+      if (field === "Active (Yes/No)") itemEdits["Active (Yes / No)"] = value;
+      if (field === "Active (Yes / No)") itemEdits["Active (Yes/No)"] = value;
+      if (field === "Number of Followers") itemEdits["Followers"] = value;
+      if (field === "Followers") itemEdits["Number of Followers"] = value;
+
+      return {
+        ...prev,
+        [itemId]: itemEdits,
+      };
+    });
   };
 
   // Live URL breakdown computation
@@ -295,9 +306,8 @@ export function QuickAnalysisView() {
       if (platformFilter !== "all" && it.platform !== platformFilter) return false;
 
       // Risk score filter
-      if (riskFilter === "high" && (it.risk_score || 0) < 8) return false;
-      if (riskFilter === "medium" && ((it.risk_score || 0) < 4 || (it.risk_score || 0) >= 8)) return false;
-      if (riskFilter === "low" && (it.risk_score || 0) > 3) return false;
+      if (riskFilter === "high" && (it.risk_score || 0) < 5) return false;
+      if (riskFilter === "low" && (it.risk_score || 0) >= 5) return false;
 
       // Text search
       if (searchQuery.trim()) {
@@ -323,16 +333,25 @@ export function QuickAnalysisView() {
     const rows = filteredItems.map((it) => {
       const baseRow = formatMode === "incident" ? it.incident_row : it.legacy_row;
       const itemEdits = edits[it.id] || {};
-      const mergedRow = { ...baseRow, ...itemEdits };
+      
+      // Merge only keys that exist in the base row to prevent appending duplicate columns 
+      // (e.g. "Name (Yes/No)" vs "Name (Yes / No)")
+      const mergedRow: Record<string, any> = { ...baseRow };
+      for (const key of Object.keys(itemEdits)) {
+        if (key in mergedRow) {
+          mergedRow[key] = itemEdits[key];
+        }
+      }
+
       const riskScore = computeDynamicRisk(mergedRow, formatMode);
       const priority = getPriorityFromRisk(riskScore);
       
       // Update fields if they exist in the row structure
       if (formatMode === "legacy") {
         mergedRow["Risk Score"] = riskScore;
-      }
-      if ("priority" in mergedRow) {
-        mergedRow["priority"] = priority;
+        if ("priority" in mergedRow) mergedRow["priority"] = priority;
+      } else {
+        mergedRow["RiskScore"] = riskScore;
       }
       return mergedRow;
     });
@@ -1081,9 +1100,8 @@ export function QuickAnalysisView() {
               }}
             >
               <option value="all">All Risk Levels</option>
-              <option value="high">High Risk (8-9)</option>
-              <option value="medium">Medium Risk (4-7)</option>
-              <option value="low">Low Risk (2-3)</option>
+              <option value="high">High Risk (5-9)</option>
+              <option value="low">Low Risk (0-4)</option>
             </select>
 
             <span style={{ fontSize: "12px", color: "var(--text-muted)", marginLeft: "auto" }}>

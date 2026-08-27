@@ -64,9 +64,9 @@ class Row:
 
     @property
     def logo_yes(self) -> str:
-        if self.has_custom_pic is None:
-            return ""
-        return "Yes" if self.has_custom_pic else "No"
+        if self.has_custom_pic is False:
+            return "No"
+        return "Yes"
 
     @property
     def active_yes(self) -> str:
@@ -96,9 +96,9 @@ class Row:
 
     @property
     def name_yes(self) -> str:
-        if not self.profile_name:
-            return ""
-        return "Yes" if self.name_score >= NAME_THRESHOLD else "No"
+        if self.profile_name:
+            return "Yes" if self.name_score >= NAME_THRESHOLD else "No"
+        return "Yes"
 
     @property
     def name_exact_run(self) -> bool:
@@ -123,9 +123,13 @@ class Row:
 
     @property
     def priority(self) -> str:
-        """Driven by the profile photo, not by the total, lifting the
-        brand's own photo is the act that makes an impersonation convincing,
-        so it sets High on its own."""
+        # If user logo check is explicitly Yes, it forces High priority regardless of score.
         if self.logo_yes == "Yes":
             return "High"
-        return "Medium" if self.name_yes == "Yes" else "Low"
+        
+        # Standard score-based threshold
+        score = self.risk
+        if score >= 5:
+            return "High"
+        else:
+            return "Low"

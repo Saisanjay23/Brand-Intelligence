@@ -56,8 +56,8 @@ class TestProfileRepositoryScoringWithAnalystMatch:
     def test_compute_priority_is_high_on_logo_match_alone(self):
         assert compute_priority(False, False, logo_match=True) == "High"
 
-    def test_compute_priority_is_medium_on_username_match_alone(self):
-        assert compute_priority(False, False, username_match=True) == "Medium"
+    def test_compute_priority_is_high_on_username_match_alone(self):
+        assert compute_priority(False, False, username_match=True) == "High"
 
     def test_compute_priority_is_low_with_no_signal_at_all(self):
         assert compute_priority(False, False) == "Low"

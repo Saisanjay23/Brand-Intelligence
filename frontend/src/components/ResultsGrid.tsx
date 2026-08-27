@@ -3610,7 +3610,6 @@ export function ResultsGrid({
                 <select value={priority} onChange={(e) => setPriority(e.target.value)} className="select-filter">
                   <option value="">All Priorities</option>
                   <option value="High">HIGH Priority</option>
-                  <option value="Medium">MEDIUM Priority</option>
                   <option value="Low">LOW Priority</option>
                 </select>
                 <select

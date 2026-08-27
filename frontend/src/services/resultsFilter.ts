@@ -319,23 +319,15 @@ export function filterResults(
  * `displayedRisk()`). Only two tiers, on purpose. Critical/Medium were
  * removed per analyst request.
  *
- * THE CUT IS 6, BECAUSE THAT IS WHERE THE LOGO BAND STARTS.
+ * THE CUT IS 5, PER USER REQUEST.
  * The rubric (backend/shared/models/scoring.py) is a tiered cascade in
  * which the logo match alone decides which half of the range a profile
  * lands in:
  *     9 / 8 / 7 / 6  -- logo AND name matched, varying by location+activity
  *     5 / 4 / 3      -- name matched, NO logo
  *     2              -- no name match
- * So "has the impersonator lifted the brand's actual profile photo" is
- * exactly the question `>= 6` answers, and it is the question this badge is
- * meant to answer. The cut was 7, inherited unchanged from the older
- * four-tier Critical/High/Medium/Low scheme when it was folded down to two,
- * and never re-derived against the cascade, so a confirmed logo match on
- * a profile with no location and no visible post history (a 6) read "Low",
- * the same label as a profile with no logo at all. `priority` has always
- * said High for exactly this case (profile_repository.compute_priority),
- * so the badge was also contradicting the tool's own other risk field. */
-const LOGO_BAND_FLOOR = 6;
+ * So a cut of 5 means a Name match alone is enough to trigger High risk. */
+const LOGO_BAND_FLOOR = 5;
 
 export function riskLabel(riskRating?: string | number | null): string {
   if (riskRating === undefined || riskRating === null || riskRating === "") return "—";
