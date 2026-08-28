@@ -87,6 +87,37 @@ def build_init_js(hardware_concurrency: int = 8, device_memory: int = 8) -> str:
             }};
         }}
 
+        if (!navigator.plugins || navigator.plugins.length === 0) {{
+            const makePluginArray = () => {{
+                const arr = [{{
+                    description: "Portable Document Format",
+                    filename: "internal-pdf-viewer",
+                    name: "Chrome PDF Plugin"
+                }}];
+                arr.item = (i) => arr[i];
+                arr.namedItem = (n) => arr[0];
+                arr.refresh = () => {{}};
+                return arr;
+            }};
+            Object.defineProperty(navigator, 'plugins', {{
+                get: maskFunction(() => makePluginArray(), 'plugins'),
+                configurable: true
+            }});
+            Object.defineProperty(navigator, 'mimeTypes', {{
+                get: maskFunction(() => {{
+                    const arr = [{{
+                        description: "Portable Document Format",
+                        suffixes: "pdf",
+                        type: "application/x-google-chrome-pdf"
+                    }}];
+                    arr.item = (i) => arr[i];
+                    arr.namedItem = (n) => arr[0];
+                    return arr;
+                }}, 'mimeTypes'),
+                configurable: true
+            }});
+        }}
+
         // --- 1. CDP & Playwright Variable Scrubbing ---
         try {{
             const blockRegex = /^(cdc_|__playwright|__puppeteer|__webdriver|\\$chrome)/i;
@@ -112,6 +143,17 @@ def build_init_js(hardware_concurrency: int = 8, device_memory: int = 8) -> str:
                     }}
                     return result;
                 }}, 'keys'),
+                configurable: true,
+                writable: true
+            }});
+            const origGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+            Object.defineProperty(Object, 'getOwnPropertyDescriptor', {{
+                value: maskFunction(function(obj, prop) {{
+                    if ((obj === window || obj === document) && typeof prop === 'string' && blockRegex.test(prop)) {{
+                        return undefined;
+                    }}
+                    return origGetOwnPropertyDescriptor(obj, prop);
+                }}, 'getOwnPropertyDescriptor'),
                 configurable: true,
                 writable: true
             }});
@@ -210,6 +252,55 @@ def build_init_js(hardware_concurrency: int = 8, device_memory: int = 8) -> str:
     }} catch (err) {{
         // Swallow unhandled setup errors to ensure page rendering never fails
     }}
+
+    // --- 5. Canvas & WebGL Noise Injection ---
+    try {{
+        const addNoise = (canvas) => {{
+            try {{
+                const ctx = canvas.getContext('2d');
+                if (ctx) {{
+                    const shift = {{ r: Math.random() * 2 - 1, g: Math.random() * 2 - 1, b: Math.random() * 2 - 1 }};
+                    ctx.fillStyle = `rgba(${{Math.abs(shift.r)}}, ${{Math.abs(shift.g)}}, ${{Math.abs(shift.b)}}, 0.01)`;
+                    ctx.fillRect(0, 0, canvas.width || 1, canvas.height || 1);
+                }}
+            }} catch(e) {{}}
+        }};
+        
+        if (HTMLCanvasElement.prototype.toDataURL) {{
+            const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
+            HTMLCanvasElement.prototype.toDataURL = maskFunction(function() {{
+                addNoise(this);
+                return origToDataURL.apply(this, arguments);
+            }}, 'toDataURL');
+        }}
+        if (HTMLCanvasElement.prototype.toBlob) {{
+            const origToBlob = HTMLCanvasElement.prototype.toBlob;
+            HTMLCanvasElement.prototype.toBlob = maskFunction(function() {{
+                addNoise(this);
+                return origToBlob.apply(this, arguments);
+            }}, 'toBlob');
+        }}
+        
+        if (window.WebGLRenderingContext) {{
+            const origGetParameter = window.WebGLRenderingContext.prototype.getParameter;
+            window.WebGLRenderingContext.prototype.getParameter = maskFunction(function(param) {{
+                const res = origGetParameter.apply(this, arguments);
+                if (param === 37445) return 'Google Inc. (Apple)';
+                if (param === 37446) return 'ANGLE (Apple, Apple M1, OpenGL 4.1)';
+                return res;
+            }}, 'getParameter');
+        }}
+        if (window.WebGL2RenderingContext) {{
+            const origGetParameter2 = window.WebGL2RenderingContext.prototype.getParameter;
+            window.WebGL2RenderingContext.prototype.getParameter = maskFunction(function(param) {{
+                const res = origGetParameter2.apply(this, arguments);
+                if (param === 37445) return 'Google Inc. (Apple)';
+                if (param === 37446) return 'ANGLE (Apple, Apple M1, OpenGL 4.1)';
+                return res;
+            }}, 'getParameter');
+        }}
+    }} catch (e) {{}}
+
 }})();
 """
 
